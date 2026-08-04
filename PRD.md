@@ -39,13 +39,13 @@ Each stage is a C++20 concept, resolved at compile time. The value type (`float`
 
 ### 4.2 Recorded and synthetic signal streams
 
-* A CSV reader for EMG and IMU streams.
+* A CSV reader for EMG and IMU streams. The bundled test data are synthetic (`tools/generate_sample_data.py`, alternating contraction and rest), because Ninapro data may not be redistributed; the reader accepts real Ninapro CSV exports unchanged.
 * **Fused stream:** `1-Ch EMG + 6-Axis IMU`, one sample every 1 ms (1000 Hz).
 * **Stress stream:** `32-Ch EMG`, for the benchmarks.
 
 ### 4.3 Visualization and MuJoCo simulation
 
-* **Oscilloscope:** existing tools (ImGui) show the filtered EMG, the allocation count and the latency.
+* **Oscilloscope:** a terminal view with no dependencies, and an optional ImGui + ImPlot window (`EDGENEURO_BUILD_GUI_DEMO=ON`, fetched with CMake FetchContent). Both run the same engine on the same stream.
 * **MuJoCo:** once the engine is stable, the decoded output drives a simulated hand in MuJoCo.
 
 
@@ -55,7 +55,7 @@ Each stage is a C++20 concept, resolved at compile time. The value type (`float`
 
 | Check | Tool | Pass criterion |
 | --- | --- | --- |
-| **Unit tests** | `Catch2` | Over 90 % coverage of the core math and concept interfaces. |
+| **Unit tests** | `Catch2` + `llvm-cov` | Over 90 % coverage of the core math and concept interfaces. **Measured:** 30 test cases over `include/edgeneuro/`; line 95.38 %, branch 90.00 %. The uncovered lines are the `bad_alloc` path, an unused sized-delete overload, and the `NoHeapGuard` abort path, which `test_no_heap_guard.cpp` checks in a forked child. Measuring coverage found a real bug: `CsvSignalProvider` silently truncated rows with extra columns; fixed and tested. |
 | **No allocation, no undefined behaviour** | Sanitizers + `NoHeapGuard` | ASan, UBSan and TSan, plus a test that `malloc_count == 0` in the loop. ASan and TSan cannot share a binary and the allocation hook conflicts with them, so each runs from its own CMake preset (`debug-heapguard`, `sanitize-asan-ubsan`, `sanitize-tsan`, `release-bench`). |
 | **Latency** | `Google Benchmark` | `<1, 6>` and `<32, 0>`: under 0.1 ms per sample with 32 channels, `malloc_count == 0`. |
 
@@ -92,7 +92,7 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
   * A lock-free ring buffer on `std::array`.
   * `CsvSignalProvider` streams recorded data as if it came from a sensor.
   * `Catch2` tests; ASan, UBSan, TSan and `NoHeapGuard` (`malloc_count == 0`); `Google Benchmark` for latency under 1 ms.
-  * A terminal and a graphical oscilloscope for the signals and the allocation count.
+  * A terminal view (`src/main.cpp`) and an ImGui + ImPlot window (`src/gui_demo.cpp`) show the signals and the allocation count.
 
 * **Phase 2: MuJoCo simulation — after Phase 1**
   * Bring in the **MuJoCo** physics simulator.

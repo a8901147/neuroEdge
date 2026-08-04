@@ -39,6 +39,31 @@ ctest --preset debug-heapguard          # or sanitize-asan-ubsan / sanitize-tsan
 ctest --test-dir build/release-bench    # release-bench has no dedicated test preset
 ```
 
+## Coverage
+
+Source-based coverage via `llvm-cov` (Xcode Command Line Tools on macOS; plain `llvm-profdata`/`llvm-cov` on Linux — drop the `xcrun` prefix there). Separate build dir, not one of the four presets, since it needs its own compiler flags:
+
+```sh
+cmake -S . -B build/coverage \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DEDGENEURO_ENABLE_HEAP_GUARD=ON \
+  -DEDGENEURO_BUILD_BENCHMARKS=OFF \
+  -DEDGENEURO_BUILD_GUI_DEMO=OFF \
+  -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+cmake --build build/coverage -j --target edgeneuro_tests
+
+cd build/coverage
+mkdir -p coverage_raw
+LLVM_PROFILE_FILE="coverage_raw/edgeneuro-%p.profraw" ./edgeneuro_tests
+xcrun llvm-profdata merge -sparse coverage_raw/*.profraw -o coverage.profdata
+xcrun llvm-cov report ./edgeneuro_tests \
+  -instr-profile=coverage.profdata \
+  -ignore-filename-regex='_deps/|/tests/'
+```
+
+The `-ignore-filename-regex` scopes the report to our own `include/edgeneuro/` + `src/` — otherwise it'd also count FetchContent'd Catch2/benchmark source and the test files themselves. Swap `report` for `show <path/to/file>` to see line-by-line annotated source for one file. See PRD §5 for the current measured numbers and what's structurally unreachable.
+
 ## Benchmark
 
 ```sh
