@@ -1,0 +1,58 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "debug-heapguard",
+      "displayName": "Debug + NoHeapGuard (malloc_count == 0 proof)",
+      "binaryDir": "${sourceDir}/build/debug-heapguard",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EDGENEURO_ENABLE_HEAP_GUARD": "ON",
+        "EDGENEURO_SANITIZER": "none"
+      }
+    },
+    {
+      "name": "sanitize-asan-ubsan",
+      "displayName": "ASan + UBSan (undefined behavior, no heap guard)",
+      "binaryDir": "${sourceDir}/build/sanitize-asan-ubsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EDGENEURO_ENABLE_HEAP_GUARD": "OFF",
+        "EDGENEURO_SANITIZER": "address-undefined"
+      }
+    },
+    {
+      "name": "sanitize-tsan",
+      "displayName": "TSan (RingBuffer concurrency correctness, no heap guard)",
+      "binaryDir": "${sourceDir}/build/sanitize-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EDGENEURO_ENABLE_HEAP_GUARD": "OFF",
+        "EDGENEURO_SANITIZER": "thread"
+      }
+    },
+    {
+      "name": "release-bench",
+      "displayName": "Release + NoHeapGuard + Google Benchmark",
+      "binaryDir": "${sourceDir}/build/release-bench",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "EDGENEURO_ENABLE_HEAP_GUARD": "ON",
+        "EDGENEURO_SANITIZER": "none",
+        "EDGENEURO_BUILD_BENCHMARKS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug-heapguard", "configurePreset": "debug-heapguard" },
+    { "name": "sanitize-asan-ubsan", "configurePreset": "sanitize-asan-ubsan" },
+    { "name": "sanitize-tsan", "configurePreset": "sanitize-tsan" },
+    { "name": "release-bench", "configurePreset": "release-bench" }
+  ],
+  "testPresets": [
+    { "name": "debug-heapguard", "configurePreset": "debug-heapguard", "output": { "outputOnFailure": true } },
+    { "name": "sanitize-asan-ubsan", "configurePreset": "sanitize-asan-ubsan", "output": { "outputOnFailure": true } },
+    { "name": "sanitize-tsan", "configurePreset": "sanitize-tsan", "output": { "outputOnFailure": true } }
+  ]
+}
