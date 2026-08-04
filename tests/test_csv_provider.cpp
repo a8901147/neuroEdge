@@ -82,6 +82,26 @@ TEST_CASE("CsvSignalProvider handles headerless 32-channel HD-sEMG rows", "[csv_
     REQUIRE(sample.emg[31] == Approx(31.0f));
 }
 
+TEST_CASE("CsvSignalProvider throws when the file does not exist", "[csv_provider]") {
+    REQUIRE_THROWS_AS(
+        (CsvSignalProvider<float, 1, 1, 8>("/nonexistent/path/does_not_exist.csv")),
+        std::runtime_error);
+}
+
+TEST_CASE("CsvSignalProvider skips malformed rows (wrong column count)", "[csv_provider]") {
+    // Row 2 is missing a column, row 3 has an extra one — both should be
+    // silently skipped, same as a header row, not crash or miscount.
+    TempCsv csv("1,2\n3\n5,6,7\n8,9\n");
+    CsvSignalProvider<float, 1, 1, 8> provider(csv.path());
+    REQUIRE(provider.size() == 2); // only "1,2" and "8,9" are well-formed
+
+    Sample<float, 1, 1> sample;
+    REQUIRE(provider.next(sample));
+    REQUIRE(sample.emg[0] == Approx(1.0f));
+    REQUIRE(provider.next(sample));
+    REQUIRE(sample.emg[0] == Approx(8.0f));
+}
+
 TEST_CASE("CsvSignalProvider stops loading at MaxSamples capacity", "[csv_provider]") {
     TempCsv csv("1,2\n3,4\n5,6\n7,8\n");
     CsvSignalProvider<float, 1, 1, 2> provider(csv.path()); // capacity 2, file has 4 rows

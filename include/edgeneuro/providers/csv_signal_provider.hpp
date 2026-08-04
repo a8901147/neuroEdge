@@ -69,6 +69,7 @@ private:
         std::array<ValueType, kColumns> values{};
         std::size_t col = 0;
         std::size_t start = 0;
+        bool reached_end = false; // true once the last-parsed field had no trailing comma
 
         while (col < kColumns) {
             const std::size_t comma = line.find(',', start);
@@ -83,12 +84,18 @@ private:
             values[col++] = static_cast<ValueType>(parsed);
 
             if (comma == std::string::npos) {
+                reached_end = true;
                 break;
             }
             start = comma + 1;
         }
 
-        if (col != kColumns) {
+        // col == kColumns alone isn't enough: a row with MORE than kColumns
+        // fields would also satisfy it (the loop simply stops reading once
+        // enough columns are collected), silently truncating extra data
+        // instead of rejecting the row. reached_end distinguishes "exactly
+        // kColumns fields" from "at least kColumns fields".
+        if (col != kColumns || !reached_end) {
             return false; // malformed row: wrong column count
         }
 

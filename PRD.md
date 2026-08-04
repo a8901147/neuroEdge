@@ -40,14 +40,14 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
 
 ### 4.2 資料流與感測融合模擬器 (Multi-Modal Stream Simulator)
 
-* 提供多模態生理與慣性訊號的 `csv` 解析器（相容 Ninapro EMG 切片與慣性運動序列）。
+* 提供多模態生理與慣性訊號的 `csv` 解析器，欄位配置相容 Ninapro EMG 切片與慣性運動序列格式。Phase 1 隨附之測試資料集為合成訊號（`tools/generate_sample_data.py` 產生，統計特性模擬肌肉收縮/放鬆週期），因 Ninapro 原始資料需另行簽署使用授權、不便內建於 repo；解析器本身與資料集無關，直接餵入真實 Ninapro CSV 匯出檔即可運作。
 * **感測器融合封包：** 支援 `1-Ch EMG + 6-Axis IMU` 同步資料流，精確模擬 $1000\text{ Hz}$（每 $1\text{ ms}$ 推播一次）之零動態配置管線輸入。
 * **高密度擴充測試：** 相容高密度 `32-Ch EMG` 壓力測試數據格式，供自動化基準檢驗使用。
 
 ### 4.3 現成科研展示與 MuJoCo 神經義肢仿真 (Scientific UI & Neuroprosthetic Simulation)
 
 * **演算法研發極大化：** 堅決屏除自建繁複網頁切版與維護 DOM 的工程虛耗，將主力心血 100% 投入在 C++20 即時 DSP 演算法與記憶體精簡優化。
-* **階段一成果展示 (Turnkey Scientific Oscilloscope)：** 前期驗證只需直接利用開源業界高度最佳化的即插即用科研示波器或圖表組件（如 ImGui / uPlot / Streamlit），極速且高溫可靠地展示即時多通道 EMG 濾波波形、零 malloc 記憶體監測與次毫秒延遲儀表，以此為打磨核心引擎之基準。
+* **階段一成果展示 (Turnkey Scientific Oscilloscope)：** 前期驗證只需直接利用開源業界高度最佳化的即插即用科研示波器或圖表組件，極速且穩定可靠地展示即時多通道 EMG 濾波波形、零 malloc 記憶體監測與次毫秒延遲儀表，以此為打磨核心引擎之基準。雙軌並行：Terminal ASCII 儀表（零額外依賴，適合純 CLI/CI 環境）與 ImGui + ImPlot 原生視窗圖形化示波器（真實線圖），兩者共用同一顆零配置引擎與同一份資料流，行為完全一致；後者透過 CMake FetchContent 引入、預設關閉（`EDGENEURO_BUILD_GUI_DEMO=ON` 才建置），不影響核心引擎的零依賴特性。
 * **階段二升維擴充 (MuJoCo 3D 物理閉環仿真)：** 待核心引擎穩固且達到我們團隊 100% 的絕對滿意與認同後，才啟動對接 **MuJoCo (Multi-Joint dynamics with Contact)** 物理模擬引擎。將解碼意圖直鏈驅動 3D 仿生義肢模型（如 Shadow Hand 或 Adroit Hand），展現世界頂尖的毫秒級閉環動作控制與動力學反饋（Closed-Loop Neural Motor Control），並透過現成的 Wasm 框架靜態部署於 GitHub Pages 進行線上展示。
 
 
@@ -58,7 +58,7 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
 
 | 驗證項目 | 使用工具 | 通過標準 (Success Criteria) |
 | --- | --- | --- |
-| **單元測試與邊界檢查** | `Catch2` | 核心數學、模組 Concept 介面測試覆蓋率 $> 90\%$。 |
+| **單元測試與邊界檢查** | `Catch2` + `llvm-cov`（source-based coverage） | 核心數學、模組 Concept 介面測試覆蓋率 $> 90\%$。**已量測達成**：30 個 test case 涵蓋 `include/edgeneuro/` 全模組，line coverage 95.38%、region 94.92%、function 94.87%、branch 90.00%（排除第三方依賴與測試檔本身）。未覆蓋行集中於 `bad_alloc` 拋出路徑（刻意不測試，需真實記憶體耗盡）與標準要求的 sized-delete overload（此 ABI 下從未被選中呼叫），以及 `NoHeapGuard` 致命 abort 路徑本身——該路徑由 fork 出的子行程觸發 `SIGABRT`，子行程在覆蓋率計數器落盤前即被終止，屬量測工具限制而非測試缺口，其正確性改由 `test_no_heap_guard.cpp` 以 `WIFSIGNALED`/`WTERMSIG` 驗證。量測過程中亦揪出一個真實邏輯漏洞：`CsvSignalProvider` 原本會靜默截斷欄位數過多的畸形資料列而非拒絕，已修正並補測試證實。 |
 | **零記憶體與安全防護** | `Clang/GCC Sanitizers` + 自訂 `NoHeapGuard` | 利用 ASan / UBSan / TSan 消除所有未定義行為與並發競態，並透過單元測試攔截驗證 Hot Loop 期間 `malloc_count == 0`。由於 ASan 與 TSan 無法連結進同一 binary，且自訂 allocator 覆寫會與 Sanitizer 自身的記憶體攔截機制衝突，兩類驗證拆分為互斥的 CMake Presets（`debug-heapguard` / `sanitize-asan-ubsan` / `sanitize-tsan` / `release-bench`）獨立執行，各司其職。 |
 | **極限效能與擴充基準** | `Google Benchmark` | 同時檢測 `<1, 6>` 義肢融合模式與 `<32, 0>` 高密度壓測模式，驗證 32 通道連續運算延遲 $< 0.1\text{ ms}$ 且 `malloc_count == 0`。 |
 
@@ -95,7 +95,7 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
   * 完成基於 `std::array` 與靜態記憶體的 Lock-free Ring Buffer 結構。
   * 實作 `CsvSignalProvider` 讀取公開資料集（如 Ninapro EMG 數值）來推播至系統，精準模擬即時感測器串流。
   * 結合 `Catch2` 進行數學與邏輯嚴謹測試，使用 **Clang/GCC Sanitizers (`ASan`/`UBSan`/`TSan`) + `NoHeapGuard` 鉤子** 消除並發與越界隱患並嚴格證實 `malloc_count == 0`，配合 `Google Benchmark` 驗證延遲 $< 1\text{ ms}$。
-  * 運用現成的科研示波器工具鏈（如 ImGui / uPlot / 快速 Terminal 儀表），極速呈現即時波形與零內存耗用圖表，**以此作為 V1.0 的終極自我檢視門檻**。
+  * 運用現成的科研示波器工具鏈——快速 Terminal 儀表（`src/main.cpp`）與 ImGui + ImPlot 原生圖形化視窗（`src/gui_demo.cpp`）雙軌方案，極速呈現即時波形與零內存耗用圖表，**以此作為 V1.0 的終極自我檢視門檻**。
 
 * **Phase 2: MuJoCo 神經義肢 3D 控制與仿真 (MuJoCo Simulation & Turnkey HIL Prototyping) 【Phase 1 滿意過關後才開放解鎖】**
   * 引入 **MuJoCo** 生物物理動力學仿真框架（歐洲殿堂級機器人與計算神經科學實驗室核心標準工具）。
