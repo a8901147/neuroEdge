@@ -13,6 +13,7 @@ endif()
 option(EDGENEURO_ENABLE_HEAP_GUARD "Compile the global operator new/delete allocation counter" ON)
 option(EDGENEURO_BUILD_TESTS "Build Catch2 unit tests" ON)
 option(EDGENEURO_BUILD_BENCHMARKS "Build Google Benchmark suite" ON)
+option(EDGENEURO_BUILD_GUI_DEMO "Build the ImGui+ImPlot graphical oscilloscope demo" OFF)
 set(EDGENEURO_SANITIZER "none" CACHE STRING "Sanitizer to build with: none | address-undefined | thread")
 set_property(CACHE EDGENEURO_SANITIZER PROPERTY STRINGS none address-undefined thread)
 
@@ -109,5 +110,70 @@ if(EDGENEURO_BUILD_BENCHMARKS)
     target_compile_options(edgeneuro_bench PRIVATE ${EDGENEURO_WARNING_FLAGS})
     if(TARGET edgeneuro_heap_guard)
         target_link_libraries(edgeneuro_bench PRIVATE edgeneuro_heap_guard)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Optional graphical demo: ImGui + ImPlot native window, real line plots
+# instead of the terminal ASCII bar. Off by default — pulls in GLFW/OpenGL
+# and roughly triples configure time, so it's opt-in
+# (-DEDGENEURO_BUILD_GUI_DEMO=ON). Everything here is Host-side
+# visualization scaffolding, same as edgeneuro_demo: NoHeapGuard is armed
+# only around engine.tick(), never around ImGui/ImPlot rendering.
+# ---------------------------------------------------------------------------
+if(EDGENEURO_BUILD_GUI_DEMO)
+    find_package(OpenGL REQUIRED)
+
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+    )
+    FetchContent_MakeAvailable(glfw)
+
+    FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.90.9
+    )
+    FetchContent_MakeAvailable(imgui)
+
+    FetchContent_Declare(
+        implot
+        GIT_REPOSITORY https://github.com/epezent/implot.git
+        GIT_TAG v0.16
+    )
+    FetchContent_MakeAvailable(implot)
+
+    # Neither imgui nor implot ship a CMakeLists.txt for library consumption
+    # (they're meant to be dropped into your own build) — compile their
+    # sources directly into one static lib.
+    add_library(imgui_implot STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+        ${implot_SOURCE_DIR}/implot.cpp
+        ${implot_SOURCE_DIR}/implot_items.cpp
+    )
+    target_include_directories(imgui_implot PUBLIC
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+        ${implot_SOURCE_DIR}
+    )
+    target_link_libraries(imgui_implot PUBLIC glfw OpenGL::GL)
+    target_compile_definitions(imgui_implot PUBLIC GL_SILENCE_DEPRECATION)
+
+    add_executable(edgeneuro_gui_demo src/gui_demo.cpp)
+    target_link_libraries(edgeneuro_gui_demo PRIVATE edgeneuro_core imgui_implot)
+    target_compile_options(edgeneuro_gui_demo PRIVATE ${EDGENEURO_WARNING_FLAGS})
+    if(TARGET edgeneuro_heap_guard)
+        target_link_libraries(edgeneuro_gui_demo PRIVATE edgeneuro_heap_guard)
     endif()
 endif()
