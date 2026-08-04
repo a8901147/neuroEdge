@@ -8,7 +8,7 @@ Currently **Phase 1**: the host-side C++20 algorithmic core (Provider → Filter
 
 ```
 include/edgeneuro/   Header-only engine: concepts, ring buffer, filters, features, classifiers, providers, pipeline
-src/                 no_heap_guard.cpp (allocation counter) + main.cpp (terminal oscilloscope demo)
+src/                 no_heap_guard.cpp (allocation counter) + main.cpp (terminal demo) + gui_demo.cpp (ImGui/ImPlot demo)
 tests/               Catch2 unit + integration tests
 benchmarks/          Google Benchmark suite (<1,6> wearable fusion, <32,0> HD-sEMG stress)
 data/                Synthetic CSV fixtures (not real Ninapro data — see tools/generate_sample_data.py)
@@ -55,4 +55,14 @@ Terminal oscilloscope replaying the synthetic `<1,6>` wearable-fusion CSV at a r
 ```sh
 python3 tools/generate_sample_data.py   # regenerate data/*.csv if needed
 ./build/debug-heapguard/edgeneuro_demo data/wearable_1emg_6imu.csv
+```
+
+### Graphical demo (ImGui + ImPlot)
+
+Same engine and CSV, rendered as a real line chart in a native window instead of an ASCII bar. Off by default (pulls in GLFW/OpenGL via FetchContent) — enable with `-DEDGENEURO_BUILD_GUI_DEMO=ON`:
+
+```sh
+cmake -S . -B build/gui-demo -DEDGENEURO_BUILD_GUI_DEMO=ON -DEDGENEURO_BUILD_TESTS=OFF -DEDGENEURO_BUILD_BENCHMARKS=OFF
+cmake --build build/gui-demo -j
+./build/gui-demo/edgeneuro_gui_demo data/wearable_1emg_6imu.csv
 ```
