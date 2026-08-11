@@ -3,3 +3,4 @@ CMakeUserPresets.json
 .DS_Store
 compile_commands.json
 imgui.ini
+data/raw/

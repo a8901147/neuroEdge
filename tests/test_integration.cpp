@@ -62,14 +62,26 @@ TEST_CASE("EdgeNeuro<1,6> replays the wearable fusion fixture end-to-end", "[int
 
 #ifdef EDGENEURO_HEAP_GUARD_ENABLED
     NoHeapGuard::reset_count();
-    NoHeapGuard guard;
 #endif
-    while (engine.tick(out_class)) {
-        ++ticks;
-        if (engine.has_result()) {
-            (out_class == 1 ? grasp_count : rest_count)++;
+    {
+#ifdef EDGENEURO_HEAP_GUARD_ENABLED
+        NoHeapGuard guard;
+#endif
+        while (engine.tick(out_class)) {
+            ++ticks;
+            if (engine.has_result()) {
+                (out_class == 1 ? grasp_count : rest_count)++;
+            }
         }
     }
+    // Snapshot the count the instant the armed scope closes -- any statement
+    // between here and reading it (including a REQUIRE, which can itself
+    // allocate while decomposing its expression) would otherwise get
+    // silently folded into "hot loop" allocations by the next read of a
+    // shared counter that was never reset in between.
+#ifdef EDGENEURO_HEAP_GUARD_ENABLED
+    const std::size_t malloc_count = NoHeapGuard::count();
+#endif
 
     REQUIRE(ticks == 2000);
     REQUIRE(ticks / kWindow == rest_count + grasp_count);
@@ -79,7 +91,7 @@ TEST_CASE("EdgeNeuro<1,6> replays the wearable fusion fixture end-to-end", "[int
     REQUIRE(rest_count > 0);
     REQUIRE(grasp_count > 0);
 #ifdef EDGENEURO_HEAP_GUARD_ENABLED
-    REQUIRE(NoHeapGuard::count() == 0);
+    REQUIRE(malloc_count == 0);
 #endif
 }
 
@@ -111,16 +123,23 @@ TEST_CASE("EdgeNeuro<32,0> replays the HD-sEMG stress fixture end-to-end", "[int
 
 #ifdef EDGENEURO_HEAP_GUARD_ENABLED
     NoHeapGuard::reset_count();
-    NoHeapGuard guard;
 #endif
-    while (engine.tick(out_class)) {
-        ++ticks;
-        if (engine.has_result()) ++results;
+    {
+#ifdef EDGENEURO_HEAP_GUARD_ENABLED
+        NoHeapGuard guard;
+#endif
+        while (engine.tick(out_class)) {
+            ++ticks;
+            if (engine.has_result()) ++results;
+        }
     }
+#ifdef EDGENEURO_HEAP_GUARD_ENABLED
+    const std::size_t malloc_count = NoHeapGuard::count();
+#endif
 
     REQUIRE(ticks == 2000);
     REQUIRE(results == ticks / kWindow);
 #ifdef EDGENEURO_HEAP_GUARD_ENABLED
-    REQUIRE(NoHeapGuard::count() == 0);
+    REQUIRE(malloc_count == 0);
 #endif
 }
