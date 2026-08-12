@@ -12,16 +12,20 @@
 // There is no real heap backing this (no _sbrk, no newlib malloc
 // configured) -- on this firmware there is categorically no legitimate
 // reason for operator new to ever be called, armed or not. The tiny
-// static arena below exists only so an unarmed call (which Host's
-// contract allows) doesn't corrupt memory; it is not meant to be
-// exercised by anything in this project's current firmware.
+// edgeneuro::BumpAllocator below (pure logic, Host-tested in
+// tests/test_bump_allocator.cpp) exists only so an unarmed call (which
+// Host's contract allows) doesn't corrupt memory; it is not meant to be
+// exercised by anything in this project's current firmware. Exhausting
+// it halts the same way an armed violation does, rather than throwing
+// std::bad_alloc() -- the linker script discards .ARM.exidx (no unwind
+// tables), so a real C++ exception here would be undefined behavior, not
+// a graceful failure.
 
 #include <cstddef>
-#include <cstdint>
-#include <new>
 
 #include "stm32f4xx.h"
 
+#include "edgeneuro/bump_allocator.hpp"
 #include "edgeneuro/no_heap_guard.hpp"
 
 namespace {
@@ -40,20 +44,7 @@ constexpr unsigned kLedPin = 13u;
     }
 }
 
-// Fallback arena for the (unexpected, never-armed) case: satisfies the
-// operator-new contract without needing newlib's heap.
-constexpr std::size_t kArenaSize = 1024;
-alignas(alignof(std::max_align_t)) unsigned char g_arena[kArenaSize];
-std::size_t g_arena_used = 0;
-
-void* bump_allocate(std::size_t size) noexcept {
-    if (g_arena_used + size > kArenaSize) {
-        return nullptr;
-    }
-    void* ptr = &g_arena[g_arena_used];
-    g_arena_used += size;
-    return ptr;
-}
+edgeneuro::BumpAllocator<1024> g_arena;
 
 void record_allocation() noexcept {
     edgeneuro::NoHeapGuard::allocation_count().fetch_add(1, std::memory_order_relaxed);
@@ -62,23 +53,18 @@ void record_allocation() noexcept {
     }
 }
 
+void* allocate_or_halt(std::size_t size) noexcept {
+    record_allocation();
+    if (void* ptr = g_arena.allocate(size)) {
+        return ptr;
+    }
+    signal_violation_and_halt(); // arena exhausted: no unwind tables to throw bad_alloc into
+}
+
 } // namespace
 
-void* operator new(std::size_t size) {
-    record_allocation();
-    if (void* ptr = bump_allocate(size)) {
-        return ptr;
-    }
-    throw std::bad_alloc();
-}
-
-void* operator new[](std::size_t size) {
-    record_allocation();
-    if (void* ptr = bump_allocate(size)) {
-        return ptr;
-    }
-    throw std::bad_alloc();
-}
+void* operator new(std::size_t size) { return allocate_or_halt(size); }
+void* operator new[](std::size_t size) { return allocate_or_halt(size); }
 
 // Bump arena is never freed piecemeal -- deletes are no-ops. Fine: nothing
 // in this firmware is expected to allocate at all, so nothing frees either.
