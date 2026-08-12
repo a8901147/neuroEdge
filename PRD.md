@@ -131,14 +131,16 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
     2. **板子插上 Mac 後，Bash 工具確認可以偵測到真實 USB 裝置**（`system_profiler SPUSBDataType` 看得到）——這回答了先前「工具能不能操控實體硬體」的疑問。裝置進入 DFU 模式（按住 BOOT0 + 按 RST）後，`system_profiler` 顯示為 **"WeAct Studio HID Bootloader"（VID `0x0483` PID `0x572A`）**，不是標準 STM32 DFU class，`dfu-util` 對這片板子無效。**已解決（確認根因，改用對應工具）。**
     3. **WeAct 官方 `hid-flash` 燒錄工具在這台 Apple Silicon Mac 上有相容性問題，決定不繼續深修，改等 ST-Link。** 追查過程：(a) Serasidis 上游專案的預編譯 `hid-flash` 二進位檔是 2019 年的 x86_64 版本，靠 Rosetta 2 可執行，但寫死搜尋 VID:PID `1209:BEBA`（跟這片板子實際的 `0483:572A` 對不上）。(b) 改抓 WeAct 自己 fork 的原始碼（`WeActStudio/WeAct_HID_Bootloader_F4x1` repo 下的 `Cli/`）自行編譯，過程中修掉兩個第三方程式碼裡的真實 bug：`hex2bin/readhex.h` 遺失（該 repo 的 git submodule 沒有正確帶出，補了功能等價的 stub，因為 `.hex` 格式支援本來就用不到，我們燒的是 `.bin`）、以及 `main()` 裡一個邏輯反過來的錯誤 null check（`if (i == 10 && handle != NULL)` 應為 `if (handle == NULL)`，原本會在 `hid_open()` 失敗時直接拿 NULL handle 去用，導致 segfault）。(c) 修完後改用 `lldb` 抓到真正當機點在 `hid_open()` 內部：`hid_enumerate()` 回傳的裝置路徑是空字串，導致 `IORegistryEntryFromPath` 找不到裝置——這是這支 2019 年工具跟現在 macOS/Apple Silicon 版 IOKit 的深層相容性問題（裝置路徑產生邏輯需要重寫），已經超出「順手修一下」的合理範圍。**結論：等待中的 ST-Link + OpenOCD 是業界標準、持續維護、Apple Silicon 相容性更好的方案，優先用它燒錄，不再投入時間修這支社群工具。**
 
-  * **階段 0 + 階段 1 已完成編譯驗證，尚未實際燒錄執行（2026-08-12）**：
+  * **階段 0 + 階段 1 + 階段 2 已完成編譯驗證，尚未實際燒錄執行（2026-08-12）**：
     - **階段 0(blink）**：編譯連結成功，`text=212 bytes, data=0, bss=0`（含 VTOR 重定位後）。證實工具鏈「編譯→連結」全鏈路可行。
     - **階段 1(記憶體足跡)**：**真正的 `include/edgeneuro/*` 標頭檔（`pipeline.hpp`/`iir_filter.hpp`/`pass_through_filter.hpp`/`mav_feature.hpp`/`lda_classifier.hpp`），零修改，直接用 `arm-none-eabi-g++` 編譯連結給 STM32F401 成功**，組出真實的 `EdgeNeuro<1,6,50,...>` 實例（`firmware/src/footprint_check_main.cpp`）。實測 `text=932 bytes, data=0, bss=0`——僅佔 240KB 可用 Flash 的 0.38%、64KB SRAM 完全沒用到靜態配置。**「零修改移植」的承諾首次得到實體工具鏈驗證**，且記憶體餘裕遠超預期，第 2 節「未知數 2」（SRAM 夠不夠）初步無虞。
+    - **階段 2(NoHeapGuard 裸機移植，等 ST-Link 到貨即可實測未知數 1）**：`include/edgeneuro/no_heap_guard.hpp`（純 `std::atomic`，無 OS 依賴）**沿用不修改**；新增 `firmware/src/no_heap_guard_target.cpp` 提供裸機版 `operator new`/`delete` 覆寫——違規反應從 Host 版的 `abort()`+`stderr` 改成快速 LED 閃爍（不需要 newlib 的 `_write`/`_exit` 這類系統呼叫 stub）。`firmware/src/heap_guard_check_main.cpp` 跑 10 萬次 `tick()`，全程武裝 `NoHeapGuard`，通過則 LED 恆亮，失敗則快閃——三種燈號（慢閃=階段0、恆亮=階段2通過、快閃=偵測到配置）肉眼可辨。編譯成功，`text=844 bytes, data=0, bss=8`。
     - **裝置端已確認**：板子能正確進入 HID bootloader 模式並被 Mac 偵測到、VID:PID 正確——硬體本身沒問題，卡關的是燒錄工具鏈，不是板子或接線。
-    - 兩個執行檔都在 `firmware/build/`（`blink`、`footprint_check`），已產生對應 `.bin`，等 ST-Link 到貨即可燒錄，**不需要再重新編譯**。
-    - `firmware/` 整個目錄尚未 commit 進 git。
+    - **OpenOCD + ST-Link 設定已備妥**：`firmware/openocd.cfg`（`interface/stlink.cfg` + `target/stm32f4x.cfg`，`adapter speed 1000` 求穩不求快）。`CMakeLists.txt` 重構出 `firmware_add_target()` function 消除三個執行檔目標間的重複樣板，並為每個執行檔自動產生對應的 `flash_<name>` CMake target（例如 `cmake --build build --target flash_blink`），內部呼叫 `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`。位址寫死在 `0x08004000` 而非全晶片抹除，確保燒錄只動到 Sector 1 以後，不會動到 Sector 0 的 HID bootloader（STM32F401 Sector 0/1 各自獨立 16KB，位址不重疊）。**ST-Link 一到貨，插上後直接下這個指令就能燒，不用臨時查設定。**
+    - 三個執行檔都在 `firmware/build/`（`blink`、`footprint_check`、`heap_guard_check`），已產生對應 `.bin`，**不需要再重新編譯**。
+    - `firmware/`（含本次新增檔案）已 commit 進 git。
 
-  * **下一步（依序）**：(1) 等 ST-Link 到貨，改用 OpenOCD + ST-Link 燒錄（放棄 HID bootloader 路徑），(2) 燒錄 `blink.bin`，肉眼確認 LED 閃爍，(3) 燒錄 `footprint_check.bin`，確認不當機，(4) 移植 `NoHeapGuard` 到裸機環境（違規反應改成 LED 燈號而非 `abort()`），完成未知數 1 的驗證，(5) 待 USB-TTL 模組到貨後才能進行未知數 3、4（ADC 時序、MyoWare 真實訊號）。ST-Link 到貨後，SWD 除錯能力也一併解鎖，後續（尤其階段 3 中斷驅動的 ADC/DMA）除錯會輕鬆很多，值得直接切換，不再繞道 HID bootloader。
+  * **下一步（依序）**：(1) 等 ST-Link 到貨，接上後跑 `cmake --build build --target flash_blink`，肉眼確認 LED 閃爍，(2) `flash_heap_guard_check`，確認 LED 恆亮（= 未知數 1 驗證通過）而非快閃，(3) 待 USB-TTL 模組到貨後才能進行未知數 3、4（ADC 時序、MyoWare 真實訊號）——這兩步的韌體程式碼（Timer/ADC/DMA 設定、UART 驅動）尚未開始寫，等前面兩步實測過關後再寫較合理（避免在還沒驗證基礎假設前，疊加更多未驗證的程式碼）。
 
 * **Phase 2: MuJoCo 神經義肢 3D 控制與仿真 (MuJoCo Simulation & Turnkey HIL Prototyping) 【Phase 1.5 驗證完畢後視結果排入】**
   * 引入 **MuJoCo** 生物物理動力學仿真框架（歐洲殿堂級機器人與計算神經科學實驗室核心標準工具）。
