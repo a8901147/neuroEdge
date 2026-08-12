@@ -2,16 +2,17 @@
 
 Modular, zero-allocation, real-time BCI/neuroprosthetic signal-processing engine in C++20. See [PRD.md](PRD.md) for the full product/architecture spec. This README covers day-to-day build/test/run commands only.
 
-Currently **Phase 1**: the host-side C++20 algorithmic core (Provider → Filter → Feature → Classifier), validated for `malloc_count == 0` and sub-microsecond per-sample latency. No MuJoCo (Phase 2) or STM32 (Phase 3/4) code exists yet by design — see PRD §6 for the quality-gate discipline.
+**Phase 1** (host-side C++20 algorithmic core) is done — validated for `malloc_count == 0` and sub-microsecond per-sample latency. Currently in **Phase 1.5**: a scoped feasibility spike putting the same engine on real STM32F401 hardware before committing to full Phase 3. No MuJoCo (Phase 2) code exists yet — see PRD §6 for the quality-gate discipline and Phase 1.5's rationale.
 
 ## Layout
 
 ```
-include/edgeneuro/   Header-only engine: concepts, ring buffer, filters, features, classifiers, providers, pipeline
+include/edgeneuro/   Header-only engine: concepts, ring buffer, filters, features, classifiers, providers, pipeline, bump allocator
 src/                 no_heap_guard.cpp (allocation counter) + main.cpp (terminal demo) + gui_demo.cpp (ImGui/ImPlot demo)
 tests/               Catch2 unit + integration tests
 benchmarks/          Google Benchmark suite (<1,6> wearable fusion, <32,0> HD-sEMG stress)
 data/                Synthetic CSV fixtures (not real Ninapro data — see tools/generate_sample_data.py)
+firmware/            Phase 1.5: STM32F401 feasibility spike (bare CMake + arm-none-eabi-gcc) — see firmware/README.md
 ```
 
 ## Build

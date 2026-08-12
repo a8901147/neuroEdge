@@ -56,21 +56,30 @@ Each stage is a C++20 concept, resolved at compile time. The value type (`float`
 
 | Check | Tool | Pass criterion |
 | --- | --- | --- |
-| **Unit tests** | `Catch2` + `llvm-cov` | Over 90 % coverage of the core math and concept interfaces. **Measured:** 31 test cases over `include/edgeneuro/`; line 95.38 %, branch 90.00 %. The uncovered lines are the `bad_alloc` path, an unused sized-delete overload, and the `NoHeapGuard` abort path, which `test_no_heap_guard.cpp` checks in a forked child. Measuring coverage found a real bug: `CsvSignalProvider` silently truncated rows with extra columns; fixed and tested. |
+| **Unit tests** | `Catch2` + `llvm-cov` | Over 90 % coverage of the core math and concept interfaces. **Measured:** 38 test cases over `include/edgeneuro/`; line 95.69 %, branch 90.32 % (re-measured 2026-08-12 with `bump_allocator.hpp`, 100 % covered). The uncovered lines are the `bad_alloc` path, an unused sized-delete overload, and the `NoHeapGuard` abort path, which `test_no_heap_guard.cpp` checks in a forked child. Measuring coverage found two real bugs: `CsvSignalProvider` silently truncated rows with extra columns, and the firmware's bump allocator returned unaligned memory and threw where no unwind tables exist. Both fixed and tested. |
 | **No allocation, no undefined behaviour** | Sanitizers + `NoHeapGuard` | ASan, UBSan and TSan, plus a test that `malloc_count == 0` in the loop. ASan and TSan cannot share a binary and the allocation hook conflicts with them, so each runs from its own CMake preset (`debug-heapguard`, `sanitize-asan-ubsan`, `sanitize-tsan`, `release-bench`). |
 | **Latency** | `Google Benchmark` | `<1, 6>` and `<32, 0>`: under 0.1 ms per sample with 32 channels, `malloc_count == 0`. |
 
 ## 6. Roadmap
 
-The engine is built and verified on the PC first; MuJoCo simulation and the move to embedded hardware follow once it passes its tests.
+The engine is built and verified on the PC first. Phase 1 passed its checks (zero allocation, latency, sanitizers) in August 2026.
+
+**Revised order (August 2026):** `malloc_count == 0` on the host does not show that the STM32F401 build allocates nothing, fits in its SRAM, or gets a usable EMG signal; MuJoCo cannot answer those questions. A short hardware feasibility check (Phase 1.5) therefore comes before the MuJoCo work.
 
 ```
 +-----------------------------------------------------------------------------------+
-| Phase 1: engine on the PC                                                        |
+| Phase 1: engine on the PC (done)                                                 |
 | C++20 concepts, lock-free ring buffer, zero allocation                           |
 +-----------------------------------------------------------------------------------+
                                         |
-                         tests pass before moving on
+                         Phase 1 verified
+                                        v
++-----------------------------------------------------------------------------------+
+| Phase 1.5: hardware feasibility check (current)                                  |
+| Zero allocation, memory footprint and EMG quality on the target; no actuation    |
++-----------------------------------------------------------------------------------+
+                                        |
+                         its results set the priorities of Phase 2 and Phase 3
                                         v
 +-----------------------------------------------------------------------------------+
 | Phase 2: MuJoCo simulation                                                       |
@@ -88,27 +97,59 @@ The engine is built and verified on the PC first; MuJoCo simulation and the move
 ### Stage 1: Host-side engine and MuJoCo simulation (no hardware)
 No hardware is needed: the engine, the tests and the simulation all run on a PC.
 
-* **Phase 1: engine (C++20, PC) — in progress**
+* **Phase 1: engine (C++20, PC) — done (results in §5)**
   * C++20 concepts for `SignalProvider`, `Filter`, `Feature`, `Classifier`, and a `ValueType` parameter.
   * A lock-free ring buffer on `std::array`.
-  * `CsvSignalProvider` streams recorded data as if it came from a sensor.
-  * `Catch2` tests; ASan, UBSan, TSan and `NoHeapGuard` (`malloc_count == 0`); `Google Benchmark` for latency under 1 ms.
+  * `CsvSignalProvider` streams recorded data as if it came from a sensor; checked with the EMG-EPN-612 recordings.
+  * `Catch2` tests; ASan, UBSan, TSan and `NoHeapGuard` (`malloc_count == 0`); `Google Benchmark`: 7.10 ns per tick for `<1,6>`, 38.9 ns for `<32,0>`. All four presets pass; line coverage 95.38 %.
   * A terminal view (`src/main.cpp`) and an ImGui + ImPlot window (`src/gui_demo.cpp`) show the signals and the allocation count.
 
-* **Phase 2: MuJoCo simulation — after Phase 1**
+* **Phase 1.5: hardware feasibility check — current**
+  * Target: **STM32F401RCT6 Black Pill** (Cortex-M4F, 256 KB Flash, 64 KB SRAM, single-precision FPU, matching `ValueType = float`) and one **MyoWare 2.0** (one channel, open/close only).
+  * Deliberately narrow (no IMU, PWM or closed loop yet). It answers four questions:
+    1. Does `NoHeapGuard` still see `malloc_count == 0` when the core is built with `arm-none-eabi-gcc` and run on the board?
+    2. Does the pipeline fit in 64 KB SRAM / 256 KB Flash (`arm-none-eabi-size`)?
+    3. Can a timer-triggered ADC sample steadily at 1 kHz?
+    4. Is the MyoWare signal on a real forearm good enough for a reliable open/close decision?
+  * Toolchain: plain CMake + `arm-none-eabi-gcc` in `firmware/`, no STM32CubeIDE. Diagnostics through the LED and UART.
+
+  * **Hardware on hand (2026-08-11):** the Black Pill and one MyoWare 2.0. Ordered: an ST-Link V2 and a USB-serial adapter. Servos, MPU6050s and the arm come with Phase 3.
+
+  * **Firmware (`firmware/`):**
+    - `cmake/arm-none-eabi-toolchain.cmake`: Cortex-M4F flags (`-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard`).
+    - `linker/STM32F401RCTx_FLASH.ld`: Flash starts at **`0x08004000`**, 240 KB; RAM 64 KB at `0x20000000`. The board ships with the WeAct HID bootloader in the first 16 KB, which an app at `0x08000000` would overwrite.
+    - `src/startup.c`: a hand-written vector table and `Reset_Handler` (`.data`/`.bss` set-up, exceptions to `Default_Handler`). It also points `SCB->VTOR` at the app's vector table, which interrupts will need.
+    - `src/main.c`: blink on PC13 (active low) at the default 16 MHz HSI.
+    - `src/footprint_check_main.cpp`: builds a real `EdgeNeuro<1,6,...>` from the unmodified `include/edgeneuro/` headers with a stub provider, to measure Flash and SRAM.
+    - `CMakeLists.txt`: fetches `cmsis_device_f4` (v2.6.9) and `cmsis-core` (v5.9.0) for the register headers.
+
+  * **Toolchain notes:**
+    1. Homebrew's `arm-none-eabi-gcc` has no newlib, so `<stdint.h>` fails. Arm's own release (15.2.rel1) includes it; it is unpacked into `~/.local/arm-toolchain`, which `firmware/cmake/arm-none-eabi-toolchain.cmake` points at.
+    2. In boot mode the board enumerates as the WeAct HID bootloader (VID `0x0483`, PID `0x572A`), not as standard DFU, so `dfu-util` does not apply.
+    3. The WeAct `hid-flash` tool does not work on Apple Silicon (`hid_enumerate()` returns empty device paths). Flashing goes through an ST-Link and OpenOCD instead.
+
+  * **Stages 0–2 compile (2026-08-12); not yet flashed:**
+    - **Stage 0 (blink):** `text=212 bytes`. The toolchain compiles and links.
+    - **Stage 1 (footprint):** the unmodified `include/edgeneuro/` headers build a real `EdgeNeuro<1,6,50,...>` for the STM32F401: `text=932 bytes, data=0, bss=0`, 0.38 % of the Flash.
+    - **Stage 2 (`NoHeapGuard` on the target):** `no_heap_guard.hpp` is reused unchanged; `firmware/src/no_heap_guard_target.cpp` replaces `operator new`/`delete`, and a violation blinks the LED fast. `heap_guard_check_main.cpp` runs 100,000 `tick()` calls under the guard: LED solid = pass. `text=844 bytes, bss=8`.
+    - **Flashing:** `firmware/openocd.cfg` (ST-Link, `stm32f4x`, 1 MHz). Every target gets a `flash_<name>` CMake target that programs it at `0x08004000`, leaving the bootloader in sector 0 untouched.
+
+  * **Next:** flash `blink`, then `heap_guard_check` (LED solid = question 1 answered); then, with the USB-serial adapter, the ADC timing and the MyoWare signal (questions 3 and 4).
+
+* **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.
   * A bridge that maps the engine's output to a simulated hand (for example the Shadow Hand).
 
 ---
 
 ### Stage 2: Target-side embedded deployment and actuation (hardware)
-After the engine and the simulation are verified, the firmware moves onto a microcontroller with real sensors.
+Once Phase 1.5 answers its four questions, its results set how much goes into MuJoCo and how much into the full hardware build.
 
 * **Phase 3: hardware abstraction (STM32 / sensor stream)**
-  * ARM GCC toolchain; ADC for the MyoWare EMG and I2C for the MPU6050.
+  * CMake + `arm-none-eabi-gcc` (the `firmware/` project): ADC for the **MyoWare 2.0** and I2C for the MPU6050.
   * A `Stm32AdcProvider` in place of `CsvSignalProvider` (timer-driven sampling).
   * The verified C++ core and ring buffer compile for the MCU unchanged.
-  * **Hardware in the loop:** the STM32 streams its decoded output over serial to the MuJoCo model on the PC.
+  * **Hardware in the loop:** the **STM32F401RCT6 Black Pill** streams its decoded output over serial to the MuJoCo model on the PC.
 
 * **Phase 4: closed-loop actuation**
   * Timer PWM drives servos.
