@@ -142,6 +142,16 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
 
   * **下一步（依序）**：(1) 燒錄階段 1(`flash_footprint_check`)做完整實測收尾(目前只差這個沒實際燒過，非必要但補齊一致性)，(2) 待 USB-TTL 模組到貨後才能進行未知數 3、4（ADC 時序、MyoWare 真實訊號）——這兩步的韌體程式碼（Timer/ADC/DMA 設定、UART 驅動）尚未開始寫，等前面兩步實測過關後再寫較合理（避免在還沒驗證基礎假設前，疊加更多更未驗證的程式碼）。
 
+  * **階段 3a：USART2 UART 輸出，已在真實硬體上實測通過（2026-08-15，USB-TTL 到貨）**——未知數 3（1kHz 取樣）跟未知數 4（MyoWare 真實訊號）都需要先有能運作的 UART 才能把讀到的數值印出來診斷，所以拆出這個更小的子階段先單獨驗證，不跟 Timer/ADC 混在一起。
+    - **暫存器值查證過程**：先前 Stage 3 的 ADC/Timer 草稿曾因為暫存器值未查證被打回票（見「已踩過的坑」），這次改成先下載 ST 官方 RM0368 參考手冊（Rev 5，847 頁）與 STM32F401CCU6 官方 datasheet（DocID024738，來源是 WeAct 官方 GitHub repo，跟板子本身同一份），用 `pypdf` 定位到確切頁數逐頁讀取確認，而非憑記憶或猜測：
+      - PA2/PA3 = AF7（USART2_TX/USART2_RX）：datasheet Table 9「Alternate function mapping」逐格確認，不是憑通用 STM32 知識假設。
+      - `RCC_AHB1ENR` bit 0 = `GPIOAEN`、`RCC_APB1ENR` bit 17 = `USART2EN`：RM0368 §6.3.9/§6.3.11 暫存器圖直接讀值。
+      - `USART_CR1`（`UE`=bit13、`M`=bit12、`TE`=bit3、`OVER8`=bit15）、`USART_SR`（`TXE`=bit7）、`USART_BRR`（`DIV_Mantissa`=bits[15:4]、`DIV_Fraction`=bits[3:0]）：RM0368 §19.6 USART 暫存器章節逐一確認。
+      - 鮑率公式（`USARTDIV = f_CK / (16 × baud)`，OVER8=0 時）：RM0368 §19.3.4 Equation 1，套 16MHz HSI（預設未校準時脈）算 9600 baud → `DIV_Mantissa=104(0x68)`、`DIV_Fraction=3` → `BRR=0x0683`，理論誤差 0.02%。刻意選 9600（不選更高鮑率）+ oversampling by 16（不選 by 8）：兩者都是「在沒有精確外部石英振盪器、只有內部 HSI 的情況下，增加對時脈誤差的容忍度」的保守選擇，RM0368 §19.3.3 明確建議 oversampling by 16 容忍度較高。
+      - 所有暫存器欄位巨集名稱（`RCC_AHB1ENR_GPIOAEN`、`USART_CR1_UE` 等）額外用 `grep` 對照過 FetchContent 抓下來、Stage 0/1/2 建置時就已實際使用的同一份 CMSIS 標頭檔（`stm32f401xc.h`），確認巨集真的存在、不是編出來的名字。
+    - **新增 `firmware/src/uart_hello_main.c`**：初始化 USART2、每秒輪詢送出一行固定文字，LED 同步閃爍（跟 UART 收發無關，是獨立的「韌體本身有沒有在跑」診斷訊號，方便把「韌體邏輯錯誤」跟「實體接線錯誤」這兩種可能性分開判斷）。`firmware/CMakeLists.txt` 新增 `uart_hello` target。
+    - **實測結果**：燒錄成功，PC13 LED 正常閃爍（證實韌體有在跑）。用 `pyserial`（非互動式，可截取到檔案比對，比 `screen` 更適合自動化驗證）連接 `/dev/tty.usbserial-0001` @ 9600 baud，**收到乾淨、無亂碼、重複出現的 `"EdgeNeuro Stage 3a: UART alive"` 字串**——證實查證過的暫存器值、鮑率計算、`PA2`/`PA3` 接線全部正確。未知數 3 的 UART 診斷通道就緒；Timer/ADC 1kHz 取樣本身仍待實作與驗證。
+
   * **與硬體並行、不受 ST-Link/USB-TTL 到貨阻塞的演算法工作**：義肢動作是否流暢，除了「target 上 zero alloc」這個底層保證外，還取決於姿態融合演算法與指令平滑化——這兩塊是純數學邏輯，跟暫存器層級的韌體工作性質不同（不受「未驗證暫存器程式碼不能寫」這條限制約束），可以在等硬體的期間用 Host 端 Catch2 完全驗證：
     - **`include/edgeneuro/fusion/complementary_filter.hpp`（已完成，且已對照真實硬體資料驗證）**：`ComplementaryFilter<ValueType>` 融合陀螺儀（短期準確、長期會飄移）與加速度計（單次雜訊大、長期平均準確，本質是量測重力向量）估計 roll/pitch。刻意**不符合** `concepts.hpp` 的 `Filter` concept（那個 concept 是單通道 `process(value)->value`，姿態融合本質跨通道，需要同時吃 accel x/y/z + gyro rate + dt），所以目前是獨立元件，尚未接入 `EdgeNeuro` pipeline 的 `ImuFilterT` 插槽——那是之後的整合工作。只輸出 roll/pitch，**不做 yaw**（沒有磁力計，MPU6050 本身也量不到絕對朝向，硬做只會無界飄移，這點在買 GY-521/MPU6050 模組時已經確認過）。額外提供 `initialize(accel_x,accel_y,accel_z)`：直接把 roll/pitch 種到加速度計算出的角度，跳過從 0 開始收斂的暫態——這是拿真實資料測試時發現的真實問題（見下段），不是憑空加的功能。
       - `tests/test_complementary_filter.cpp`（7 個 test case）先**只用已知物理量驗證**（單位向量、已知角速度積分），刻意不直接拿 EMG-EPN-612 的 IMU 欄位當正確答案比對——因為一開始不確定那批資料的陀螺儀單位（deg/s 還是 rad/s）、加速度計單位是否已經是物理單位，硬拿來比對等於重蹈 EMG-EPN-612 schema 那次「先猜再拿真實資料修正」的教訓。

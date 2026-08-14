@@ -19,6 +19,7 @@ src/main.c                            階段 0:LED 閃爍
 src/footprint_check_main.cpp          階段 1:真正的 include/edgeneuro/* 為這個目標平台編譯
 src/no_heap_guard_target.cpp          階段 2:裸機版 NoHeapGuard(違規反應是 LED 燈號,不是 abort())
 src/heap_guard_check_main.cpp         階段 2:跑武裝過的 tick() 迴圈,用 LED 回報過/不過
+src/uart_hello_main.c                 階段 3a:USART2 輪詢送出文字(PA2/PA3),獨立於 Timer/ADC 先驗證 UART 本身
 ```
 
 ## 工具鏈設定(僅需一次)
@@ -39,7 +40,7 @@ brew install dfu-util openocd
 
 ```sh
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-toolchain.cmake
-cmake --build build --target blink footprint_check heap_guard_check -j
+cmake --build build --target blink footprint_check heap_guard_check uart_hello -j
 ```
 
 每個目標編譯完都會(透過 `objcopy`)產生對應的 `.bin`,並在每次編譯時印出 `arm-none-eabi-size` 的輸出——Flash/SRAM 用量不需要另外量測就看得到。
@@ -50,6 +51,7 @@ cmake --build build --target blink footprint_check heap_guard_check -j
 cmake --build build --target flash_blink            # 燒完看板子上的 LED 是否慢速閃爍(~1Hz)
 cmake --build build --target flash_footprint_check   # 只證明不會當機，目前還沒有過/不過的燈號
 cmake --build build --target flash_heap_guard_check  # LED 恆亮 = 過，快閃 = 偵測到 malloc_count 違規
+cmake --build build --target flash_uart_hello        # 接上 USB-TTL 後，@ 9600 baud 應該每秒收到一行文字
 ```
 
 每個 `flash_<name>` target 執行的是 `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`——只會寫入 Sector 1 以後的區域，不會動到 bootloader 所在的 Sector 0。
@@ -95,6 +97,30 @@ OpenOCD 的成功訊號跟步驟 2 一樣。接著再看一次 LED：
 
 **這片板子的實測結果**：兩個階段都是第一次燒錄就通過——階段 0 慢速閃爍、階段 2 恆亮。這解決了什麼(未知數 1、2)、還剩什麼沒解決(未知數 3 Timer/ADC 時序、未知數 4 真實 MyoWare 訊號品質——這兩項都卡在需要 USB-TTL 轉接器做 UART 診斷)，詳見 PRD.md 的 Phase 1.5 章節。
 
+**4. USB-TTL 到貨後，燒錄階段 3a(`uart_hello`)並實際監聽序列埠：**
+
+```sh
+cmake --build build --target flash_uart_hello
+```
+
+暫存器值(`PA2`/`PA3` 的 AF7、`USART_CR1`/`USART_SR`/`USART_BRR` 各欄位、鮑率換算)全部先對照 ST 官方 RM0368 參考手冊跟 STM32F401CCU6 datasheet 查證過才寫，不是猜的——這是先前「未驗證暫存器程式碼不能寫」規則生效後，第一次真正把 Timer/ADC 之外的周邊(USART)也走完「查證→實作→實測」全流程。
+
+燒完用序列埠工具監聽(鮑率 9600,8N1)：
+
+```sh
+python3 -c "
+import serial, time
+ser = serial.Serial('/dev/tty.usbserial-0001', 9600, timeout=1)
+time.sleep(0.5)
+for _ in range(5):
+    print(ser.readline())
+"
+```
+
+（`screen`/`stty`+`cat` 這類互動式工具在 macOS 上有時抓不到輸出，`pyserial` 比較穩定，建議優先用這個方式驗證。）
+
+**實測結果**：LED 正常閃爍(證實韌體有在跑，跟 UART 收發是獨立的診斷訊號)，序列埠收到乾淨、無亂碼、重複出現的 `"EdgeNeuro Stage 3a: UART alive"` 字串——接線、暫存器設定、鮑率計算全部驗證正確。
+
 ## MyoWare 2.0 接線(給階段 4，等 ST-Link + USB-TTL 都到貨後用)
 
 出自 SparkFun 官方 MyoWare 2.0 文件：
@@ -110,7 +136,20 @@ OpenOCD 的成功訊號跟步驟 2 一樣。接著再看一次 LED：
 - **END** —— 靠近手腕，同一條肌肉
 - **REF** —— 骨頭上/中性位置(例如手肘)——SparkFun 特別提醒 REF 接觸不良會降低訊號品質
 
+## USB-TTL 接線(階段 3/4 診斷用 UART)
+
+腳位選 **USART2**(`PA2`=TX、`PA3`=RX)——這不是猜的，是這片板子(WeAct Black Pill)在 Zephyr 官方 board 文件裡被指定為這片板子的標準 debug console UART(`STDIO_UART_TX`=PA2、`STDIO_UART_RX`=PA3)，且已確認跟目前用到的其他腳位不衝突：`PC13`=LED、`BOOT0`=開機模式按鈕(不是一般 GPIO，跟 UART 無關)、`PA13`/`PA14`=SWD(ST-Link 用)、`PA0`=MyoWare ADC。
+
+| USB-TTL 接腳 | 接到 | 備註 |
+| --- | --- | --- |
+| `GND` | STM32 GND | 共地。 |
+| `TXD` | STM32 `PA3`(USART2_RX) | 交叉接——轉接器的 TX 接到 MCU 的 RX。 |
+| `RXD` | STM32 `PA2`(USART2_TX) | 交叉接——轉接器的 RX 接到 MCU 的 TX。 |
+| `VCC`(3V3/5V) | **不要接** | 板子目前已經有電源(USB 或 ST-Link 供電)，USB-TTL 的 VCC 如果同時接上會變成兩個電源同時驅動 3.3V 軌，有把其中一顆穩壓晶片燒壞的風險。只接 GND + TXD + RXD 三條線就好。 |
+
+板子插上後，Mac 端可以先確認有正確列舉出序列埠(`ls /dev/tty.usbserial-*` 或 `ls /dev/tty.SLAB_USBtoUART*`，依轉接器晶片而定)，這一步不需要 STM32 這邊已經有任何 UART 韌體，純粹確認轉接器本身有被系統認出來。
+
 ## 已知問題
 
 - **WeAct 官方的 HID bootloader 燒錄工具在這台 Apple Silicon Mac 上不能用**——追查到根因是 `hid_enumerate()` 回傳空的裝置路徑(這支 2019 年工具跟現今 IOKit 有深層相容性問題，不值得繼續修)。改用 ST-Link + OpenOCD 燒錄；完整調查過程見 PRD.md 的 Phase 1.5 章節。
-- 階段 3(1kHz 取樣)所需的 Timer/ADC/DMA 韌體，以及階段 3/4 診斷用的 UART 驅動，**都還沒開始寫**——刻意延後，要等真實的暫存器層級數值(timer 預除頻器、ADC 觸發來源編碼、USART 鮑率設定)能對照 RM0368 查證過，或是能在硬體上實測驗證，而不是先寫出「盡力猜測」的版本。
+- 階段 3(1kHz 取樣)所需的 Timer/ADC/DMA 韌體**還沒開始寫**——診斷用的 UART 驅動已經查證、實作、實測通過(見上方階段 3a)，但 Timer 預除頻器、ADC 觸發來源編碼這些還沒對照 RM0368 查證過，刻意延後到查證完成或能在硬體上實測驗證，而不是先寫出「盡力猜測」的版本。
