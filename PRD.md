@@ -56,7 +56,7 @@ Each stage is a C++20 concept, resolved at compile time. The value type (`float`
 
 | Check | Tool | Pass criterion |
 | --- | --- | --- |
-| **Unit tests** | `Catch2` + `llvm-cov` | Over 90 % coverage of the core math and concept interfaces. **Measured:** 38 test cases over `include/edgeneuro/`; line 95.69 %, branch 90.32 % (re-measured 2026-08-12 with `bump_allocator.hpp`, 100 % covered). The uncovered lines are the `bad_alloc` path, an unused sized-delete overload, and the `NoHeapGuard` abort path, which `test_no_heap_guard.cpp` checks in a forked child. Measuring coverage found two real bugs: `CsvSignalProvider` silently truncated rows with extra columns, and the firmware's bump allocator returned unaligned memory and threw where no unwind tables exist. Both fixed and tested. |
+| **Unit tests** | `Catch2` + `llvm-cov` | Over 90 % coverage of the core math and concept interfaces. **Measured:** 46 test cases over `include/edgeneuro/`; line 95.56 %, branch 90.32 % (re-measured 2026-08-12 with `fusion/complementary_filter.hpp`, 100 % covered by 7 new test cases, one of them on real EMG-EPN-612 data). The uncovered lines are the `bad_alloc` path, an unused sized-delete overload, and the `NoHeapGuard` abort path, which `test_no_heap_guard.cpp` checks in a forked child. Measuring coverage found two real bugs: `CsvSignalProvider` silently truncated rows with extra columns, and the firmware's bump allocator returned unaligned memory and threw where no unwind tables exist. Both fixed and tested. |
 | **No allocation, no undefined behaviour** | Sanitizers + `NoHeapGuard` | ASan, UBSan and TSan, plus a test that `malloc_count == 0` in the loop. ASan and TSan cannot share a binary and the allocation hook conflicts with them, so each runs from its own CMake preset (`debug-heapguard`, `sanitize-asan-ubsan`, `sanitize-tsan`, `release-bench`). |
 | **Latency** | `Google Benchmark` | `<1, 6>` and `<32, 0>`: under 0.1 ms per sample with 32 channels, `malloc_count == 0`. |
 
@@ -107,10 +107,10 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
 * **Phase 1.5: hardware feasibility check — current**
   * Target: **STM32F401RCT6 Black Pill** (Cortex-M4F, 256 KB Flash, 64 KB SRAM, single-precision FPU, matching `ValueType = float`) and one **MyoWare 2.0** (one channel, open/close only).
   * Deliberately narrow (no IMU, PWM or closed loop yet). It answers four questions:
-    1. Does `NoHeapGuard` still see `malloc_count == 0` when the core is built with `arm-none-eabi-gcc` and run on the board?
-    2. Does the pipeline fit in 64 KB SRAM / 256 KB Flash (`arm-none-eabi-size`)?
-    3. Can a timer-triggered ADC sample steadily at 1 kHz?
-    4. Is the MyoWare signal on a real forearm good enough for a reliable open/close decision?
+    1. ✅ `NoHeapGuard` sees `malloc_count == 0` on the board with the `arm-none-eabi-gcc` build. **Passed on the STM32F401, 2026-08-14** (Stage 2 below).
+    2. ✅ The pipeline fits in 64 KB SRAM / 256 KB Flash (`arm-none-eabi-size`), with a wide margin.
+    3. Can a timer-triggered ADC sample steadily at 1 kHz? **Open** (needs the USB-serial adapter).
+    4. Is the MyoWare signal on a real forearm good enough for a reliable open/close decision? **Open** (needs the USB-serial adapter).
   * Toolchain: plain CMake + `arm-none-eabi-gcc` in `firmware/`, no STM32CubeIDE. Diagnostics through the LED and UART.
 
   * **Hardware on hand (2026-08-11):** the Black Pill and one MyoWare 2.0. Ordered: an ST-Link V2 and a USB-serial adapter. Servos, MPU6050s and the arm come with Phase 3.
@@ -128,13 +128,33 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     2. In boot mode the board enumerates as the WeAct HID bootloader (VID `0x0483`, PID `0x572A`), not as standard DFU, so `dfu-util` does not apply.
     3. The WeAct `hid-flash` tool does not work on Apple Silicon (`hid_enumerate()` returns empty device paths). Flashing goes through an ST-Link and OpenOCD instead.
 
-  * **Stages 0–2 compile (2026-08-12); not yet flashed:**
-    - **Stage 0 (blink):** `text=212 bytes`. The toolchain compiles and links.
-    - **Stage 1 (footprint):** the unmodified `include/edgeneuro/` headers build a real `EdgeNeuro<1,6,50,...>` for the STM32F401: `text=932 bytes, data=0, bss=0`, 0.38 % of the Flash.
-    - **Stage 2 (`NoHeapGuard` on the target):** `no_heap_guard.hpp` is reused unchanged; `firmware/src/no_heap_guard_target.cpp` replaces `operator new`/`delete`, and a violation blinks the LED fast. `heap_guard_check_main.cpp` runs 100,000 `tick()` calls under the guard: LED solid = pass. `text=844 bytes, bss=8`.
-    - **Flashing:** `firmware/openocd.cfg` (ST-Link, `stm32f4x`, 1 MHz). Every target gets a `flash_<name>` CMake target that programs it at `0x08004000`, leaving the bootloader in sector 0 untouched.
+  * **Stages 0 and 2 pass on the board (2026-08-14, flashed over ST-Link):**
+    - **SWD link:** OpenOCD finds the ST-Link V2, 3.28 V target voltage and a Cortex-M4 r0p1.
+    - **Stage 0 (blink):** `flash_blink` programs and verifies (device id `0x00016423`, 256 KiB); the PC13 LED blinks at ~1 Hz.
+    - **Stage 2 (`NoHeapGuard`):** after `flash_heap_guard_check` the LED stays solid: 100,000 guarded `tick()` calls with `malloc_count == 0` on the ARM build. Question 1 answered.
+    - Question 2 (footprint): `text=932 bytes` for Stage 1 and `text=844 bytes` for Stage 2, far below the limits.
+    - **Stage 1 (footprint_check):** the unmodified `include/edgeneuro/` headers build a real `EdgeNeuro<1,6,50,...>` for the STM32F401: `text=932 bytes, data=0, bss=0`. Built, not yet flashed.
+    - **Flashing:** `firmware/openocd.cfg` (ST-Link, `stm32f4x`, 1 MHz); each `flash_<name>` target programs at `0x08004000`, leaving the bootloader in sector 0 untouched.
 
-  * **Next:** flash `blink`, then `heap_guard_check` (LED solid = question 1 answered); then, with the USB-serial adapter, the ADC timing and the MyoWare signal (questions 3 and 4).
+  * **Next:** the USB-serial adapter, then questions 3 and 4 (ADC timing, MyoWare signal).
+
+  * **Stage 3a: USART2 output, passes on the board (2026-08-15).** Questions 3 and 4 both need UART output, so UART is verified on its own first.
+    - Register values checked in RM0368 (Rev 5) and the STM32F401 datasheet:
+      - PA2/PA3 = AF7 (USART2 TX/RX), datasheet Table 9.
+      - `RCC_AHB1ENR.GPIOAEN` (bit 0), `RCC_APB1ENR.USART2EN` (bit 17): RM0368 §6.3.9, §6.3.11.
+      - `USART_CR1`, `USART_SR`, `USART_BRR` fields: RM0368 §19.6.
+      - Baud rate (RM0368 §19.3.4, OVER8 = 0): 16 MHz HSI, 9600 baud → `BRR=0x0683` (0.02 % error). 9600 baud and 16× oversampling tolerate the uncalibrated HSI best.
+      - Every register macro name was checked against the CMSIS header (`stm32f401xc.h`).
+    - **`firmware/src/uart_hello_main.c`:** sends one line per second and blinks the LED, so a wiring fault can be told apart from a firmware fault.
+    - **Result:** clean, repeated `"EdgeNeuro Stage 3a: UART alive"` at 9600 baud: register values, baud rate and wiring are right.
+
+  * **Host-side work while waiting for hardware:** orientation fusion and command smoothing are plain math, fully testable on the host with Catch2:
+    - **`include/edgeneuro/fusion/complementary_filter.hpp` (done, checked on real data):** `ComplementaryFilter<ValueType>` fuses gyroscope and accelerometer into roll and pitch (no yaw: there is no magnetometer). It is not a `Filter` (that concept is single-channel) and is not yet part of the pipeline. `initialize(ax, ay, az)` starts from the accelerometer angle instead of converging from zero.
+      - `tests/test_complementary_filter.cpp` (7 test cases) checks known physical inputs first (unit vectors, integrated known rates).
+      - Units: the Myo protocol header (`myohw.h`) gives accelerometer in g, gyroscope in deg/s and a normalized quaternion; the data confirm it (|a| ≈ 1.03 g at rest, unit quaternions, single-digit gyro values).
+      - `tests/test_complementary_filter_real_data.cpp` runs the filter on a still EMG-EPN-612 recording (992 rows) and compares with the Myo's own quaternion: 1.4e-4 rad (roll) and 2.8e-4 rad (pitch) apart, well within the 0.01 rad tolerance.
+    - **Command smoothing (not started):** low-pass or interpolate the output so actuator setpoints do not jump.
+    - All 46 Catch2 test cases pass under `debug-heapguard`.
 
 * **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.

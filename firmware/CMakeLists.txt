@@ -76,3 +76,8 @@ firmware_add_target(heap_guard_check
     src/no_heap_guard_target.cpp
     src/heap_guard_check_main.cpp
 )
+
+# Stage 3a: USART2 polling transmit-only (PA2/PA3), isolated from Timer/ADC
+# -- proves the UART wiring + register config works on its own before
+# Timer+ADC 1kHz sampling (the rest of unknown #3) is added on top.
+firmware_add_target(uart_hello src/startup.c src/uart_hello_main.c)
