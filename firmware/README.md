@@ -1,29 +1,29 @@
 # firmware/
 
-Phase 1.5 feasibility spike: a scoped, deliberately small check that the Host-validated `include/edgeneuro/` engine actually works on the real STM32F401 target before committing to full Phase 3 (HAL layer, closed-loop actuation). See [PRD.md](../PRD.md) Phase 1.5 for the full rationale, the four unknowns this is answering, and a running log of what's been found so far — this file covers day-to-day build/flash commands and hardware wiring only.
+Phase 1.5 可行性驗證(feasibility spike):範圍刻意縮小的小型檢查,確認 Host 端已驗證的 `include/edgeneuro/` 引擎在真實 STM32F401 目標硬體上真的能跑,再決定要不要投入完整 Phase 3(HAL 層、閉環致動)。完整動機、這個階段要回答的四個未知數、以及目前為止的進度記錄請見 [PRD.md](../PRD.md) 的 Phase 1.5 章節——這份檔案只涵蓋日常的編譯/燒錄指令跟硬體接線。
 
-## Target hardware
+## 目標硬體
 
-- **MCU**: STM32F401RCT6 "Black Pill" — Cortex-M4F @ 84MHz (currently unconfigured; firmware runs on the default 16MHz HSI), 256KB Flash, 64KB SRAM.
-- **Bootloader**: this specific board ships pre-flashed with WeAct Studio's HID bootloader, occupying the first 16KB of Flash (`0x08000000`–`0x08003FFF`). Our application starts at `0x08004000` — see `linker/STM32F401RCTx_FLASH.ld`. **Do not change `FLASH ORIGIN` back to `0x08000000`** — that would overwrite the bootloader.
-- **EMG sensor**: MyoWare 2.0, 1 channel.
+- **MCU**:STM32F401RCT6「Black Pill」—— Cortex-M4F @ 84MHz(目前尚未設定時脈,韌體跑在預設的 16MHz HSI)、256KB Flash、64KB SRAM。
+- **Bootloader**:這片板子出廠已預燒 WeAct Studio 的 HID bootloader,佔用 Flash 開頭 16KB(`0x08000000`–`0x08003FFF`)。我們的應用程式從 `0x08004000` 開始——見 `linker/STM32F401RCTx_FLASH.ld`。**不要把 `FLASH ORIGIN` 改回 `0x08000000`**——那樣會覆蓋掉 bootloader。
+- **EMG 感測器**:MyoWare 2.0,1 通道。
 
-## Layout
+## 目錄結構
 
 ```
-cmake/arm-none-eabi-toolchain.cmake   Cortex-M4F cross-compilation toolchain file
-linker/STM32F401RCTx_FLASH.ld         Flash/RAM layout, application offset (0x08004000)
-openocd.cfg                           ST-Link + STM32F4 target config
-src/startup.c                         Hand-written vector table + Reset_Handler (no CMSIS startup file)
-src/main.c                            Stage 0: blink
-src/footprint_check_main.cpp          Stage 1: real include/edgeneuro/* compiled for this target
-src/no_heap_guard_target.cpp          Stage 2: bare-metal NoHeapGuard (LED violation signal, not abort())
-src/heap_guard_check_main.cpp         Stage 2: runs the armed tick() loop, reports pass/fail via LED
+cmake/arm-none-eabi-toolchain.cmake   Cortex-M4F 交叉編譯工具鏈設定檔
+linker/STM32F401RCTx_FLASH.ld         Flash/RAM 記憶體配置、應用程式起始位址(0x08004000)
+openocd.cfg                           ST-Link + STM32F4 目標晶片設定
+src/startup.c                         手寫 vector table + Reset_Handler(不用 CMSIS 官方 startup 檔)
+src/main.c                            階段 0:LED 閃爍
+src/footprint_check_main.cpp          階段 1:真正的 include/edgeneuro/* 為這個目標平台編譯
+src/no_heap_guard_target.cpp          階段 2:裸機版 NoHeapGuard(違規反應是 LED 燈號,不是 abort())
+src/heap_guard_check_main.cpp         階段 2:跑武裝過的 tick() 迴圈,用 LED 回報過/不過
 ```
 
-## Toolchain setup (one-time)
+## 工具鏈設定(僅需一次)
 
-The Homebrew `arm-none-eabi-gcc` formula ships the compiler only, without newlib (no `<stdint.h>` even). Use the official ARM GNU Toolchain tarball instead:
+Homebrew 的 `arm-none-eabi-gcc` formula 只有編譯器本體,不含 newlib(連 `<stdint.h>` 都沒有)。改用 ARM 官方的 GNU 工具鏈壓縮檔:
 
 ```sh
 curl -L -o /tmp/arm-gnu-toolchain.tar.xz \
@@ -33,45 +33,84 @@ tar -xJf /tmp/arm-gnu-toolchain.tar.xz -C ~/.local/arm-toolchain --strip-compone
 brew install dfu-util openocd
 ```
 
-`cmake/arm-none-eabi-toolchain.cmake` points at `~/.local/arm-toolchain` explicitly, not whatever's on `PATH`.
+`cmake/arm-none-eabi-toolchain.cmake` 明確指向 `~/.local/arm-toolchain`,不是看 `PATH` 上有什麼就用什麼。
 
-## Build
+## 編譯
 
 ```sh
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-toolchain.cmake
 cmake --build build --target blink footprint_check heap_guard_check -j
 ```
 
-Each target also produces a `.bin` (via `objcopy`) and prints `arm-none-eabi-size` output on every build — Flash/SRAM footprint is visible without a separate step.
+每個目標編譯完都會(透過 `objcopy`)產生對應的 `.bin`,並在每次編譯時印出 `arm-none-eabi-size` 的輸出——Flash/SRAM 用量不需要另外量測就看得到。
 
-## Flash (needs ST-Link connected via SWD)
+## 燒錄(需要 ST-Link 透過 SWD 連接)
 
 ```sh
-cmake --build build --target flash_blink            # then watch for a slow (~1Hz) LED blink
-cmake --build build --target flash_footprint_check   # proves it doesn't crash; no pass/fail signal yet
-cmake --build build --target flash_heap_guard_check  # LED solid ON = pass, fast blink = malloc_count violation
+cmake --build build --target flash_blink            # 燒完看板子上的 LED 是否慢速閃爍(~1Hz)
+cmake --build build --target flash_footprint_check   # 只證明不會當機，目前還沒有過/不過的燈號
+cmake --build build --target flash_heap_guard_check  # LED 恆亮 = 過，快閃 = 偵測到 malloc_count 違規
 ```
 
-Each `flash_<name>` target runs `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"` — writes only Sector 1 onward, leaving the bootloader (Sector 0) untouched.
+每個 `flash_<name>` target 執行的是 `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`——只會寫入 Sector 1 以後的區域，不會動到 bootloader 所在的 Sector 0。
 
-**Not yet tested against real hardware** — ST-Link is still in transit as of this writing. All three targets build and link cleanly; see PRD.md for current Flash/SRAM numbers per stage.
+## 已在真實硬體上驗證過(2026-08-14)
 
-## MyoWare 2.0 wiring (for Stage 4, once ST-Link + USB-TTL both arrive)
+ST-Link 到貨後，階段 0 + 階段 2 已經實際燒錄並在 STM32F401 板子上目視確認過，不只是編譯通過而已。以下是實際使用的驗證流程，依序執行——之後任何改動都可以重跑這個流程，確認「工具鏈→硬體」這條路徑還是通的。
 
-From SparkFun's official MyoWare 2.0 documentation:
+**1. 燒錄前先確認 ST-Link 跟目標晶片真的能連上：**
 
-| MyoWare pin | Connects to | Notes |
+```sh
+openocd -f openocd.cfg -c "init; reset halt; exit"
+```
+
+這一步是唯讀的——會讓 CPU 暫停，但不會寫入任何東西到 Flash。連線正常的話會印出類似這樣的內容：
+
+```
+Info : STLINK V2J37S7 (API v2) VID:PID 0483:3748
+Info : Target voltage: 3.276242
+Info : [stm32f4x.cpu] Cortex-M4 r0p1 processor detected
+[stm32f4x.cpu] halted due to debug-request, current mode: Thread
+```
+
+依序檢查：ST-Link 的 VID:PID 有被正確識別(轉接器本身沒問題)→ target voltage 是合理的 ~3.3V(SWD 接線的電源/接地有導通)→ 有偵測到 `Cortex-M4`(這真的是一顆 STM32F4 系列晶片在回應，不是接線巧合)。只要有一項對不上，就不要往下燒錄——先排查連線問題(通常是 SWDIO/SWCLK/GND 其中一條杜邦線鬆脫)。
+
+**2. 燒錄階段 0(`blink`)並目視確認：**
+
+```sh
+cmake --build build --target flash_blink
+```
+
+在 OpenOCD 輸出裡找 `** Programming Finished **` / `** Verify Started ** / ** Verified OK **`，以及 `Info : flash size = 256 KiB` 是否對得上這顆晶片實際的 Flash 容量(對不上的話代表 OpenOCD 選錯了目標晶片設定)。接著**看板子**：PC13 的 LED 應該以大約 1Hz 的頻率閃爍(~500ms 亮、~500ms 暗)。這是第一個「真的有東西在晶片上執行」的驗證點，不只是連結成功而已。
+
+**3. 燒錄階段 2(`heap_guard_check`)並目視確認——這是未知數 1 的測試(`malloc_count == 0` 在真實硬體上是否成立，而不只是 Host 端)：**
+
+```sh
+cmake --build build --target flash_heap_guard_check
+```
+
+OpenOCD 的成功訊號跟步驟 2 一樣。接著再看一次 LED：
+- **恆亮(不閃)** = 通過——10 萬次 `tick()` 全程武裝 `NoHeapGuard`，從未偵測到任何配置行為。
+- **快速閃爍** = 失敗——偵測到真實的配置行為；代表 Host 端驗證過的零配置保證在這個目標平台的實際 ARM GCC 編譯結果下不成立，需要進一步調查才能繼續信任這個保證。
+
+**這片板子的實測結果**：兩個階段都是第一次燒錄就通過——階段 0 慢速閃爍、階段 2 恆亮。這解決了什麼(未知數 1、2)、還剩什麼沒解決(未知數 3 Timer/ADC 時序、未知數 4 真實 MyoWare 訊號品質——這兩項都卡在需要 USB-TTL 轉接器做 UART 診斷)，詳見 PRD.md 的 Phase 1.5 章節。
+
+## MyoWare 2.0 接線(給階段 4，等 ST-Link + USB-TTL 都到貨後用)
+
+出自 SparkFun 官方 MyoWare 2.0 文件：
+
+| MyoWare 接腳 | 接到 | 備註 |
 | --- | --- | --- |
-| `VIN` | STM32 3.3V | Sensor accepts 2.27V–5.47V; using 3.3V means `ENV`'s 0–VIN output range lines up exactly with the STM32 ADC's 0–3.3V input range — no level shifting needed. |
-| `GND` | STM32 GND | Common ground, required regardless of the above. |
-| `ENV` | STM32 PA0 (`ADC1_IN0`) | Envelope-detected output — SparkFun's recommended pin for direct ADC input (vs. the raw/rectified test pads on the underside, meant for advanced custom post-processing). |
+| `VIN` | STM32 3.3V | 感測器可接受 2.27V–5.47V；用 3.3V 供電可以讓 `ENV` 的 0–VIN 輸出範圍剛好對上 STM32 ADC 的 0–3.3V 輸入範圍——不需要位準轉換。 |
+| `GND` | STM32 GND | 共地，無論如何都需要。 |
+| `ENV` | STM32 PA0(`ADC1_IN0`) | 包絡偵測後的輸出——SparkFun 建議直接接 ADC 輸入用這個接腳(相對於板子背面給進階自訂後處理用的原始/整流測試墊)。 |
 
-Electrode placement (bottom-side snap connectors, for forearm flexor / grasp detection):
-- **MID** — muscle belly (mid-forearm, volar/palm side)
-- **END** — toward the wrist, same muscle
-- **REF** — a bony/neutral site (e.g. elbow) — SparkFun specifically warns a poor REF contact degrades signal quality
+電極貼片位置(底面卡扣接頭，用於前臂屈肌/握拳偵測)：
+- **MID** —— 肌肉肌腹(前臂中段，掌側)
+- **END** —— 靠近手腕，同一條肌肉
+- **REF** —— 骨頭上/中性位置(例如手肘)——SparkFun 特別提醒 REF 接觸不良會降低訊號品質
 
-## Known issues
+## 已知問題
 
-- **WeAct's official HID-bootloader flashing tool doesn't work on this Apple Silicon Mac** — traced to `hid_enumerate()` returning an empty device path (deep IOKit compatibility issue with this 2019-era tool, not something worth patching further). Flashing goes through ST-Link + OpenOCD instead; see PRD.md Phase 1.5 for the full investigation.
-- Timer/ADC/DMA firmware for Stage 3 (1kHz sampling) and the UART driver needed for Stage 3/4 diagnostics are **not written yet** — deliberately deferred until real register-level values (timer prescalers, ADC trigger-source encoding, USART baud settings) can be checked against RM0368 or verified on hardware, rather than shipped as best-effort guesses.
+- **WeAct 官方的 HID bootloader 燒錄工具在這台 Apple Silicon Mac 上不能用**——追查到根因是 `hid_enumerate()` 回傳空的裝置路徑(這支 2019 年工具跟現今 IOKit 有深層相容性問題，不值得繼續修)。改用 ST-Link + OpenOCD 燒錄；完整調查過程見 PRD.md 的 Phase 1.5 章節。
+- 階段 3(1kHz 取樣)所需的 Timer/ADC/DMA 韌體，以及階段 3/4 診斷用的 UART 驅動，**都還沒開始寫**——刻意延後，要等真實的暫存器層級數值(timer 預除頻器、ADC 觸發來源編碼、USART 鮑率設定)能對照 RM0368 查證過，或是能在硬體上實測驗證，而不是先寫出「盡力猜測」的版本。

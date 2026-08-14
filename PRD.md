@@ -59,7 +59,7 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
 
 | 驗證項目 | 使用工具 | 通過標準 (Success Criteria) |
 | --- | --- | --- |
-| **單元測試與邊界檢查** | `Catch2` + `llvm-cov`（source-based coverage） | 核心數學、模組 Concept 介面測試覆蓋率 $> 90\%$。**已量測達成**：38 個 test case 涵蓋 `include/edgeneuro/` 全模組，line coverage 95.69%、region 95.24%、function 95.45%、branch 90.32%（排除第三方依賴與測試檔本身，2026-08-12 隨 `bump_allocator.hpp`（100% 覆蓋）加入後重新量測，較先前 95.38% 略升）。未覆蓋行集中於 `bad_alloc` 拋出路徑（刻意不測試，需真實記憶體耗盡）與標準要求的 sized-delete overload（此 ABI 下從未被選中呼叫），以及 `NoHeapGuard` 致命 abort 路徑本身——該路徑由 fork 出的子行程觸發 `SIGABRT`，子行程在覆蓋率計數器落盤前即被終止，屬量測工具限制而非測試缺口，其正確性改由 `test_no_heap_guard.cpp` 以 `WIFSIGNALED`/`WTERMSIG` 驗證。量測過程中亦揪出兩個真實邏輯漏洞：`CsvSignalProvider` 原本會靜默截斷欄位數過多的畸形資料列而非拒絕；`firmware/` 的 bump allocator 原本未對齊記憶體、且耗盡時會拋進沒有 unwind table 的環境。兩者皆已修正並補測試證實。 |
+| **單元測試與邊界檢查** | `Catch2` + `llvm-cov`（source-based coverage） | 核心數學、模組 Concept 介面測試覆蓋率 $> 90\%$。**已量測達成**：46 個 test case 涵蓋 `include/edgeneuro/` 全模組，line coverage 95.56%、region 95.56%、function 96.23%、branch 90.32%（排除第三方依賴與測試檔本身，2026-08-12 隨 `fusion/complementary_filter.hpp`（100% 覆蓋，7 個新 test case：6 個純物理量單元測試 + 1 個對照真實 EMG-EPN-612 資料的驗證）加入後重新量測）。未覆蓋行集中於 `bad_alloc` 拋出路徑（刻意不測試，需真實記憶體耗盡）與標準要求的 sized-delete overload（此 ABI 下從未被選中呼叫），以及 `NoHeapGuard` 致命 abort 路徑本身——該路徑由 fork 出的子行程觸發 `SIGABRT`，子行程在覆蓋率計數器落盤前即被終止，屬量測工具限制而非測試缺口，其正確性改由 `test_no_heap_guard.cpp` 以 `WIFSIGNALED`/`WTERMSIG` 驗證。量測過程中亦揪出兩個真實邏輯漏洞：`CsvSignalProvider` 原本會靜默截斷欄位數過多的畸形資料列而非拒絕；`firmware/` 的 bump allocator 原本未對齊記憶體、且耗盡時會拋進沒有 unwind table 的環境。兩者皆已修正並補測試證實。 |
 | **零記憶體與安全防護** | `Clang/GCC Sanitizers` + 自訂 `NoHeapGuard` | 利用 ASan / UBSan / TSan 消除所有未定義行為與並發競態，並透過單元測試攔截驗證 Hot Loop 期間 `malloc_count == 0`。由於 ASan 與 TSan 無法連結進同一 binary，且自訂 allocator 覆寫會與 Sanitizer 自身的記憶體攔截機制衝突，兩類驗證拆分為互斥的 CMake Presets（`debug-heapguard` / `sanitize-asan-ubsan` / `sanitize-tsan` / `release-bench`）獨立執行，各司其職。 |
 | **極限效能與擴充基準** | `Google Benchmark` | 同時檢測 `<1, 6>` 義肢融合模式與 `<32, 0>` 高密度壓測模式，驗證 32 通道連續運算延遲 $< 0.1\text{ ms}$ 且 `malloc_count == 0`。 |
 
@@ -110,10 +110,10 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
 * **Phase 1.5: 目標硬體可行性驗證 (Feasibility Spike) 🔥【當前主力目標】**
   * 確認目標硬體：**STM32F401RCT6 Black Pill 開發板**（Cortex-M4 @ 84MHz、256KB Flash、64KB SRAM、單精度硬體 FPU，與現行 `ValueType = float` 選型完全契合）+ **MyoWare 2.0**（1 顆，單通道，僅做開/合二元判斷）。
   * 刻意縮小範圍、不做完整 Phase 3：跳過 IMU/MPU6050 整合、PWM 致動、閉環控制、符合 `SignalProvider` concept 的完整 `Stm32AdcProvider`，只回答四個關鍵未知數：
-    1. Host 已驗證的 C++20 核心用 `arm-none-eabi-gcc` 編譯後，`NoHeapGuard` 在真實硬體上是否依然 `malloc_count == 0`。
-    2. 完整 pipeline 的靜態記憶體足跡（`arm-none-eabi-size` 量測）是否塞得進 64KB SRAM / 256KB Flash。
-    3. Timer + ADC 能否穩定達成 1kHz 取樣。
-    4. MyoWare 2.0 貼在真人前臂上的訊號品質，是否足夠支撐可靠的即時開/合判斷（唯一無法用合成資料或任何公開資料集回答的問題）。
+    1. ✅ Host 已驗證的 C++20 核心用 `arm-none-eabi-gcc` 編譯後，`NoHeapGuard` 在真實硬體上是否依然 `malloc_count == 0`。**已於 2026-08-14 在真實 STM32F401 上實測通過**（見下方階段 2 燒錄記錄）。
+    2. ✅ 完整 pipeline 的靜態記憶體足跡（`arm-none-eabi-size` 量測）是否塞得進 64KB SRAM / 256KB Flash。**已確認**——實測用量遠低於上限，且燒錄成功佐證量測準確。
+    3. Timer + ADC 能否穩定達成 1kHz 取樣。**尚待驗證**，等 USB-TTL 到貨。
+    4. MyoWare 2.0 貼在真人前臂上的訊號品質，是否足夠支撐可靠的即時開/合判斷（唯一無法用合成資料或任何公開資料集回答的問題）。**尚待驗證**，等 USB-TTL 到貨。
   * 建置工具鏈：裸 CMake + `arm-none-eabi-gcc`（延續 Host 端 CMake Presets 的風格，不引入 STM32CubeIDE），韌體專案位於 `firmware/`。透過 STM32F401 內建 USB DFU bootloader 燒錄，不強制要求 ST-Link；診斷手段以 LED 燈號與 UART/USB-CDC 輸出為主。
 
   * **硬體庫存狀態（2026-08-11）**：已有 STM32F401RCT6 Black Pill（已焊排針）、MyoWare 2.0 ×1。已下單但未到貨：ST-Link V2 相容品（蝦皮，約 NT$65）、CP2102 USB 轉 TTL 模組（樂意創客官方店，NT$85，附杜邦線，接腳 `3V3/TXD/RXD/GND/+5V`）。**避開 PL2303HXA 晶片款**（macOS 新版驅動不支援）。已有但目前用不到：MCP3008 SPI ADC、LM317 可調穩壓板、TXS0108E 邏輯電位轉換板、5V 繼電器模組（皆非本階段必需，未來若擴充或接馬達可能用得上）。伺服馬達、MPU6050、機械手掌結構件、獨立電源尚未購買，刻意留到 Phase 3 才處理。
@@ -131,16 +131,24 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
     2. **板子插上 Mac 後，Bash 工具確認可以偵測到真實 USB 裝置**（`system_profiler SPUSBDataType` 看得到）——這回答了先前「工具能不能操控實體硬體」的疑問。裝置進入 DFU 模式（按住 BOOT0 + 按 RST）後，`system_profiler` 顯示為 **"WeAct Studio HID Bootloader"（VID `0x0483` PID `0x572A`）**，不是標準 STM32 DFU class，`dfu-util` 對這片板子無效。**已解決（確認根因，改用對應工具）。**
     3. **WeAct 官方 `hid-flash` 燒錄工具在這台 Apple Silicon Mac 上有相容性問題，決定不繼續深修，改等 ST-Link。** 追查過程：(a) Serasidis 上游專案的預編譯 `hid-flash` 二進位檔是 2019 年的 x86_64 版本，靠 Rosetta 2 可執行，但寫死搜尋 VID:PID `1209:BEBA`（跟這片板子實際的 `0483:572A` 對不上）。(b) 改抓 WeAct 自己 fork 的原始碼（`WeActStudio/WeAct_HID_Bootloader_F4x1` repo 下的 `Cli/`）自行編譯，過程中修掉兩個第三方程式碼裡的真實 bug：`hex2bin/readhex.h` 遺失（該 repo 的 git submodule 沒有正確帶出，補了功能等價的 stub，因為 `.hex` 格式支援本來就用不到，我們燒的是 `.bin`）、以及 `main()` 裡一個邏輯反過來的錯誤 null check（`if (i == 10 && handle != NULL)` 應為 `if (handle == NULL)`，原本會在 `hid_open()` 失敗時直接拿 NULL handle 去用，導致 segfault）。(c) 修完後改用 `lldb` 抓到真正當機點在 `hid_open()` 內部：`hid_enumerate()` 回傳的裝置路徑是空字串，導致 `IORegistryEntryFromPath` 找不到裝置——這是這支 2019 年工具跟現在 macOS/Apple Silicon 版 IOKit 的深層相容性問題（裝置路徑產生邏輯需要重寫），已經超出「順手修一下」的合理範圍。**結論：等待中的 ST-Link + OpenOCD 是業界標準、持續維護、Apple Silicon 相容性更好的方案，優先用它燒錄，不再投入時間修這支社群工具。**
 
-  * **階段 0 + 階段 1 + 階段 2 已完成編譯驗證，尚未實際燒錄執行（2026-08-12）**：
-    - **階段 0(blink）**：編譯連結成功，`text=212 bytes, data=0, bss=0`（含 VTOR 重定位後）。證實工具鏈「編譯→連結」全鏈路可行。
-    - **階段 1(記憶體足跡)**：**真正的 `include/edgeneuro/*` 標頭檔（`pipeline.hpp`/`iir_filter.hpp`/`pass_through_filter.hpp`/`mav_feature.hpp`/`lda_classifier.hpp`），零修改，直接用 `arm-none-eabi-g++` 編譯連結給 STM32F401 成功**，組出真實的 `EdgeNeuro<1,6,50,...>` 實例（`firmware/src/footprint_check_main.cpp`）。實測 `text=932 bytes, data=0, bss=0`——僅佔 240KB 可用 Flash 的 0.38%、64KB SRAM 完全沒用到靜態配置。**「零修改移植」的承諾首次得到實體工具鏈驗證**，且記憶體餘裕遠超預期，第 2 節「未知數 2」（SRAM 夠不夠）初步無虞。
-    - **階段 2(NoHeapGuard 裸機移植，等 ST-Link 到貨即可實測未知數 1）**：`include/edgeneuro/no_heap_guard.hpp`（純 `std::atomic`，無 OS 依賴）**沿用不修改**；新增 `firmware/src/no_heap_guard_target.cpp` 提供裸機版 `operator new`/`delete` 覆寫——違規反應從 Host 版的 `abort()`+`stderr` 改成快速 LED 閃爍（不需要 newlib 的 `_write`/`_exit` 這類系統呼叫 stub）。`firmware/src/heap_guard_check_main.cpp` 跑 10 萬次 `tick()`，全程武裝 `NoHeapGuard`，通過則 LED 恆亮，失敗則快閃——三種燈號（慢閃=階段0、恆亮=階段2通過、快閃=偵測到配置）肉眼可辨。編譯成功，`text=844 bytes, data=0, bss=8`。
-    - **裝置端已確認**：板子能正確進入 HID bootloader 模式並被 Mac 偵測到、VID:PID 正確——硬體本身沒問題，卡關的是燒錄工具鏈，不是板子或接線。
-    - **OpenOCD + ST-Link 設定已備妥**：`firmware/openocd.cfg`（`interface/stlink.cfg` + `target/stm32f4x.cfg`，`adapter speed 1000` 求穩不求快）。`CMakeLists.txt` 重構出 `firmware_add_target()` function 消除三個執行檔目標間的重複樣板，並為每個執行檔自動產生對應的 `flash_<name>` CMake target（例如 `cmake --build build --target flash_blink`），內部呼叫 `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`。位址寫死在 `0x08004000` 而非全晶片抹除，確保燒錄只動到 Sector 1 以後，不會動到 Sector 0 的 HID bootloader（STM32F401 Sector 0/1 各自獨立 16KB，位址不重疊）。**ST-Link 一到貨，插上後直接下這個指令就能燒，不用臨時查設定。**
-    - 三個執行檔都在 `firmware/build/`（`blink`、`footprint_check`、`heap_guard_check`），已產生對應 `.bin`，**不需要再重新編譯**。
+  * **階段 0 + 階段 2 已在真實硬體上實測通過（2026-08-14，ST-Link 到貨、實際燒錄）**：
+    - **ST-Link 連線確認**：`openocd -f openocd.cfg -c "init; reset halt; exit"` 成功偵測到 `STLINK V2J37S7 (API v2) VID:PID 0483:3748`、target voltage 3.28V(供電/接線正常)、`Cortex-M4 r0p1` 處理器(晶片型號對上，SWD 全鏈路通)。
+    - **階段 0(blink)實測通過**：`cmake --build build --target flash_blink`，OpenOCD 回報 `device id = 0x00016423`、`flash size = 256 KiB`(對上 STM32F401RC 規格)、`Programming Finished` + `Verify Started/Verified OK`。**目視確認 PC13 LED 以 ~1Hz 慢速閃爍**——這是本專案第一次讓自己寫的程式碼真正在這片硬體上執行，證實「編譯→連結→燒錄→執行」全鏈路可行，不只是編譯通過。
+    - **階段 2(NoHeapGuard 裸機移植)實測通過，未知數 1 驗證成功**：`cmake --build build --target flash_heap_guard_check` 燒錄成功後，**目視確認 LED 恆亮(不閃)**——代表 10 萬次 `tick()` 全程武裝 `NoHeapGuard`，`malloc_count == 0` 在真實 ARM GCC 編譯出的硬體上依然成立，不只是 Host 端的結果。**四個未知數中的未知數 1 正式驗證完畢。**
+    - 未知數 2(SRAM/Flash 足跡)在編譯階段已量測（`text=932 bytes` for 階段 1、`text=844 bytes` for 階段 2，遠低於 240KB Flash / 64KB SRAM 上限），本次實測燒錄成功、`flash size` 回報值與晶片規格相符，進一步佐證這個量測是準確的，未知數 2 視為解決。
+    - **階段 1(footprint_check，記憶體足跡)** 先前已編譯驗證：**真正的 `include/edgeneuro/*` 標頭檔（`pipeline.hpp`/`iir_filter.hpp`/`pass_through_filter.hpp`/`mav_feature.hpp`/`lda_classifier.hpp`），零修改，直接用 `arm-none-eabi-g++` 編譯連結給 STM32F401 成功**，組出真實的 `EdgeNeuro<1,6,50,...>` 實例，`text=932 bytes, data=0, bss=0`——僅佔 240KB 可用 Flash 的 0.38%、64KB SRAM 完全沒用到靜態配置。**「零修改移植」的承諾得到實體工具鏈與燒錄雙重驗證**。尚未實際燒錄這個階段本身(不影響前述結論，Stage 0/2 已用相同工具鏈與燒錄流程證實可行)。
+    - **OpenOCD + ST-Link 設定確認可用**：`firmware/openocd.cfg`（`interface/stlink.cfg` + `target/stm32f4x.cfg`，`adapter speed 1000`）。`CMakeLists.txt` 的 `firmware_add_target()` function 產生的 `flash_<name>` target（`openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`）兩次燒錄都成功，位址寫死在 `0x08004000`，只動 Sector 1 以後，Sector 0 的 HID bootloader 未受影響。
     - `firmware/`（含本次新增檔案）已 commit 進 git。
 
-  * **下一步（依序）**：(1) 等 ST-Link 到貨，接上後跑 `cmake --build build --target flash_blink`，肉眼確認 LED 閃爍，(2) `flash_heap_guard_check`，確認 LED 恆亮（= 未知數 1 驗證通過）而非快閃，(3) 待 USB-TTL 模組到貨後才能進行未知數 3、4（ADC 時序、MyoWare 真實訊號）——這兩步的韌體程式碼（Timer/ADC/DMA 設定、UART 驅動）尚未開始寫，等前面兩步實測過關後再寫較合理（避免在還沒驗證基礎假設前，疊加更多未驗證的程式碼）。
+  * **下一步（依序）**：(1) 燒錄階段 1(`flash_footprint_check`)做完整實測收尾(目前只差這個沒實際燒過，非必要但補齊一致性)，(2) 待 USB-TTL 模組到貨後才能進行未知數 3、4（ADC 時序、MyoWare 真實訊號）——這兩步的韌體程式碼（Timer/ADC/DMA 設定、UART 驅動）尚未開始寫，等前面兩步實測過關後再寫較合理（避免在還沒驗證基礎假設前，疊加更多更未驗證的程式碼）。
+
+  * **與硬體並行、不受 ST-Link/USB-TTL 到貨阻塞的演算法工作**：義肢動作是否流暢，除了「target 上 zero alloc」這個底層保證外，還取決於姿態融合演算法與指令平滑化——這兩塊是純數學邏輯，跟暫存器層級的韌體工作性質不同（不受「未驗證暫存器程式碼不能寫」這條限制約束），可以在等硬體的期間用 Host 端 Catch2 完全驗證：
+    - **`include/edgeneuro/fusion/complementary_filter.hpp`（已完成，且已對照真實硬體資料驗證）**：`ComplementaryFilter<ValueType>` 融合陀螺儀（短期準確、長期會飄移）與加速度計（單次雜訊大、長期平均準確，本質是量測重力向量）估計 roll/pitch。刻意**不符合** `concepts.hpp` 的 `Filter` concept（那個 concept 是單通道 `process(value)->value`，姿態融合本質跨通道，需要同時吃 accel x/y/z + gyro rate + dt），所以目前是獨立元件，尚未接入 `EdgeNeuro` pipeline 的 `ImuFilterT` 插槽——那是之後的整合工作。只輸出 roll/pitch，**不做 yaw**（沒有磁力計，MPU6050 本身也量不到絕對朝向，硬做只會無界飄移，這點在買 GY-521/MPU6050 模組時已經確認過）。額外提供 `initialize(accel_x,accel_y,accel_z)`：直接把 roll/pitch 種到加速度計算出的角度，跳過從 0 開始收斂的暫態——這是拿真實資料測試時發現的真實問題（見下段），不是憑空加的功能。
+      - `tests/test_complementary_filter.cpp`（7 個 test case）先**只用已知物理量驗證**（單位向量、已知角速度積分），刻意不直接拿 EMG-EPN-612 的 IMU 欄位當正確答案比對——因為一開始不確定那批資料的陀螺儀單位（deg/s 還是 rad/s）、加速度計單位是否已經是物理單位，硬拿來比對等於重蹈 EMG-EPN-612 schema 那次「先猜再拿真實資料修正」的教訓。
+      - 後續查證：Myo 官方藍牙協定標頭檔（`thalmiclabs/myo-bluetooth` repo `myohw.h`)明確記載加速度計單位 g（除以 scale 2048)、陀螺儀單位 deg/s（除以 scale 16)、姿態四元數已正規化（除以 scale 16384)。**再用真實資料交叉驗證這個文件是否已經套用過**：user1 靜止片段的加速度計三軸平方和 ≈ 1.03（≈1g）、四元數平方和 ≈ 1.0（合法單位四元數）、陀螺儀數值落在個位數（符合 deg/s、不像原始 SDK 定點數的數千量級）——兩層獨立證據都指向這批 JSON 匯出的已經是物理單位，不是原始整數。
+      - 有了單位換算依據後，新增 `tests/test_complementary_filter_real_data.cpp`：讀 `data/raw/epn612_user1.csv` 第一筆錄製(992 列，"noGesture"，手臂近乎靜止)，陀螺儀轉 rad/s 餵進 `ComplementaryFilter`，同時把 CSV 裡 Myo 自己內建融合演算法輸出的四元數轉成 roll/pitch 當作獨立 ground truth 比對。結果：跑完整段錄製後，我們自己的 roll/pitch 估計跟 Myo 自己的四元數估計誤差僅 ~1.4e-4 rad(roll)/~2.8e-4 rad(pitch)，遠低於測試設定的 0.01 rad 容許誤差——證實我們的 atan2 座標軸慣例跟 Myo 內部慣例一致，且演算法本身在真實硬體雜訊下數值穩定、不會發散或出現 NaN。這是目前這個元件唯一一處拿真實資料做數值比對的測試，而且是在單位/軸向都有兩層獨立證據支撐之後才做，不是憑感覺假設。
+    - **指令軌跡平滑化（尚未開始）**：邏輯上排在姿態融合之後，對 classifier/fusion 輸出做低通/內插，避免致動器 setpoint 突變。
+    - 全部 46 個 Catch2 test case（含新增的 7 個）在 `debug-heapguard` preset 下全數通過。
 
 * **Phase 2: MuJoCo 神經義肢 3D 控制與仿真 (MuJoCo Simulation & Turnkey HIL Prototyping) 【Phase 1.5 驗證完畢後視結果排入】**
   * 引入 **MuJoCo** 生物物理動力學仿真框架（歐洲殿堂級機器人與計算神經科學實驗室核心標準工具）。
