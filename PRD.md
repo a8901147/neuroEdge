@@ -109,11 +109,11 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
   * Deliberately narrow (no IMU, PWM or closed loop yet). It answers four questions:
     1. ✅ `NoHeapGuard` sees `malloc_count == 0` on the board with the `arm-none-eabi-gcc` build. **Passed on the STM32F401, 2026-08-14** (Stage 2 below).
     2. ✅ The pipeline fits in 64 KB SRAM / 256 KB Flash (`arm-none-eabi-size`), with a wide margin.
-    3. Can a timer-triggered ADC sample steadily at 1 kHz? **Open** (needs the USB-serial adapter).
-    4. Is the MyoWare signal on a real forearm good enough for a reliable open/close decision? **Open** (needs the USB-serial adapter).
+    3. ✅ A timer-triggered ADC samples at 1 kHz. **Passed on the STM32F401, 2026-08-15** (Stage 3c/3d below).
+    4. Is the MyoWare signal good enough? **Conditionally passed (2026-08-15, Stage 3e):** the signal follows real contractions, but the range is narrow; gain is adjusted later.
   * Toolchain: plain CMake + `arm-none-eabi-gcc` in `firmware/`, no STM32CubeIDE. Diagnostics through the LED and UART.
 
-  * **Hardware on hand (2026-08-11):** the Black Pill and one MyoWare 2.0. Ordered: an ST-Link V2 and a USB-serial adapter. Servos, MPU6050s and the arm come with Phase 3.
+  * **Hardware on hand:** the Black Pill, one MyoWare 2.0, an ST-Link V2, a USB-serial adapter and MPU6050 (GY-521) modules (bought 2026-08-15, not yet wired). Servos and the arm come with Phase 3.
 
   * **Firmware (`firmware/`):**
     - `cmake/arm-none-eabi-toolchain.cmake`: Cortex-M4F flags (`-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard`).
@@ -136,7 +136,8 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     - **Stage 1 (footprint_check):** the unmodified `include/edgeneuro/` headers build a real `EdgeNeuro<1,6,50,...>` for the STM32F401: `text=932 bytes, data=0, bss=0`. Built, not yet flashed.
     - **Flashing:** `firmware/openocd.cfg` (ST-Link, `stm32f4x`, 1 MHz); each `flash_<name>` target programs at `0x08004000`, leaving the bootloader in sector 0 untouched.
 
-  * **Next:** the USB-serial adapter, then questions 3 and 4 (ADC timing, MyoWare signal).
+  * **The four questions:** 1–3 answered, 4 conditionally passed. Phase 1.5 has done its job.
+  * **Next:** wire the MPU6050 over I2C and run the host-verified `ComplementaryFilter` on the board, with register values checked in RM0368 first.
 
   * **Stage 3a: USART2 output, passes on the board (2026-08-15).** Questions 3 and 4 both need UART output, so UART is verified on its own first.
     - Register values checked in RM0368 (Rev 5) and the STM32F401 datasheet:
@@ -147,6 +148,21 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
       - Every register macro name was checked against the CMSIS header (`stm32f401xc.h`).
     - **`firmware/src/uart_hello_main.c`:** sends one line per second and blinks the LED, so a wiring fault can be told apart from a firmware fault.
     - **Result:** clean, repeated `"EdgeNeuro Stage 3a: UART alive"` at 9600 baud: register values, baud rate and wiring are right.
+
+  * **Stage 3b: ADC1 on PA0, software-triggered, passes on the board.** Register values from RM0368 ch. 11. `firmware/src/adc_hello_main.c` prints the 12-bit value: 1279–1316 with a finger on the electrodes, far steadier than an open input.
+  * **Stage 3c/3d: TIM2 TRGO triggers ADC1 at 1 kHz, passes on the board (2026-08-15). Question 3 answered.**
+    - Register values (RM0368 ch. 13 and ch. 11): `TIM2EN`; `TIM2CLK = HCLK = 16 MHz` (APB1 prescaler 1); `MMS = 010` (update event as TRGO); `EXTEN = 01` (rising edge), `EXTSEL = 0110` (TIM2 TRGO).
+    - `(PSC+1)×(ARR+1) = 16,000,000 / 1000 = 16,000`: `PSC=15`, `ARR=999`, an exact integer division.
+    - **`firmware/src/timer_adc_1khz_main.c`:** the main loop polls `EOC`, counts samples and reports once per 1000 (9600 baud cannot carry every sample).
+    - **Result:** reports arrive every 1.005 s, 1.005 s and 1.002 s, within the HSI's own tolerance: steady 1 kHz sampling.
+
+  * **Stage 3e: real forearm, question 4 conditionally passed (2026-08-15):**
+    - `timer_adc_1khz` reports each 1000-sample window's min and max; disposable electrodes on the muscle belly, near the wrist and at the elbow (reference):
+      - **Relaxed** (7 windows): `min` 1114–1119, `max` 1211–1216.
+      - **Clenched and held** (7 windows): `min` unchanged, `max` rising from 1212 to a steady **1227**.
+      - The difference (11–16 counts, 0.3–0.4 % of full scale) is clean and repeatable: the chain from electrodes to ADC responds to real contractions, but the range is narrow.
+    - The MyoWare 2.0 has a gain trim pot (`ENV gain = 200 × R / 1 kΩ`); the guide recommends a peak near VIN at full effort. The peak here (about 30 % of full scale) leaves room for more gain.
+    - **Decision:** gain and electrode placement are tuned later; they do not block the remaining work. Question 4 is conditionally passed.
 
   * **Host-side work while waiting for hardware:** orientation fusion and command smoothing are plain math, fully testable on the host with Catch2:
     - **`include/edgeneuro/fusion/complementary_filter.hpp` (done, checked on real data):** `ComplementaryFilter<ValueType>` fuses gyroscope and accelerometer into roll and pitch (no yaw: there is no magnetometer). It is not a `Filter` (that concept is single-channel) and is not yet part of the pipeline. `initialize(ax, ay, az)` starts from the accelerometer angle instead of converging from zero.

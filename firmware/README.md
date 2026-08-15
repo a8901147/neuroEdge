@@ -20,6 +20,8 @@ src/footprint_check_main.cpp          Stage 1: the real include/edgeneuro/ heade
 src/no_heap_guard_target.cpp          Stage 2: bare-metal NoHeapGuard (signals a violation on the LED)
 src/heap_guard_check_main.cpp         Stage 2: guarded tick() loop, pass/fail on the LED
 src/uart_hello_main.c                 Stage 3a: USART2 transmit (PA2/PA3)
+src/adc_hello_main.c                  Stage 3b: ADC1 on PA0, software-triggered
+src/timer_adc_1khz_main.c             Stage 3c/3d: TIM2 TRGO triggers ADC1 at 1 kHz
 ```
 
 ## Toolchain (once)
@@ -40,7 +42,7 @@ brew install dfu-util openocd
 
 ```sh
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-toolchain.cmake
-cmake --build build --target blink footprint_check heap_guard_check uart_hello -j
+cmake --build build --target blink footprint_check heap_guard_check uart_hello adc_hello timer_adc_1khz -j
 ```
 
 Every target also produces a `.bin` (via `objcopy`) and prints `arm-none-eabi-size` on each build.
@@ -52,6 +54,8 @@ cmake --build build --target flash_blink            # the LED blinks at ~1 Hz
 cmake --build build --target flash_footprint_check   # runs; no pass/fail signal yet
 cmake --build build --target flash_heap_guard_check  # LED solid = pass, fast blink = allocation detected
 cmake --build build --target flash_uart_hello        # one line per second at 9600 baud
+cmake --build build --target flash_adc_hello         # one raw ADC value per second
+cmake --build build --target flash_timer_adc_1khz    # one report per 1000 samples, about 1 s apart
 ```
 
 Each `flash_<name>` target runs `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`, which writes from sector 1 on and leaves the bootloader in sector 0 untouched.
@@ -95,7 +99,7 @@ OpenOCD prints the same as in step 2. Then the LED:
 - **Solid** = pass: 100,000 guarded `tick()` calls, no allocation.
 - **Fast blink** = fail: an allocation was detected in the ARM build.
 
-**Result on this board:** both stages passed on the first flash (Stage 0 blinks, Stage 2 stays solid). Questions 1 and 2 are answered; the ADC timing and the MyoWare signal need UART output (PRD.md, Phase 1.5).
+**Result on this board:** both stages passed on the first flash, answering questions 1 and 2. Question 3 (1 kHz sampling) is answered in Stage 3c/3d below; question 4 (the MyoWare signal) still needs electrodes (PRD.md, Phase 1.5).
 
 **4. Flash Stage 3a (`uart_hello`) and listen on the serial port:**
 
@@ -120,6 +124,39 @@ for _ in range(5):
 (`pyserial` reads the port more reliably on macOS than `screen` or `stty` + `cat`.)
 
 **Result:** the LED blinks and the port receives a clean, repeated `"EdgeNeuro Stage 3a: UART alive"`.
+
+**5. Flash Stage 3b (`adc_hello`): the ADC on its own, before adding the timer:**
+
+```sh
+cmake --build build --target flash_adc_hello
+```
+
+Register values from RM0368 ch. 11. Expect one line per second, `PA0 ADC1_IN0 raw = <0~4095>`. **Result:** with the MyoWare connected and a finger on the electrodes, 1279–1316, far steadier than an open input.
+
+**6. Flash Stage 3c/3d (`timer_adc_1khz`): timer and ADC together (question 3):**
+
+```sh
+cmake --build build --target flash_timer_adc_1khz
+```
+
+TIM2's TRGO triggers ADC1 in hardware, so `TIM2_PSC`/`TIM2_ARR` alone set the sample rate. Register values from RM0368 ch. 13 and 11. Measure the interval between reports (one per 1000 samples):
+
+```sh
+python3 -c "
+import serial, time
+ser = serial.Serial('/dev/tty.usbserial-0001', 9600, timeout=1)
+time.sleep(0.5)
+ser.reset_input_buffer()
+prev = None
+for _ in range(5):
+    line = ser.readline()
+    now = time.time()
+    print(line, '' if prev is None else f'(+{now-prev:.3f}s)')
+    prev = now
+"
+```
+
+**Result:** **1.005 s, 1.005 s, 1.002 s**, within the HSI's own tolerance: 1 kHz sampling holds. Question 3 answered.
 
 ## MyoWare 2.0 wiring
 
@@ -152,4 +189,4 @@ On the Mac, `ls /dev/tty.usbserial-*` shows whether the adapter enumerated, befo
 ## Known issues
 
 - **The WeAct HID flashing tool does not work on Apple Silicon** (`hid_enumerate()` returns empty device paths). Flash over ST-Link with OpenOCD instead.
-- The timer/ADC firmware for 1 kHz sampling is not written yet; its register values are checked against RM0368 first.
+- 1 kHz sampling is done (Stages 3a–3d). No DMA: polling `EOC` is enough for one channel at 1 kHz.

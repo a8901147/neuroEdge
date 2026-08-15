@@ -81,3 +81,13 @@ firmware_add_target(heap_guard_check
 # -- proves the UART wiring + register config works on its own before
 # Timer+ADC 1kHz sampling (the rest of unknown #3) is added on top.
 firmware_add_target(uart_hello src/startup.c src/uart_hello_main.c)
+
+# Stage 3b: ADC1 channel 0 (PA0), software-triggered continuous conversion,
+# polled -- isolates the ADC from Timer-driven periodic triggering. Reports
+# readings over USART2 (reuses Stage 3a's now-verified UART setup).
+firmware_add_target(adc_hello src/startup.c src/adc_hello_main.c)
+
+# Stage 3c/3d: TIM2 drives ADC1 at a hardware-timed 1kHz rate via TRGO --
+# this is unknown #3's real test (Stage 3b only proved software-triggered
+# ADC reads work, not a timed 1kHz rate).
+firmware_add_target(timer_adc_1khz src/startup.c src/timer_adc_1khz_main.c)
