@@ -20,6 +20,8 @@ src/footprint_check_main.cpp          階段 1:真正的 include/edgeneuro/* 為
 src/no_heap_guard_target.cpp          階段 2:裸機版 NoHeapGuard(違規反應是 LED 燈號,不是 abort())
 src/heap_guard_check_main.cpp         階段 2:跑武裝過的 tick() 迴圈,用 LED 回報過/不過
 src/uart_hello_main.c                 階段 3a:USART2 輪詢送出文字(PA2/PA3),獨立於 Timer/ADC 先驗證 UART 本身
+src/adc_hello_main.c                  階段 3b:ADC1 單通道(PA0)軟體觸發輪詢讀取,獨立於 Timer 先驗證 ADC 本身
+src/timer_adc_1khz_main.c             階段 3c/3d:TIM2 以硬體 TRGO 定時觸發 ADC1,真正的 1kHz 取樣
 ```
 
 ## 工具鏈設定(僅需一次)
@@ -40,7 +42,7 @@ brew install dfu-util openocd
 
 ```sh
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-toolchain.cmake
-cmake --build build --target blink footprint_check heap_guard_check uart_hello -j
+cmake --build build --target blink footprint_check heap_guard_check uart_hello adc_hello timer_adc_1khz -j
 ```
 
 每個目標編譯完都會(透過 `objcopy`)產生對應的 `.bin`,並在每次編譯時印出 `arm-none-eabi-size` 的輸出——Flash/SRAM 用量不需要另外量測就看得到。
@@ -52,6 +54,8 @@ cmake --build build --target flash_blink            # 燒完看板子上的 LED 
 cmake --build build --target flash_footprint_check   # 只證明不會當機，目前還沒有過/不過的燈號
 cmake --build build --target flash_heap_guard_check  # LED 恆亮 = 過，快閃 = 偵測到 malloc_count 違規
 cmake --build build --target flash_uart_hello        # 接上 USB-TTL 後，@ 9600 baud 應該每秒收到一行文字
+cmake --build build --target flash_adc_hello         # PA0 接 MyoWare ENV 後，應該每秒收到一行 ADC 原始值
+cmake --build build --target flash_timer_adc_1khz    # 每 1000 樣本回報一次，回報間隔應該接近 1 秒
 ```
 
 每個 `flash_<name>` target 執行的是 `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`——只會寫入 Sector 1 以後的區域，不會動到 bootloader 所在的 Sector 0。
@@ -95,7 +99,7 @@ OpenOCD 的成功訊號跟步驟 2 一樣。接著再看一次 LED：
 - **恆亮(不閃)** = 通過——10 萬次 `tick()` 全程武裝 `NoHeapGuard`，從未偵測到任何配置行為。
 - **快速閃爍** = 失敗——偵測到真實的配置行為；代表 Host 端驗證過的零配置保證在這個目標平台的實際 ARM GCC 編譯結果下不成立，需要進一步調查才能繼續信任這個保證。
 
-**這片板子的實測結果**：兩個階段都是第一次燒錄就通過——階段 0 慢速閃爍、階段 2 恆亮。這解決了什麼(未知數 1、2)、還剩什麼沒解決(未知數 3 Timer/ADC 時序、未知數 4 真實 MyoWare 訊號品質——這兩項都卡在需要 USB-TTL 轉接器做 UART 診斷)，詳見 PRD.md 的 Phase 1.5 章節。
+**這片板子的實測結果**：兩個階段都是第一次燒錄就通過——階段 0 慢速閃爍、階段 2 恆亮，解決了未知數 1、2。未知數 3(Timer/ADC 1kHz 取樣)已在下方階段 3c/3d 解決；未知數 4(真實 MyoWare 訊號品質)仍待正式用電極貼片實測，詳見 PRD.md 的 Phase 1.5 章節。
 
 **4. USB-TTL 到貨後，燒錄階段 3a(`uart_hello`)並實際監聽序列埠：**
 
@@ -120,6 +124,39 @@ for _ in range(5):
 （`screen`/`stty`+`cat` 這類互動式工具在 macOS 上有時抓不到輸出，`pyserial` 比較穩定，建議優先用這個方式驗證。）
 
 **實測結果**：LED 正常閃爍(證實韌體有在跑，跟 UART 收發是獨立的診斷訊號)，序列埠收到乾淨、無亂碼、重複出現的 `"EdgeNeuro Stage 3a: UART alive"` 字串——接線、暫存器設定、鮑率計算全部驗證正確。
+
+**5. 燒錄階段 3b(`adc_hello`)——ADC 單獨驗證，在加 Timer 之前先確認 ADC 本身沒問題：**
+
+```sh
+cmake --build build --target flash_adc_hello
+```
+
+暫存器值(`RCC_APB2ENR` 的 `ADC1EN`、`ADC_CR2` 的 `ADON`/`CONT`/`SWSTART`、`ADC_SQR1`/`ADC_SQR3` 的通道序列、`ADC_SR` 的 `EOC`)查證自 RM0368 第 11 章。同樣用 `pyserial` 監聽，應該每秒收到一行 `PA0 ADC1_IN0 raw = <0~4095>`。**實測結果**：MyoWare 接上、手指按電極測試靜止狀態，讀到穩定落在 1279~1316 的值，遠比懸空雜訊乾淨,證實 ADC 讀取跟 `PA0` 接線正確。
+
+**6. 燒錄階段 3c/3d(`timer_adc_1khz`)——把 Timer 跟 ADC 接在一起，真正回答未知數 3：**
+
+```sh
+cmake --build build --target flash_timer_adc_1khz
+```
+
+這是第一次真正把 TIM2 的硬體 TRGO 訊號接去觸發 ADC1，取樣率完全由 `TIM2_PSC`/`TIM2_ARR` 決定，不靠軟體迴圈計時。暫存器值(`TIM2CLK` 換算、`TIMx_CR2` 的 `MMS`、`ADC_CR2` 的 `EXTEN`/`EXTSEL`)查證自 RM0368 第 13 章 + 第 11 章。用 `pyserial` 監聽每 1000 樣本回報一次的訊息，量測相鄰回報的實際時間間隔：
+
+```sh
+python3 -c "
+import serial, time
+ser = serial.Serial('/dev/tty.usbserial-0001', 9600, timeout=1)
+time.sleep(0.5)
+ser.reset_input_buffer()
+prev = None
+for _ in range(5):
+    line = ser.readline()
+    now = time.time()
+    print(line, '' if prev is None else f'(+{now-prev:.3f}s)')
+    prev = now
+"
+```
+
+**實測結果**：連續回報間隔實測 **1.005s、1.005s、1.002s**——非常接近理論上剛好 1 秒，誤差 <0.5%，落在未校準 16MHz HSI 振盪器本身的正常誤差範圍內。**這是第一次有實際計時數據證實 1kHz 取樣穩定成立，未知數 3 正式解決。**
 
 ## MyoWare 2.0 接線(給階段 4，等 ST-Link + USB-TTL 都到貨後用)
 
@@ -152,4 +189,4 @@ for _ in range(5):
 ## 已知問題
 
 - **WeAct 官方的 HID bootloader 燒錄工具在這台 Apple Silicon Mac 上不能用**——追查到根因是 `hid_enumerate()` 回傳空的裝置路徑(這支 2019 年工具跟現今 IOKit 有深層相容性問題，不值得繼續修)。改用 ST-Link + OpenOCD 燒錄；完整調查過程見 PRD.md 的 Phase 1.5 章節。
-- 階段 3(1kHz 取樣)所需的 Timer/ADC/DMA 韌體**還沒開始寫**——診斷用的 UART 驅動已經查證、實作、實測通過(見上方階段 3a)，但 Timer 預除頻器、ADC 觸發來源編碼這些還沒對照 RM0368 查證過，刻意延後到查證完成或能在硬體上實測驗證，而不是先寫出「盡力猜測」的版本。
+- 階段 3(1kHz 取樣)已完成並實測通過(見上方階段 3a/3b/3c/3d)——Timer 預除頻器、ADC 觸發來源編碼全部先查證 RM0368 再寫，不是猜的。目前未用 DMA(輪詢 `EOC` 已足夠應付單通道 1kHz),未來若要同時取樣多通道才需要評估。

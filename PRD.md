@@ -112,7 +112,7 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
   * 刻意縮小範圍、不做完整 Phase 3：跳過 IMU/MPU6050 整合、PWM 致動、閉環控制、符合 `SignalProvider` concept 的完整 `Stm32AdcProvider`，只回答四個關鍵未知數：
     1. ✅ Host 已驗證的 C++20 核心用 `arm-none-eabi-gcc` 編譯後，`NoHeapGuard` 在真實硬體上是否依然 `malloc_count == 0`。**已於 2026-08-14 在真實 STM32F401 上實測通過**（見下方階段 2 燒錄記錄）。
     2. ✅ 完整 pipeline 的靜態記憶體足跡（`arm-none-eabi-size` 量測）是否塞得進 64KB SRAM / 256KB Flash。**已確認**——實測用量遠低於上限，且燒錄成功佐證量測準確。
-    3. Timer + ADC 能否穩定達成 1kHz 取樣。**尚待驗證**，等 USB-TTL 到貨。
+    3. ✅ Timer + ADC 能否穩定達成 1kHz 取樣。**已於 2026-08-15 在真實 STM32F401 上實測通過**（見下方階段 3c/3d 記錄）。
     4. MyoWare 2.0 貼在真人前臂上的訊號品質，是否足夠支撐可靠的即時開/合判斷（唯一無法用合成資料或任何公開資料集回答的問題）。**尚待驗證**，等 USB-TTL 到貨。
   * 建置工具鏈：裸 CMake + `arm-none-eabi-gcc`（延續 Host 端 CMake Presets 的風格，不引入 STM32CubeIDE），韌體專案位於 `firmware/`。透過 STM32F401 內建 USB DFU bootloader 燒錄，不強制要求 ST-Link；診斷手段以 LED 燈號與 UART/USB-CDC 輸出為主。
 
@@ -140,7 +140,7 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
     - **OpenOCD + ST-Link 設定確認可用**：`firmware/openocd.cfg`（`interface/stlink.cfg` + `target/stm32f4x.cfg`，`adapter speed 1000`）。`CMakeLists.txt` 的 `firmware_add_target()` function 產生的 `flash_<name>` target（`openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`）兩次燒錄都成功，位址寫死在 `0x08004000`，只動 Sector 1 以後，Sector 0 的 HID bootloader 未受影響。
     - `firmware/`（含本次新增檔案）已 commit 進 git。
 
-  * **下一步（依序）**：(1) 燒錄階段 1(`flash_footprint_check`)做完整實測收尾(目前只差這個沒實際燒過，非必要但補齊一致性)，(2) 待 USB-TTL 模組到貨後才能進行未知數 3、4（ADC 時序、MyoWare 真實訊號）——這兩步的韌體程式碼（Timer/ADC/DMA 設定、UART 驅動）尚未開始寫，等前面兩步實測過關後再寫較合理（避免在還沒驗證基礎假設前，疊加更多更未驗證的程式碼）。
+  * **下一步**：四個未知數只剩未知數 4(MyoWare 貼在真人前臂上的真實訊號品質，是否足夠支撐可靠的即時開/合判斷)——這件事需要用**正式的一次性電極貼片**(不是手指乾接觸)貼在肌肉肌腹/靠手腕/手肘參考點三個位置，搭配已經驗證過的 `timer_adc_1khz` 韌體實測真實握拳/放鬆時的訊號變化，是四個未知數裡唯一無法用合成資料或查證文件回答、必須真人實測的一項。階段 1(`flash_footprint_check`)還沒實際燒錄，非必要但可補齊一致性。
 
   * **階段 3a：USART2 UART 輸出，已在真實硬體上實測通過（2026-08-15，USB-TTL 到貨）**——未知數 3（1kHz 取樣）跟未知數 4（MyoWare 真實訊號）都需要先有能運作的 UART 才能把讀到的數值印出來診斷，所以拆出這個更小的子階段先單獨驗證，不跟 Timer/ADC 混在一起。
     - **暫存器值查證過程**：先前 Stage 3 的 ADC/Timer 草稿曾因為暫存器值未查證被打回票（見「已踩過的坑」），這次改成先下載 ST 官方 RM0368 參考手冊（Rev 5，847 頁）與 STM32F401CCU6 官方 datasheet（DocID024738，來源是 WeAct 官方 GitHub repo，跟板子本身同一份），用 `pypdf` 定位到確切頁數逐頁讀取確認，而非憑記憶或猜測：
@@ -151,6 +151,14 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
       - 所有暫存器欄位巨集名稱（`RCC_AHB1ENR_GPIOAEN`、`USART_CR1_UE` 等）額外用 `grep` 對照過 FetchContent 抓下來、Stage 0/1/2 建置時就已實際使用的同一份 CMSIS 標頭檔（`stm32f401xc.h`），確認巨集真的存在、不是編出來的名字。
     - **新增 `firmware/src/uart_hello_main.c`**：初始化 USART2、每秒輪詢送出一行固定文字，LED 同步閃爍（跟 UART 收發無關，是獨立的「韌體本身有沒有在跑」診斷訊號，方便把「韌體邏輯錯誤」跟「實體接線錯誤」這兩種可能性分開判斷）。`firmware/CMakeLists.txt` 新增 `uart_hello` target。
     - **實測結果**：燒錄成功，PC13 LED 正常閃爍（證實韌體有在跑）。用 `pyserial`（非互動式，可截取到檔案比對，比 `screen` 更適合自動化驗證）連接 `/dev/tty.usbserial-0001` @ 9600 baud，**收到乾淨、無亂碼、重複出現的 `"EdgeNeuro Stage 3a: UART alive"` 字串**——證實查證過的暫存器值、鮑率計算、`PA2`/`PA3` 接線全部正確。未知數 3 的 UART 診斷通道就緒；Timer/ADC 1kHz 取樣本身仍待實作與驗證。
+
+  * **階段 3b：ADC1 單通道軟體觸發讀取（PA0），已在真實硬體上實測通過**——在加 Timer 之前先單獨驗證 ADC 本身，同樣的「一次只驗證一個變數」原則。暫存器值（`RCC_APB2ENR` bit 8=`ADC1EN`、`GPIOx_MODER`=11 類比模式、`ADC_CR2` 的 `ADON`/`CONT`/`SWSTART`、`ADC_SQR1`/`ADC_SQR3` 的通道序列設定、`ADC_SR` 的 `EOC`）全部查證自 RM0368 第 11 章。新增 `firmware/src/adc_hello_main.c`，透過已驗證的 USART2 把讀到的 12-bit 原始值印出來。實測：MyoWare 感測器接上、手指按著電極測試靜止狀態下，讀到穩定落在 1279~1316 的數值（12-bit 滿量程 0~4095），波動遠小於懸空雜訊,證實 ADC 讀取路徑跟 `PA0` 接線正確。
+  * **階段 3c/3d：TIM2 以硬體 TRGO 定時觸發 ADC1，達成真正的 1kHz 取樣，已在真實硬體上實測通過（2026-08-15）——未知數 3 正式解決**：
+    - 前面階段 3a/3b 都還只是「UART 能不能印」跟「ADC 能不能讀」分開驗證，**這一步才是第一次真正把 Timer 跟 ADC 接在一起**，也才是未知數 3 真正要問的問題。
+    - 暫存器值查證（RM0368 第 13 章 TIM2~TIM5 通用計時器 + 第 11 章 ADC 外部觸發部分）：`RCC_APB1ENR` bit 0=`TIM2EN`；`TIM2CLK` 換算——RM0368 明確寫「APB 預除頻器若為 1，`TIMxCLK = HCLK`；否則 `TIMxCLK = 2×PCLKx`」，本專案 APB1 預除頻器維持預設值 1，故 `TIM2CLK = HCLK = 16MHz`，不用乘 2；`TIMx_CR2` bits[6:4]=`MMS`，設 010（Update）讓計時器的 update event 變成 TRGO 硬體訊號；`ADC_CR2` bits[29:28]=`EXTEN`(01=上升緣觸發)、bits[27:24]=`EXTSEL`(0110=Timer 2 TRGO event，同一個暫存器頁面查到的編碼表，不是通用記憶)。
+    - 取樣率計算：`(PSC+1)×(ARR+1) = TIM2CLK / 目標頻率 = 16,000,000 / 1000 = 16,000`，選 `PSC=15`、`ARR=999`（16×1000=16000），**整數整除、無條件捨入誤差**（跟階段 3a 的鮑率換算不同，那個有小數捨入誤差；這個沒有）。
+    - 新增 `firmware/src/timer_adc_1khz_main.c`：TIM2 的 update event 透過硬體直接觸發 ADC1 轉換，主迴圈只負責輪詢 `ADC_SR` 的 `EOC`、累計樣本數，**每 1000 個樣本才透過 UART 回報一次**（9600 baud 若每個樣本都印,吞吐量完全不夠,會塞爆——這個限制本身也是選擇不逐樣本印出的理由）並閃一下 LED。
+    - **實測結果**：用 `pyserial` 連續讀取「每 1000 樣本回報一次」的訊息,量測相鄰回報之間的實際時間間隔：**1.005s、1.005s、1.002s**——非常接近理論上剛好 1 秒,誤差 <0.5%,完全落在未校準 16MHz HSI 振盪器本身的正常誤差範圍內。這是第一次有**實際計時的實測數據**證實 Timer 硬體觸發 ADC 真的能穩定達成 1kHz,不只是編譯通過、不當機而已。**未知數 3 正式解決。**
 
   * **與硬體並行、不受 ST-Link/USB-TTL 到貨阻塞的演算法工作**：義肢動作是否流暢，除了「target 上 zero alloc」這個底層保證外，還取決於姿態融合演算法與指令平滑化——這兩塊是純數學邏輯，跟暫存器層級的韌體工作性質不同（不受「未驗證暫存器程式碼不能寫」這條限制約束），可以在等硬體的期間用 Host 端 Catch2 完全驗證：
     - **`include/edgeneuro/fusion/complementary_filter.hpp`（已完成，且已對照真實硬體資料驗證）**：`ComplementaryFilter<ValueType>` 融合陀螺儀（短期準確、長期會飄移）與加速度計（單次雜訊大、長期平均準確，本質是量測重力向量）估計 roll/pitch。刻意**不符合** `concepts.hpp` 的 `Filter` concept（那個 concept 是單通道 `process(value)->value`，姿態融合本質跨通道，需要同時吃 accel x/y/z + gyro rate + dt），所以目前是獨立元件，尚未接入 `EdgeNeuro` pipeline 的 `ImuFilterT` 插槽——那是之後的整合工作。只輸出 roll/pitch，**不做 yaw**（沒有磁力計，MPU6050 本身也量不到絕對朝向，硬做只會無界飄移，這點在買 GY-521/MPU6050 模組時已經確認過）。額外提供 `initialize(accel_x,accel_y,accel_z)`：直接把 roll/pitch 種到加速度計算出的角度，跳過從 0 開始收斂的暫態——這是拿真實資料測試時發現的真實問題（見下段），不是憑空加的功能。
