@@ -133,11 +133,14 @@ int main(void) {
     tim2_init_1khz_trgo();
 
     uint32_t sample_count = 0;
-    uint32_t latest = 0;
+    uint32_t window_min = 0xFFFu;
+    uint32_t window_max = 0u;
 
     while (1) {
         if (ADC1->SR & ADC_SR_EOC) {
-            latest = ADC1->DR & 0xFFFu; // reading DR also clears EOC
+            uint32_t value = ADC1->DR & 0xFFFu; // reading DR also clears EOC
+            if (value < window_min) window_min = value;
+            if (value > window_max) window_max = value;
             ++sample_count;
         }
 
@@ -149,13 +152,23 @@ int main(void) {
         // 1kHz, this print (and the LED toggle next to it) should happen
         // roughly once per second -- a rough but real empirical check on
         // the achieved rate, not just a compiled-and-hoped-for one.
+        //
+        // Reports min/max over the whole 1000-sample (~1s) window rather
+        // than just the final sample: a single end-of-window snapshot can
+        // easily miss a brief real muscle contraction if it doesn't land
+        // exactly on a window boundary, whereas min/max can't miss any
+        // swing that happened during the window, however brief.
         if (sample_count > 0 && sample_count % 1000u == 0u) {
             usart2_send_string("samples=");
             usart2_send_uint(sample_count);
-            usart2_send_string(" latest_adc=");
-            usart2_send_uint(latest);
+            usart2_send_string(" min=");
+            usart2_send_uint(window_min);
+            usart2_send_string(" max=");
+            usart2_send_uint(window_max);
             usart2_send_string("\r\n");
             GPIOC->ODR ^= (1u << LED_PIN);
+            window_min = 0xFFFu;
+            window_max = 0u;
         }
     }
 }
