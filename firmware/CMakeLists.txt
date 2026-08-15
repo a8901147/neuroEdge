@@ -91,3 +91,7 @@ firmware_add_target(adc_hello src/startup.c src/adc_hello_main.c)
 # this is unknown #3's real test (Stage 3b only proved software-triggered
 # ADC reads work, not a timed 1kHz rate).
 firmware_add_target(timer_adc_1khz src/startup.c src/timer_adc_1khz_main.c)
+
+# Stage 4a: I2C1 (PB6/PB7) polled master driver reading an MPU6050/GY-521,
+# isolated from the ComplementaryFilter integration that comes next.
+firmware_add_target(i2c_mpu6050_hello src/startup.c src/i2c_mpu6050_hello_main.c)

@@ -22,6 +22,7 @@ src/heap_guard_check_main.cpp         階段 2:跑武裝過的 tick() 迴圈,用
 src/uart_hello_main.c                 階段 3a:USART2 輪詢送出文字(PA2/PA3),獨立於 Timer/ADC 先驗證 UART 本身
 src/adc_hello_main.c                  階段 3b:ADC1 單通道(PA0)軟體觸發輪詢讀取,獨立於 Timer 先驗證 ADC 本身
 src/timer_adc_1khz_main.c             階段 3c/3d:TIM2 以硬體 TRGO 定時觸發 ADC1,真正的 1kHz 取樣
+src/i2c_mpu6050_hello_main.c          階段 4a:I2C1(PB6/PB7)讀取 MPU6050/GY-521 加速度計+陀螺儀原始值
 ```
 
 ## 工具鏈設定(僅需一次)
@@ -42,7 +43,7 @@ brew install dfu-util openocd
 
 ```sh
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-toolchain.cmake
-cmake --build build --target blink footprint_check heap_guard_check uart_hello adc_hello timer_adc_1khz -j
+cmake --build build --target blink footprint_check heap_guard_check uart_hello adc_hello timer_adc_1khz i2c_mpu6050_hello -j
 ```
 
 每個目標編譯完都會(透過 `objcopy`)產生對應的 `.bin`,並在每次編譯時印出 `arm-none-eabi-size` 的輸出——Flash/SRAM 用量不需要另外量測就看得到。
@@ -56,6 +57,7 @@ cmake --build build --target flash_heap_guard_check  # LED 恆亮 = 過，快閃
 cmake --build build --target flash_uart_hello        # 接上 USB-TTL 後，@ 9600 baud 應該每秒收到一行文字
 cmake --build build --target flash_adc_hello         # PA0 接 MyoWare ENV 後，應該每秒收到一行 ADC 原始值
 cmake --build build --target flash_timer_adc_1khz    # 每 1000 樣本回報一次，回報間隔應該接近 1 秒
+cmake --build build --target flash_i2c_mpu6050_hello # 接上 MPU6050 後，應該每秒收到一行 accel/gyro 原始值
 ```
 
 每個 `flash_<name>` target 執行的是 `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`——只會寫入 Sector 1 以後的區域，不會動到 bootloader 所在的 Sector 0。
@@ -158,6 +160,20 @@ for _ in range(5):
 
 **實測結果**：連續回報間隔實測 **1.005s、1.005s、1.002s**——非常接近理論上剛好 1 秒，誤差 <0.5%，落在未校準 16MHz HSI 振盪器本身的正常誤差範圍內。**這是第一次有實際計時數據證實 1kHz 取樣穩定成立，未知數 3 正式解決。**
 
+**7. 燒錄階段 4a(`i2c_mpu6050_hello`)——I2C1 讀取 MPU6050/GY-521：**
+
+```sh
+cmake --build build --target flash_i2c_mpu6050_hello
+```
+
+暫存器值(STM32 端 `RCC` 對應 bit、`I2C_CR2`/`I2C_CCR`/`I2C_TRISE` 的 100kHz 時序；MPU6050 端 `PWR_MGMT_1`/`WHO_AM_I`/`ACCEL_XOUT_H` 起算的暫存器位址、accel/gyro 縮放係數)查證自 RM0368 第 18 章 + InvenSense 官方 `RM-MPU-6000A-00`/`PS-MPU-6000A-00` 兩份文件。**實測結果**：靜止平放讀到 `accel_z≈16850`(≈1.03g，符合重力沿 Z 軸)、`accel_x`/`y` 接近 0、`gyro_x/y` 在正常零偏範圍內——完整驗證成功。
+
+這次除錯過程很曲折，值得記錄下來的教訓：
+- **UART 不穩定不一定是轉接器的問題**——這次追了老半天才發現是 `TXD`/`RXD` 接錯到 `A1`/`A2`(該接 `A2`/`A3`)。UART 突然不穩定時，先確認接線，不要預設是硬體/驅動問題。
+- **I2C 卡死可以直接用 `I2C1_SR2` 的 `BUSY` 位元確認**，不用猜——透過 SWD 直接讀暫存器，比重複拔插、看 LED 燈號快得多也準確得多。
+- **多位元組 I2C 讀取的最後兩個 byte，一定要用 `BTF` 而不是 `RXNE` 控制 NACK/STOP 時機**——RM0368 §18.3.3 的 N>2 byte 接收程序有明確規定，跳過這個細節在單一 byte 讀取時不會出錯，但多 byte 讀取會可靠失敗。
+- **UART 不可靠時，直接用 `openocd halt`/`reg pc`/`mdw <addr>` 透過 SWD 讀暫存器跟記憶體，比一直問使用者「LED 現在閃成怎樣」有效率、也精確得多**——這是之後遇到類似狀況應該優先採用的除錯方式。
+
 ## MyoWare 2.0 接線(給階段 4，等 ST-Link + USB-TTL 都到貨後用)
 
 出自 SparkFun 官方 MyoWare 2.0 文件：
@@ -185,6 +201,22 @@ for _ in range(5):
 | `VCC`(3V3/5V) | **不要接** | 板子目前已經有電源(USB 或 ST-Link 供電)，USB-TTL 的 VCC 如果同時接上會變成兩個電源同時驅動 3.3V 軌，有把其中一顆穩壓晶片燒壞的風險。只接 GND + TXD + RXD 三條線就好。 |
 
 板子插上後，Mac 端可以先確認有正確列舉出序列埠(`ls /dev/tty.usbserial-*` 或 `ls /dev/tty.SLAB_USBtoUART*`，依轉接器晶片而定)，這一步不需要 STM32 這邊已經有任何 UART 韌體，純粹確認轉接器本身有被系統認出來。
+
+**燒錄/監聽前，建議先跑 `python3 ../tools/check_hardware_ready.py`(或從 repo 根目錄 `python3 tools/check_hardware_ready.py`)**，確認 ST-Link 跟 USB-TTL 都真的準備好——這個腳本不只檢查裝置有沒有列舉出來，還會實際打開序列埠、設定好參數，這是開發過程中 USB-TTL 反覆出問題後才發現「裝置有列出來」不代表「真的能用」，寫這個腳本就是要一次檢查到位，不用每次手動排查。
+
+## MPU6050/GY-521 接線(階段 4a)
+
+| GY-521 接腳 | 接到 | 備註 |
+| --- | --- | --- |
+| `VCC` | STM32 3.3V | MPU6050 晶片規格 2.375V–3.46V，直接給 3.3V 最保守，不用去猜板子上有沒有穩壓電路。 |
+| `GND` | STM32 GND | 共地。 |
+| `SCL` | STM32 `PB6`(I2C1_SCL，AF4) | datasheet Table 9 查證，跟現有接線(`PA0`/`PA2`/`PA3`/`PA13`/`PA14`)都不衝突。 |
+| `SDA` | STM32 `PB7`(I2C1_SDA，AF4) | 同上。 |
+| `XDA`/`XCL`/`ADO`/`INT` | 不接 | 這次用不到(輔助 I2C 主機、位址選擇、中斷輸出)，保持空接。 |
+
+**麵包板注意事項**：模組的 8 根針腳務必完全插到底——沒插緊會造成 I2C 匯流排卡在 `BUSY` 狀態，連 `START` 訊號都發不出去，症狀是韌體整個看起來像卡死。可以用 `openocd -f openocd.cfg -c "init" -c "halt" -c "mdw 0x40005418 1" -c "resume" -c "shutdown"` 直接讀 `I2C1_SR2`，`BUSY`(bit 1)如果是 1 就代表匯流排卡住。
+
+`WHO_AM_I`(位址 0x75)官方文件寫死是 `0x68`，但實測這批 GY-521 板子(可能是相容/副廠晶片)穩定回報 `0x72`——韌體已經改成同時接受兩個值，不要看到不是 `0x68` 就假設接線有問題，先確認數值是否**穩定重複**(多次重新燒錄結果一致)。
 
 ## 已知問題
 
