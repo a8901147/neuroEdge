@@ -15,9 +15,18 @@ namespace edgeneuro {
 // Orientation fusion is inherently cross-channel -- it needs accel x/y/z
 // and gyro rate together, plus a time step -- so it lives as a standalone
 // component rather than one of Pipeline's per-channel EmgFilterT/ImuFilterT
-// slots. Wiring it into the hot loop (as a post-processing stage on the raw
-// IMU channels) is future work, not required for this to be useful and
-// testable on its own.
+// slots.
+//
+// It also never will go through Pipeline's ImuFilterT slot, by design, not
+// just for lack of a concept match: Pipeline's window/feature/classify path
+// only produces a result once every WindowSize samples (e.g. 200ms at
+// WindowSize=200 @ 1kHz), which is fine for EMG's "did the user hold a
+// contraction long enough" decision but far too laggy for orientation
+// control that's supposed to track the user's real arm continuously (see
+// PRD.md Section 3's Phase 3 control-architecture note). The intended
+// caller reads a sensor, calls update() once per fresh reading, and feeds
+// roll()/pitch() straight to an actuator setpoint -- bypassing Pipeline
+// entirely, not feeding into it.
 //
 // No magnetometer input, so yaw is not observable from this filter alone --
 // only roll and pitch are estimated. This matches the MPU6050 (accelerometer

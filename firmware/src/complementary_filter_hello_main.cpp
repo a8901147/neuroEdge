@@ -25,12 +25,22 @@
 //     raw counts instead of true g would still work numerically -- divided
 //     here anyway for a value that means something when read off a debugger.
 //
-// dt is approximate: this loop's ~250ms pacing (delay(400000u), same
-// calibration used by every prior stage's delay()) is far coarser than a
-// real control loop would use, but is fine for a first "does the fusion
-// respond sensibly to real motion" check -- tightening the loop and
-// wiring this into the full EdgeNeuro<> pipeline is future work, not
-// needed to answer this stage's question.
+// dt: measured, not a delay()-derived guess -- see kDt below and PRD.md
+// Phase 1.5 Stage 4b for how complementary_filter_stress_test_main.cpp
+// established this loop shape's real ~163ms period. This stage's loop is
+// still far coarser than a real control loop (see next paragraph), but is
+// fine for a first "does the fusion respond sensibly to real motion" check.
+//
+// This will NOT get wired into EdgeNeuro<>'s Pipeline -- confirmed
+// (PRD.md Section 3, Phase 3 control-architecture note) that IMU
+// orientation bypasses Pipeline entirely: Pipeline's window/classify only
+// produces a result once every WindowSize samples, which is far too laggy
+// for orientation that's supposed to track the user's real arm
+// continuously. The real Phase 3 path is closer to what this file already
+// does (read sensor, update() every fresh reading, use roll()/pitch()
+// directly) than to a Pipeline integration -- future work here is
+// tightening the loop timing and making the I2C read non-blocking so it
+// doesn't compete with EMG's 1kHz sampling, not routing through Pipeline.
 
 #include <cmath>
 #include <cstdint>
