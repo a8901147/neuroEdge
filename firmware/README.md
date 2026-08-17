@@ -23,6 +23,9 @@ src/uart_hello_main.c                 階段 3a:USART2 輪詢送出文字(PA2/PA
 src/adc_hello_main.c                  階段 3b:ADC1 單通道(PA0)軟體觸發輪詢讀取,獨立於 Timer 先驗證 ADC 本身
 src/timer_adc_1khz_main.c             階段 3c/3d:TIM2 以硬體 TRGO 定時觸發 ADC1,真正的 1kHz 取樣
 src/i2c_mpu6050_hello_main.c          階段 4a:I2C1(PB6/PB7)讀取 MPU6050/GY-521 加速度計+陀螺儀原始值
+src/complementary_filter_hello_main.cpp  階段 4b:ComplementaryFilter 融合真實 MPU6050 資料(等新模組到貨才能驗證)
+src/i2c_bus_scan_main.c               診斷工具(非 pipeline 階段):掃描 I2C1 全部位址,見 tools/check_hardware_ready.py --i2c-scan
+src/complementary_filter_stress_test_main.cpp  診斷工具(非 pipeline 階段):合成資料跑 ComplementaryFilter 迴圈,不需要真的 MPU6050
 ```
 
 ## 工具鏈設定(僅需一次)
@@ -173,6 +176,8 @@ cmake --build build --target flash_i2c_mpu6050_hello
 - **I2C 卡死可以直接用 `I2C1_SR2` 的 `BUSY` 位元確認**，不用猜——透過 SWD 直接讀暫存器，比重複拔插、看 LED 燈號快得多也準確得多。
 - **多位元組 I2C 讀取的最後兩個 byte，一定要用 `BTF` 而不是 `RXNE` 控制 NACK/STOP 時機**——RM0368 §18.3.3 的 N>2 byte 接收程序有明確規定，跳過這個細節在單一 byte 讀取時不會出錯，但多 byte 讀取會可靠失敗。
 - **UART 不可靠時，直接用 `openocd halt`/`reg pc`/`mdw <addr>` 透過 SWD 讀暫存器跟記憶體，比一直問使用者「LED 現在閃成怎樣」有效率、也精確得多**——這是之後遇到類似狀況應該優先採用的除錯方式。
+- **I2C `BUSY` 卡死可以用 `I2C_CR1.SWRST` 軟體重置解決**(RM0368 18.6.1)——設 1 再清 0，強制把周邊內部狀態機(含 `BUSY` 旗標)復位，比重新上電更快，`i2c1_init()` 現在每次都會做這一步。
+- **懷疑「是不是這顆晶片本身壞了」時，最乾淨的排除法是換一顆完全不同廠牌/晶片的 I2C 裝置測試，而不是一直換線或換位置**——這次卡在 MPU6050 疑似故障時，寫一個掃過全部 128 個位址的 bus scanner、改接一顆 LCD1602(PCF8574)背板，一次就確認 STM32 端韌體完全正常、問題 100% 在 MPU6050 模組本身(而且兩顆獨立購入的模組都一樣)。這招比反覆排查接線更快定案，之後遇到類似「疑似晶片故障」的狀況可以優先考慮。
 
 ## MyoWare 2.0 接線(給階段 4，等 ST-Link + USB-TTL 都到貨後用)
 
@@ -204,6 +209,8 @@ cmake --build build --target flash_i2c_mpu6050_hello
 
 **燒錄/監聽前，建議先跑 `python3 ../tools/check_hardware_ready.py`(或從 repo 根目錄 `python3 tools/check_hardware_ready.py`)**，確認 ST-Link 跟 USB-TTL 都真的準備好——這個腳本不只檢查裝置有沒有列舉出來，還會實際打開序列埠、設定好參數，這是開發過程中 USB-TTL 反覆出問題後才發現「裝置有列出來」不代表「真的能用」，寫這個腳本就是要一次檢查到位，不用每次手動排查。
 
+**懷疑 I2C 裝置(MPU6050 或其他)沒反應時，加 `--i2c-scan`**：`python3 tools/check_hardware_ready.py --i2c-scan`。這會自動燒錄 `firmware/src/i2c_bus_scan_main.c`(一個永久保留的診斷用韌體，不是 pipeline 階段)，掃過全部 0～127 位址，回報哪些位址有 ACK、匯流排是否卡在 `BUSY`——這是把階段 4b 卡關時整套手動 SWD 排查流程（`BUSY` 位元檢查、換位址/換接腳/換周邊、最後拿 LCD1602 交叉驗證）自動化，只需要 ST-Link，不需要 USB-TTL。以後懷疑某顆 I2C 裝置有問題，先跑這個，不用重新手動想一次怎麼查。
+
 ## MPU6050/GY-521 接線(階段 4a)
 
 | GY-521 接腳 | 接到 | 備註 |
@@ -217,6 +224,8 @@ cmake --build build --target flash_i2c_mpu6050_hello
 **麵包板注意事項**：模組的 8 根針腳務必完全插到底——沒插緊會造成 I2C 匯流排卡在 `BUSY` 狀態，連 `START` 訊號都發不出去，症狀是韌體整個看起來像卡死。可以用 `openocd -f openocd.cfg -c "init" -c "halt" -c "mdw 0x40005418 1" -c "resume" -c "shutdown"` 直接讀 `I2C1_SR2`，`BUSY`(bit 1)如果是 1 就代表匯流排卡住。
 
 `WHO_AM_I`(位址 0x75)官方文件寫死是 `0x68`，但實測這批 GY-521 板子(可能是相容/副廠晶片)穩定回報 `0x72`——韌體已經改成同時接受兩個值，不要看到不是 `0x68` 就假設接線有問題，先確認數值是否**穩定重複**(多次重新燒錄結果一致)。
+
+**⚠️ 目前狀態(2026-08-17)：兩顆 GY-521 都無法通訊，問題已隔離在模組本身。** 詳見 PRD.md 階段 4b 章節的完整排除記錄——簡單說，STM32 端的 I2C1 韌體已經用 LCD1602(PCF8574，位址 `0x27`)交叉驗證完全正常，但兩顆獨立購入的 MPU6050/GY-521 模組送出位址後都收不到 ACK。在拿到來源不同的新模組之前，這條線暫時卡住。
 
 ## 已知問題
 

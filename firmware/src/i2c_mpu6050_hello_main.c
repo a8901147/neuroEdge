@@ -74,6 +74,7 @@
 // unwinding to inspect a local variable at a breakpoint.
 volatile uint8_t g_last_who_am_i = 0xAAu; // sentinel so "never written" is obvious
 volatile int g_last_i2c_result = -1;
+volatile uint32_t g_sr1_at_af = 0xFFFFFFFFu; // SR1 snapshot at the moment AF is detected
 
 #define LED_PIN 13u
 
@@ -147,6 +148,14 @@ static void i2c1_init(void) {
     GPIOB->AFR[0] &= ~((0xFu << (4u * 6u)) | (0xFu << (4u * 7u)));
     GPIOB->AFR[0] |= (4u << (4u * 6u)) | (4u << (4u * 7u)); // AF4 = I2C1
 
+    // If a previous transaction was interrupted mid-sequence (e.g. by a
+    // debug reset), the peripheral's internal state machine -- including
+    // the BUSY flag in SR2 -- can stay latched even once SDA/SCL are both
+    // idle-high again. SWRST forces a full reset of that state machine
+    // (RM0368 18.6.1); safe to do unconditionally on every init.
+    I2C1->CR1 |= I2C_CR1_SWRST;
+    I2C1->CR1 &= ~I2C_CR1_SWRST;
+
     I2C1->CR1 &= ~I2C_CR1_PE; // must be disabled to configure CCR/TRISE
     I2C1->CR2 = 16u;          // FREQ[5:0] = 16MHz APB1
     I2C1->CCR = 0x50u;        // 100kHz Sm mode @ 16MHz
@@ -172,6 +181,7 @@ static int i2c1_send_address(uint8_t addr7, int read) {
     uint32_t guard = 100000u;
     while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
         if (I2C1->SR1 & I2C_SR1_AF) { // NACK on address -- wrong address or device not present
+            g_sr1_at_af = I2C1->SR1;
             I2C1->SR1 &= ~I2C_SR1_AF;
             return 1;
         }

@@ -95,3 +95,19 @@ firmware_add_target(timer_adc_1khz src/startup.c src/timer_adc_1khz_main.c)
 # Stage 4a: I2C1 (PB6/PB7) polled master driver reading an MPU6050/GY-521,
 # isolated from the ComplementaryFilter integration that comes next.
 firmware_add_target(i2c_mpu6050_hello src/startup.c src/i2c_mpu6050_hello_main.c)
+
+# Stage 4b: the Host-tested include/edgeneuro/fusion/complementary_filter.hpp
+# fused with real MPU6050 data (reuses Stage 4a's verified I2C1 read path).
+firmware_add_target(complementary_filter_hello src/startup.c src/complementary_filter_hello_main.cpp)
+
+# Permanent diagnostic tool (not a pipeline stage): scans the full I2C1
+# 7-bit address space and reports which addresses ACK. Driven by
+# tools/check_hardware_ready.py --i2c-scan -- see that script and this
+# target's own file header for why this exists.
+firmware_add_target(i2c_bus_scan src/startup.c src/i2c_bus_scan_main.c)
+
+# Diagnostic tool (not a pipeline stage): runs Stage 4b's ComplementaryFilter
+# loop with synthetic accel/gyro data (no real MPU6050 needed) to smoke-test
+# firmware plumbing -- timing, USART2, filter math stability -- ahead of a
+# replacement sensor arriving. See this target's own file header.
+firmware_add_target(complementary_filter_stress_test src/startup.c src/complementary_filter_stress_test_main.cpp)
