@@ -137,7 +137,35 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     - **Flashing:** `firmware/openocd.cfg` (ST-Link, `stm32f4x`, 1 MHz); each `flash_<name>` target programs at `0x08004000`, leaving the bootloader in sector 0 untouched.
 
   * **The four questions:** 1–3 answered, 4 conditionally passed. Phase 1.5 has done its job.
-  * **Next:** wire the MPU6050 over I2C and run the host-verified `ComplementaryFilter` on the board, with register values checked in RM0368 first.
+  * **Stage 4a: I2C1 + MPU6050 (GY-521), passes on the board (2026-08-15).** I2C1 on PB6/PB7 at 100 kHz (RM0368 ch. 18); MPU6050 registers (`PWR_MGMT_1` 0x6B, `WHO_AM_I` 0x75, 14 bytes from `ACCEL_XOUT_H`) and scales (16384 LSB/g, 131 LSB/(°/s)) from InvenSense RM-MPU-6000A-00 and PS-MPU-6000A-00. `firmware/src/i2c_mpu6050_hello_main.c`.
+
+    Four separate problems were found and fixed on the way:
+    1. **Wiring:** the USB-serial adapter was on A1/A2 instead of A2/A3.
+    2. **Loose module:** a module not fully seated in the breadboard held the I2C bus `BUSY` (read over SWD).
+    3. **`WHO_AM_I` = `0x72`**, not `0x68`, on every read: a compatible chip; the firmware accepts both.
+    4. **Firmware bug in multi-byte reads:** an N > 2 byte receive must time ACK and STOP with `BTF`, not `RXNE` (RM0368 §18.3.3). Fixed.
+
+    **Debugging over SWD:** reading registers and memory through the ST-Link (`openocd`, `mdw`, `nm`/`addr2line`, diagnostic globals) proved far more reliable than UART output or the LED.
+
+    **Result:** at rest `accel_z ≈ 16850` (≈1.03 g), `accel_x`/`accel_y` near 0, gyro offsets of a few deg/s: the I2C + MPU6050 path works.
+
+  * **Stage 4b blocked: the MPU6050 modules appear faulty (2026-08-17, open).** With `ComplementaryFilter` on the board (`firmware/src/complementary_filter_hello_main.cpp`), I2C fails again and the module never returns to its Stage 4a state. Each step below was checked over SWD:
+    1. `BUSY` stuck at 1 → `SWRST` (RM0368 18.6.1) clears it, but the address is then not acknowledged.
+    2. New jumper wires → no change.
+    3. Different breadboard holes → no change.
+    4. Continuity and supply checked with a meter (3.3 V, no shorts) → all fine.
+    5. Addresses `0x68` and `0x69` → both NACK.
+    6. 100 kHz and 10 kHz → same.
+    7. **A second, newly bought GY-521 → exactly the same.**
+    8. `SR1` at the failure is `0x400` (AF only): a real NACK, not a firmware misread.
+    9. Alternate pins `PB8`/`PB9` (still I2C1) → same.
+    10. I2C2 on `PB10`/`PB3` → a different failure, but `PB3` doubles as a debug pin, so inconclusive.
+    11. **Decisive test:** an I2C bus scanner with a different device, an LCD1602 backpack (PCF8574): only `0x27` answers and the LCD works. The STM32 side is healthy; the fault is in the two GY-521 modules.
+    - **Conclusion:** the I2C1 driver is verified against a third-party device; the `ComplementaryFilter` integration waits for a working MPU6050.
+
+  * **Stress test while waiting for a new MPU6050 (2026-08-17):** `firmware/src/complementary_filter_stress_test_main.cpp` runs the filter loop (math, UART output, an I2C write to the LCD1602 at `0x27` each pass) on smooth synthetic data. 60 s, 367 passes: steady output, no NaN or Inf. The loop period measured 163.4 ms, not the 250 ms assumed from `delay(400000u)`, so `kDt` in `complementary_filter_hello_main.cpp` is now `0.163f`, to be re-measured with a real MPU6050.
+
+  * **Next:** with a working MPU6050, run `ComplementaryFilter` on real data and re-measure the loop period.
 
   * **Stage 3a: USART2 output, passes on the board (2026-08-15).** Questions 3 and 4 both need UART output, so UART is verified on its own first.
     - Register values checked in RM0368 (Rev 5) and the STM32F401 datasheet:

@@ -22,6 +22,10 @@ src/heap_guard_check_main.cpp         Stage 2: guarded tick() loop, pass/fail on
 src/uart_hello_main.c                 Stage 3a: USART2 transmit (PA2/PA3)
 src/adc_hello_main.c                  Stage 3b: ADC1 on PA0, software-triggered
 src/timer_adc_1khz_main.c             Stage 3c/3d: TIM2 TRGO triggers ADC1 at 1 kHz
+src/i2c_mpu6050_hello_main.c          Stage 4a: I2C1 (PB6/PB7) raw accelerometer and gyroscope from an MPU6050
+src/complementary_filter_hello_main.cpp  Stage 4b: ComplementaryFilter on real MPU6050 data
+src/i2c_bus_scan_main.c               Diagnostic: scans every I2C1 address (tools/check_hardware_ready.py --i2c-scan)
+src/complementary_filter_stress_test_main.cpp  Diagnostic: the ComplementaryFilter loop on synthetic data, no MPU6050 needed
 ```
 
 ## Toolchain (once)
@@ -42,7 +46,7 @@ brew install dfu-util openocd
 
 ```sh
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-toolchain.cmake
-cmake --build build --target blink footprint_check heap_guard_check uart_hello adc_hello timer_adc_1khz -j
+cmake --build build --target blink footprint_check heap_guard_check uart_hello adc_hello timer_adc_1khz i2c_mpu6050_hello -j
 ```
 
 Every target also produces a `.bin` (via `objcopy`) and prints `arm-none-eabi-size` on each build.
@@ -56,6 +60,7 @@ cmake --build build --target flash_heap_guard_check  # LED solid = pass, fast bl
 cmake --build build --target flash_uart_hello        # one line per second at 9600 baud
 cmake --build build --target flash_adc_hello         # one raw ADC value per second
 cmake --build build --target flash_timer_adc_1khz    # one report per 1000 samples, about 1 s apart
+cmake --build build --target flash_i2c_mpu6050_hello # one line of raw accel/gyro values per second
 ```
 
 Each `flash_<name>` target runs `openocd -f openocd.cfg -c "program <bin> 0x08004000 verify reset exit"`, which writes from sector 1 on and leaves the bootloader in sector 0 untouched.
@@ -158,6 +163,22 @@ for _ in range(5):
 
 **Result:** **1.005 s, 1.005 s, 1.002 s**, within the HSI's own tolerance: 1 kHz sampling holds. Question 3 answered.
 
+**7. Flash Stage 4a (`i2c_mpu6050_hello`): I2C1 read of an MPU6050:**
+
+```sh
+cmake --build build --target flash_i2c_mpu6050_hello
+```
+
+Register values from RM0368 ch. 18 and InvenSense RM-MPU-6000A-00 / PS-MPU-6000A-00. **Result:** at rest `accel_z≈16850` (≈1.03 g), `accel_x`/`y` near 0, gyro offsets in the normal range.
+
+Lessons from the debugging:
+- **Unstable UART is often wiring:** here `TXD`/`RXD` were on `A1`/`A2` instead of `A2`/`A3`.
+- **A hung I2C bus shows in `I2C1_SR2.BUSY`**, read directly over SWD.
+- **Multi-byte reads must time NACK/STOP with `BTF`, not `RXNE`** (RM0368 §18.3.3, N > 2 bytes); single-byte reads hide the difference.
+- **When UART is unreliable, read registers and memory over SWD** (`openocd halt`, `reg pc`, `mdw <addr>`) instead of interpreting the LED.
+- **`I2C_CR1.SWRST` clears a stuck `BUSY`** (RM0368 18.6.1); `i2c1_init()` now always does it.
+- **To tell a faulty chip from a firmware fault, test a different I2C device:** a bus scanner and an LCD1602 backpack (PCF8574) showed the STM32 side working and both MPU6050 modules faulty.
+
 ## MyoWare 2.0 wiring
 
 From SparkFun's MyoWare 2.0 documentation:
@@ -185,6 +206,26 @@ Electrode placement (snap connectors, forearm flexors for grip):
 | `VCC` (3V3/5V) | **not connected** | The board already has power; connecting VCC too would put two supplies on one rail. |
 
 On the Mac, `ls /dev/tty.usbserial-*` shows whether the adapter enumerated, before any UART firmware runs.
+
+**Before flashing or listening, run `python3 tools/check_hardware_ready.py`**: it checks that the ST-Link and the USB-serial adapter are present and that the port actually opens.
+
+**If an I2C device does not respond, add `--i2c-scan`:** it flashes `firmware/src/i2c_bus_scan_main.c`, scans addresses 0–127 and reports which acknowledge and whether the bus is stuck `BUSY`. Needs only the ST-Link.
+
+## MPU6050/GY-521 wiring (Stage 4a)
+
+| GY-521 pin | To | Notes |
+| --- | --- | --- |
+| `VCC` | STM32 3.3V | The MPU6050 itself takes 2.375–3.46 V. |
+| `GND` | STM32 GND | Common ground. |
+| `SCL` | STM32 `PB6` (I2C1_SCL, AF4) | Datasheet Table 9; no clash with `PA0`/`PA2`/`PA3`/`PA13`/`PA14`. |
+| `SDA` | STM32 `PB7` (I2C1_SDA, AF4) | As above. |
+| `XDA`/`XCL`/`ADO`/`INT` | not connected | Not used. |
+
+**Breadboard:** seat all eight pins fully; a loose module holds the bus `BUSY` and the firmware appears to hang. `openocd -f openocd.cfg -c "init" -c "halt" -c "mdw 0x40005418 1" -c "resume" -c "shutdown"` reads `I2C1_SR2`; `BUSY` is bit 1.
+
+`WHO_AM_I` (0x75) is documented as `0x68`, but these GY-521 boards consistently return `0x72` (a compatible chip); the firmware accepts both.
+
+**Status (2026-08-17): neither GY-521 module communicates; the fault is in the modules.** The I2C1 firmware works with an LCD1602 (PCF8574, `0x27`), but both modules NACK their address (PRD.md, Stage 4b).
 
 ## Known issues
 
