@@ -221,6 +221,11 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
       - `tests/test_slew_rate_limiter.cpp`（7 個 test case）：涵蓋初始值、單步內到位不 overshoot、遠距離目標會被限速、多步驟斜坡爬升到位、對稱下降、`reset()` 立即跳變、持續變動目標下輸出始終不超過每步允許的最大變化量。
     - 全部 60 個 Catch2 test case（`ComplementaryFilter` 7 個、`GripStateMachine` 7 個、`SlewRateLimiter` 7 個都在內）在 `coverage`/`debug-heapguard` 兩個 preset 下全數通過。
 
+  * **`include/edgeneuro/control/threshold_calibrator.hpp` + 韌體開機互動式校準（2026-08-19）**：把階段 5a 寫死的 `threshold` 常數（1220）改成開機時透過「放鬆 → 握拳」兩階段真實取樣自動算出，而不是每次換電極貼法/皮膚接觸/增益旋鈕都要手動改常數重燒。`ThresholdCalibrator<ValueType>` 分別記錄放鬆階段觀測到的最大值、握拳階段觀測到的最小值，取兩者中點當閾值；`is_valid()` 明確要求兩階段都真的被觀測過，不能只靠數值大小關係判斷（寫測試時抓到一個真實 bug：初始 sentinel 值本身就滿足「contracted_min > relaxed_max」，若不額外追蹤「是否真的收到過觀測值」，完全沒取樣過也會誤判成校準成功——已修正並補測試）。`tests/test_threshold_calibrator.cpp`（7 個 test case）涵蓋這個情境跟基本中點運算、reset。
+    - **韌體端的同步問題跟修正過程**：一開始用固定延遲(先 2 秒後 3 秒)自動跑兩階段取樣，結果連續兩次因為「真人透過對話介面被指示動作」跟「韌體自主計時」對不上，取樣窗口跑完時使用者根本還沒真的放鬆/握拳，導致 `CALIBRATE FAILED`。改成**互動式**：每階段開始前透過 USART2 RX 等待任意一個位元組才開始取樣，由操作端（人或 host 腳本）自己決定精確的開始時機，不再猜測時間。改完後同步問題徹底解決，第一次乾淨拿到 `relaxed_max=491 contracted_min=3583 threshold=2037`。
+    - **意外發現的新問題與修正**：互動式校準會讓 `main()` 卡在 `usart2_recv_byte()` 無限等待，如果沒有任何一方送出觸發位元組（例如板子重置後沒人接著送位元組），韌體會完全沉默、不進主迴圈也不印任何東西——外觀上跟「完全沒在動」無法區分，實際發生過一次（懷疑是 SWD 操作間接造成重置）。修正：加入 `kCalibrationEnabled`（編譯期常數，**預設 `false`**）與 `kFallbackThreshold`（沿用上次校準成功的真實數值 2037）——關閉時用 `if constexpr` 直接把整段互動式校準邏輯編譯掉，開機立即進入正常控制迴圈，不需要任何人互動；只有明確想重新校準時才改成 `true`、重燒、走一次互動流程。
+    - **真實硬體上觀察到電極接觸品質會隨時間漂移**：同一次 session 內，剛校準完的乾淨放鬆訊號（~491），幾分鐘後同樣「放鬆」狀態卻讀到跟握拳時相近的高值、且在閾值附近不穩定震盪——`GripStateMachine` 的遲滯機制正確反映了這個真實不穩定，不是程式判斷錯誤，根因懷疑是電極貼片鬆動/流汗/貼合度隨時間變化，屬於物理層面問題，留待之後處理，不是這次要解決的範圍。
+
 * **Phase 2: MuJoCo 神經義肢 3D 控制與仿真 (MuJoCo Simulation & Turnkey HIL Prototyping) 【Phase 1.5 驗證完畢後視結果排入】**
   * 引入 **MuJoCo** 生物物理動力學仿真框架（歐洲殿堂級機器人與計算神經科學實驗室核心標準工具）。
   * 實作即時解碼回報接縫（Bridging Layer），將已堅固屹立的 EdgeNeuro 引擎解碼出的意圖/多通道指令映射至 **MuJoCo 3D 神經義肢模型**（例如 MPL Hand 或 Shadow Hand），展現流暢神經控制閉環與力學運動反饋。

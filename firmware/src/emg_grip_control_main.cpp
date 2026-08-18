@@ -14,34 +14,42 @@
 // guess, unlike Stage 4b's I2C loop where the assumed dt turned out to be
 // off by 35% (see complementary_filter_stress_test_main.cpp).
 //
-// kThreshold: validated against real electrode data on real hardware
-// (2026-08-18, see PRD.md Stage 5a), not the placeholder this comment
-// used to describe. Stage 3e's one-off finger-touch test had found
-// MyoWare's relaxed-vs-clench range uncomfortably narrow (~1211-1216
-// relaxed vs ~1227 sustained clench) and deferred gain-pot tuning as a
-// result -- real electrodes turned out to give a much wider, cleaner
-// swing (~434-495 relaxed vs ~3700+ sustained clench), and 1220 already
-// sits comfortably between them with no retuning needed. Still liable to
-// change later, though: this was one session, one arm, one gain-pot
-// setting -- if electrode placement, skin contact, or the gain pot
-// changes, re-run this stage and watch raw_min/raw_max (or
-// tools/watch_myoware_uart.py) before assuming 1220 still holds.
+// Threshold can be computed at boot by ThresholdCalibrator
+// (include/edgeneuro/control/threshold_calibrator.hpp) from a short
+// relax-then-contract sequence, since a fixed magic number only holds for
+// one exact electrode placement, skin contact, and gain-pot setting. BUT
+// that sequence blocks main() waiting for a UART trigger byte per phase
+// (see the calibration section below) -- if nothing ever sends one (board
+// power-cycled with no host attached, or a host attaches after boot and
+// doesn't know to send bytes), the board sits silently forever, never
+// reaching the real control loop. Found this out directly: a mid-session
+// SWD/reset event left the board silently stuck at the first
+// usart2_recv_byte() call with zero UART output, which looked identical
+// to "nothing is working" from the outside.
+//
+// kCalibrationEnabled defaults OFF so a normal power-up always reaches
+// the control loop immediately, using kFallbackThreshold (the last known-
+// good value from an actual calibration run, see PRD.md Stage 5a) instead
+// of blocking on human/host interaction. Flip it to true, reflash, and
+// recalibrate whenever electrode placement or skin contact actually
+// changes enough to matter -- not on every boot.
+static constexpr bool kCalibrationEnabled = false;
+static constexpr float kFallbackThreshold = 2037.0f; // from the last successful CALIBRATE OK
 
 #include <cstdint>
 
 #include "edgeneuro/control/grip_state_machine.hpp"
 #include "edgeneuro/control/slew_rate_limiter.hpp"
+#include "edgeneuro/control/threshold_calibrator.hpp"
 #include "stm32f4xx.h"
 
 #define LED_PIN 13u
 
-// TEMP starting points -- tune against this stage's own printed min/max
-// once real relaxed-vs-clench data is in hand (see header comment).
-static constexpr float kThreshold = 1220.0f;
 static constexpr float kOnDuration = 0.15f;  // seconds of sustained above-threshold to grip
 static constexpr float kOffDuration = 0.15f; // seconds of sustained below-threshold to release
 static constexpr float kSlewRate = 5.0f;     // setpoint units/sec -- 1/5=0.2s full-stroke ramp
 static constexpr float kDt = 0.001f;         // TIM2-verified exact 1kHz, see header comment
+static constexpr uint32_t kCalibrationSamples = 3000u; // ~3s per phase @ 1kHz
 
 static void delay(uint32_t count) {
     while (count--) {
@@ -59,7 +67,17 @@ static void usart2_init(void) {
     GPIOA->AFR[0] |= (7u << (4u * 2u)) | (7u << (4u * 3u));
 
     USART2->BRR = 0x0683u;
-    USART2->CR1 = USART_CR1_UE | USART_CR1_TE;
+    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE; // RE added: calibration waits on RX
+}
+
+// Blocks until any byte arrives -- used to let a human/host trigger each
+// calibration phase at exactly the right moment (see main()), instead of
+// guessing a fixed delay that can't stay in sync with someone reacting to
+// printed instructions over a serial link with real round-trip latency.
+static uint8_t usart2_recv_byte(void) {
+    while (!(USART2->SR & USART_SR_RXNE)) {
+    }
+    return (uint8_t)USART2->DR;
 }
 
 static void usart2_send_byte(uint8_t byte) {
@@ -130,6 +148,20 @@ static void adc1_init_timer_triggered(void) {
                 ADC_CR2_EXTEN_0 | ADC_CR2_EXTSEL_1 | ADC_CR2_EXTSEL_2;
 }
 
+// Blinks `code` short pulses then a long pause, forever -- UART-independent
+// diagnostic, same pattern as every other stage's blink_code().
+static void blink_code(int code) {
+    while (1) {
+        for (int i = 0; i < code; ++i) {
+            GPIOC->ODR &= ~(1u << LED_PIN);
+            delay(150000u);
+            GPIOC->ODR |= (1u << LED_PIN);
+            delay(150000u);
+        }
+        delay(1200000u);
+    }
+}
+
 int main(void) {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;
     GPIOC->MODER &= ~(3u << (LED_PIN * 2u));
@@ -141,7 +173,68 @@ int main(void) {
     tim2_init_1khz_trgo();
     usart2_send_string("Stage 5a: EMG grip control, real MyoWare on PA0\r\n");
 
-    edgeneuro::GripStateMachine<float> grip(kThreshold, kOnDuration, kOffDuration);
+    // Calibration is opt-in (kCalibrationEnabled, see header comment) --
+    // when off, skip straight to kFallbackThreshold so a normal power-up
+    // always reaches the control loop without needing anyone to send a
+    // UART trigger byte.
+    float threshold = kFallbackThreshold;
+
+    if constexpr (kCalibrationEnabled) {
+        // Two phases, blocking the main loop on purpose -- this only runs
+        // once at boot, not in the hot path. Each phase waits for an
+        // arbitrary RX byte before it starts sampling, instead of a fixed
+        // delay: a blind timer can't stay synchronized with a human
+        // reacting to printed instructions over a serial link with real
+        // round-trip latency (confirmed the hard way -- the first two
+        // attempts at a fixed 2s/3s delay both ran the sampling window
+        // before anyone was actually relaxed/clenching, and silently
+        // failed). Whatever sends the trigger byte (a human pressing
+        // Enter in a terminal, or a host script) decides exactly when
+        // each phase starts.
+        edgeneuro::ThresholdCalibrator<float> calibrator;
+
+        usart2_send_string("CALIBRATE: relax, then send any byte to start sampling...\r\n");
+        usart2_recv_byte();
+        usart2_send_string("CALIBRATE: sampling relaxed...\r\n");
+        for (uint32_t i = 0; i < kCalibrationSamples;) {
+            if (ADC1->SR & ADC_SR_EOC) {
+                calibrator.observe_relaxed((float)(ADC1->DR & 0xFFFu));
+                ++i;
+            }
+        }
+
+        usart2_send_string("CALIBRATE: now clench and hold, then send any byte to start sampling...\r\n");
+        usart2_recv_byte();
+        usart2_send_string("CALIBRATE: sampling contracted...\r\n");
+        for (uint32_t i = 0; i < kCalibrationSamples;) {
+            if (ADC1->SR & ADC_SR_EOC) {
+                calibrator.observe_contracted((float)(ADC1->DR & 0xFFFu));
+                ++i;
+            }
+        }
+
+        usart2_send_string("CALIBRATE: relaxed_max=");
+        usart2_send_uint((uint32_t)calibrator.relaxed_max());
+        usart2_send_string(" contracted_min=");
+        usart2_send_uint((uint32_t)calibrator.contracted_min());
+        usart2_send_string("\r\n");
+
+        if (!calibrator.is_valid()) {
+            usart2_send_string("CALIBRATE FAILED -- no clean separation, check electrodes\r\n");
+            blink_code(9);
+        }
+
+        threshold = calibrator.threshold();
+        usart2_send_string("CALIBRATE OK, threshold=");
+        usart2_send_uint((uint32_t)threshold);
+        usart2_send_string("\r\n");
+    } else {
+        usart2_send_string("CALIBRATE skipped (kCalibrationEnabled=false), using fallback threshold=");
+        usart2_send_uint((uint32_t)threshold);
+        usart2_send_string("\r\n");
+    }
+
+    edgeneuro::GripStateMachine<float> grip(threshold, kOnDuration, kOffDuration);
     edgeneuro::SlewRateLimiter<float> setpoint(kSlewRate);
 
     uint32_t sample_count = 0;

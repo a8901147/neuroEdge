@@ -249,6 +249,8 @@ cmake --build build --target flash_emg_grip_control
 
 **用 `python3 tools/watch_myoware_uart.py` 即時監看**（已支援這個階段的輸出格式）。
 
+**閾值校準（`kCalibrationEnabled`，預設關閉）**：`emg_grip_control_main.cpp` 開頭有一個編譯期開關。預設 `false`，開機直接用 `kFallbackThreshold`（目前是上次真實校準得到的 2037）進入正常運作，不需要任何人互動。想重新校準時改成 `true`、重新編譯燒錄，開機後會透過 UART 互動式引導：先印出「放鬆，準備好後送任意一個位元組」，等收到位元組才開始 3 秒取樣，握拳階段同理——**刻意不用固定延遲**，因為透過對話/腳本操作時的真人反應時間跟韌體自主計時對不上，之前踩過兩次坑。互動時可以用一小段 Python(`serial.Serial(port, 9600); ser.write(b'\n')`)在準備好的當下送出觸發位元組。校準完成後會印出 `relaxed_max`/`contracted_min`/算出的 `threshold`，記得把新數字更新回 `kFallbackThreshold`，下次開機才不用重新校準。
+
 **實測結果(2026-08-18)**：真實電極訊號動態範圍遠比階段 3e 手指觸碰測試乾淨——放鬆 `~434-495`、持續握拳 `~3700+`，原本沿用階段 3e 舊資料設的 `threshold=1220` 意外地已經落在中間、不用調。反覆握拳/放鬆循環測試，轉態(`EDGE -> Gripping`/`EDGE -> Released`)都乾淨對應真實動作，放鬆時的自然訊號衰減也沒有被誤判成雜訊觸發。順便把先前延後處理的 MyoWare 增益調整(未知數 4)用真實資料收尾。
 
 ## 已知問題
