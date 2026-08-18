@@ -22,6 +22,10 @@ Each stage is a C++20 concept, resolved at compile time. The value type (`float`
 * **Wearable mode, `EdgeNeuro<1, 6>`:** one EMG channel (grip) and a 6-axis IMU (arm orientation).
 * **Stress mode, `EdgeNeuro<32, 0>`:** 32 EMG channels, to test the zero-allocation design at scale.
 
+> **Control architecture for Phase 3 (2026-08-17): EMG and IMU do not share one `classifier_.classify()` decision.** Mode A above, which feeds all channels into one classifier, shows that `EdgeNeuro<>` is generic; it is not the control logic for the arm. Arm orientation must follow the IMUs continuously (a 200-sample window at 1 kHz would add 200 ms), while the grip is a discrete event decided over a short time. **Phase 3 therefore runs two independent paths:** the IMUs bypass `Pipeline` (`ComplementaryFilter` → orientation), and the EMG goes through a grip decision. `ComplementaryFilter` does not need an `ImuFilterT` slot.
+>
+> **The EMG path uses a threshold state machine, not `LdaClassifier` (2026-08-17):** Phase 3 has one MyoWare 2.0 on its `ENV` output, already rectified and low-passed in hardware. One channel carries one dimension (how hard the muscle contracts), so a multi-class classifier adds only window latency. A threshold with on and off durations, the usual approach in commercial myoelectric hands, reacts in 50–150 ms. `LdaClassifier` and `Pipeline` stay for a later multi-channel setup.
+
 | Layer | Role | Requirement |
 | --- | --- | --- |
 | **Provider concept** | Supplies samples. | The host (`CsvSignalProvider`) and the target (`Stm32AdcProvider`) plug in through the same interface. |
@@ -193,12 +197,15 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     - **Decision:** gain and electrode placement are tuned later; they do not block the remaining work. Question 4 is conditionally passed.
 
   * **Host-side work while waiting for hardware:** orientation fusion and command smoothing are plain math, fully testable on the host with Catch2:
-    - **`include/edgeneuro/fusion/complementary_filter.hpp` (done, checked on real data):** `ComplementaryFilter<ValueType>` fuses gyroscope and accelerometer into roll and pitch (no yaw: there is no magnetometer). It is not a `Filter` (that concept is single-channel) and is not yet part of the pipeline. `initialize(ax, ay, az)` starts from the accelerometer angle instead of converging from zero.
+    - **`include/edgeneuro/fusion/complementary_filter.hpp` (done, checked on real data):** `ComplementaryFilter<ValueType>` fuses gyroscope and accelerometer into roll and pitch (no yaw: there is no magnetometer). It is not a `Filter` (that concept is single-channel) and stays outside `Pipeline` (§3). `initialize(ax, ay, az)` starts from the accelerometer angle instead of converging from zero.
       - `tests/test_complementary_filter.cpp` (7 test cases) checks known physical inputs first (unit vectors, integrated known rates).
       - Units: the Myo protocol header (`myohw.h`) gives accelerometer in g, gyroscope in deg/s and a normalized quaternion; the data confirm it (|a| ≈ 1.03 g at rest, unit quaternions, single-digit gyro values).
       - `tests/test_complementary_filter_real_data.cpp` runs the filter on a still EMG-EPN-612 recording (992 rows) and compares with the Myo's own quaternion: 1.4e-4 rad (roll) and 2.8e-4 rad (pitch) apart, well within the 0.01 rad tolerance.
-    - **Command smoothing (not started):** low-pass or interpolate the output so actuator setpoints do not jump.
-    - All 46 Catch2 test cases pass under `debug-heapguard`.
+    - **`include/edgeneuro/control/grip_state_machine.hpp` (done, 2026-08-17):** `GripStateMachine<ValueType>` turns the MyoWare `ENV` signal into grip/release. The envelope must stay above `threshold` for `on_duration` to grip and below it for `off_duration` to release; those durations reject noise spikes. `update()` returns `true` only on a transition.
+      - `tests/test_grip_state_machine.cpp` (7 test cases): start state, too short, exactly long enough, noise spikes, release, dips while gripping, `reset()`. Adding `0.01f` ten times gives slightly less than `0.1f`, so the tests use margins instead of exact step counts.
+    - **`include/edgeneuro/control/slew_rate_limiter.hpp` (done, 2026-08-18):** `SlewRateLimiter<ValueType>` limits how fast the grip setpoint changes, turning the 0/1 decision into a ramp. It smooths a command, not a measurement. Residual IMU jitter can reuse `IirFilter`. Not a `Filter`: a rate needs `dt`.
+      - `tests/test_slew_rate_limiter.cpp` (7 test cases): initial value, no overshoot, limited steps, ramps up and down, `reset()`, a moving target.
+    - All 60 Catch2 test cases pass under `coverage` and `debug-heapguard`.
 
 * **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.
