@@ -111,3 +111,8 @@ firmware_add_target(i2c_bus_scan src/startup.c src/i2c_bus_scan_main.c)
 # firmware plumbing -- timing, USART2, filter math stability -- ahead of a
 # replacement sensor arriving. See this target's own file header.
 firmware_add_target(complementary_filter_stress_test src/startup.c src/complementary_filter_stress_test_main.cpp)
+
+# Stage 5a: the EMG half of Phase 3's split control loop (GripStateMachine +
+# SlewRateLimiter) on real MyoWare hardware, independent of the
+# still-blocked MPU6050 side. See this target's own file header.
+firmware_add_target(emg_grip_control src/startup.c src/emg_grip_control_main.cpp)

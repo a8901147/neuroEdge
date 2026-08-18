@@ -26,6 +26,7 @@ src/i2c_mpu6050_hello_main.c          階段 4a:I2C1(PB6/PB7)讀取 MPU6050/GY-5
 src/complementary_filter_hello_main.cpp  階段 4b:ComplementaryFilter 融合真實 MPU6050 資料(等新模組到貨才能驗證)
 src/i2c_bus_scan_main.c               診斷工具(非 pipeline 階段):掃描 I2C1 全部位址,見 tools/check_hardware_ready.py --i2c-scan
 src/complementary_filter_stress_test_main.cpp  診斷工具(非 pipeline 階段):合成資料跑 ComplementaryFilter 迴圈,不需要真的 MPU6050
+src/emg_grip_control_main.cpp         階段 5a:真實 MyoWare 訊號驅動 GripStateMachine + SlewRateLimiter,不依賴 MPU6050
 ```
 
 ## 工具鏈設定(僅需一次)
@@ -237,6 +238,18 @@ cmake --build build --target flash_i2c_mpu6050_hello
 `WHO_AM_I`(位址 0x75)官方文件寫死是 `0x68`，但實測這批 GY-521 板子(可能是相容/副廠晶片)穩定回報 `0x72`——韌體已經改成同時接受兩個值，不要看到不是 `0x68` 就假設接線有問題，先確認數值是否**穩定重複**(多次重新燒錄結果一致)。
 
 **⚠️ 目前狀態(2026-08-18)：兩顆 GY-521 都無法通訊，問題已隔離在模組本身，5V 供電也無效。** 詳見 PRD.md 階段 4b 章節的完整排除記錄——STM32 端的 I2C1 韌體已經多次用 LCD1602(PCF8574，位址 `0x27`)交叉驗證完全正常(包含改成上面「單一電源」接法之後也重新驗證過)，但兩顆獨立購入的 MPU6050/GY-521 模組送出位址後都收不到 ACK，換成 5V 供電(見上方 `VCC` 那一列的原因)後結果依然相同。在拿到來源不同的新模組(已下單 Adafruit MPU-6050)之前，這條線暫時卡住。
+
+## 階段 5a:EMG 抓放控制(`emg_grip_control`)
+
+```sh
+cmake --build build --target flash_emg_grip_control
+```
+
+不等 MPU6050，先驗證 Phase 3 拆分架構(見 PRD.md 第 3 節)裡不依賴 IMU 的那一半：沿用階段 3c/3d 已驗證的 TIM2+ADC1 硬體觸發 1kHz 讀取 MyoWare `ENV`，餵進 `include/edgeneuro/control/grip_state_machine.hpp` 的 `GripStateMachine` 再接 `slew_rate_limiter.hpp` 的 `SlewRateLimiter`。接線同「MyoWare 2.0 接線」+「USB-TTL 接線」兩節，`ENV → PA0`。
+
+**用 `python3 tools/watch_myoware_uart.py` 即時監看**（已支援這個階段的輸出格式）。
+
+**實測結果(2026-08-18)**：真實電極訊號動態範圍遠比階段 3e 手指觸碰測試乾淨——放鬆 `~434-495`、持續握拳 `~3700+`，原本沿用階段 3e 舊資料設的 `threshold=1220` 意外地已經落在中間、不用調。反覆握拳/放鬆循環測試，轉態(`EDGE -> Gripping`/`EDGE -> Released`)都乾淨對應真實動作，放鬆時的自然訊號衰減也沒有被誤判成雜訊觸發。順便把先前延後處理的 MyoWare 增益調整(未知數 4)用真實資料收尾。
 
 ## 已知問題
 
