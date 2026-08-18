@@ -171,6 +171,14 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
 
   * **Next:** with a working MPU6050, run `ComplementaryFilter` on real data and re-measure the loop period.
 
+  * **2026-08-18: 5 V supply does not help either.** With a single supply (firmware/README.md) and the module on 5 V, both GY-521 modules still do not answer, while the LCD1602 still works on the same wiring. The modules are faulty. An Adafruit MPU-6050 is ordered.
+
+  * **Stage 5a: EMG grip control, passes on the board (2026-08-18).** `firmware/src/emg_grip_control_main.cpp` reads the MyoWare `ENV` at 1 kHz (TIM2 + ADC1, Stage 3c/3d), feeds `GripStateMachine::update()` with `dt=0.001f` and `SlewRateLimiter`, and reports each transition and a once-a-second min/max over USART2. First run on a real signal.
+    - **Result:** with real electrodes, relaxed reads **~434–495** and a sustained clench **~3700+**. The fixed `threshold=1220` sits between them with a wide margin. Transitions are clean: on relaxing the signal decays (3717 → 2069 → 1477 → 887 → 484) and `EDGE -> Released` comes only once it stays below the threshold.
+    - This also closes question 4: the narrow range seen in Stage 3e came from touching the electrodes with a finger, not from real electrodes.
+    - The threshold holds for this electrode placement and gain setting; it must be re-checked when either changes.
+    - `tools/watch_myoware_uart.py` reads the new output format.
+
   * **Stage 3a: USART2 output, passes on the board (2026-08-15).** Questions 3 and 4 both need UART output, so UART is verified on its own first.
     - Register values checked in RM0368 (Rev 5) and the STM32F401 datasheet:
       - PA2/PA3 = AF7 (USART2 TX/RX), datasheet Table 9.
@@ -206,6 +214,11 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     - **`include/edgeneuro/control/slew_rate_limiter.hpp` (done, 2026-08-18):** `SlewRateLimiter<ValueType>` limits how fast the grip setpoint changes, turning the 0/1 decision into a ramp. It smooths a command, not a measurement. Residual IMU jitter can reuse `IirFilter`. Not a `Filter`: a rate needs `dt`.
       - `tests/test_slew_rate_limiter.cpp` (7 test cases): initial value, no overshoot, limited steps, ramps up and down, `reset()`, a moving target.
     - All 60 Catch2 test cases pass under `coverage` and `debug-heapguard`.
+
+  * **`include/edgeneuro/control/threshold_calibrator.hpp` and an interactive boot calibration (2026-08-19):** instead of a fixed threshold, the firmware records a relaxed phase and a clenched phase and takes the midpoint between the relaxed maximum and the clenched minimum. `is_valid()` requires both phases to have been observed (the initial sentinel values alone satisfied `contracted_min > relaxed_max`; fixed and tested). `tests/test_threshold_calibrator.cpp` (7 test cases).
+    - Fixed delays did not match when the person actually relaxed or clenched, so each phase now starts when a byte arrives on USART2. First clean result: `relaxed_max=491 contracted_min=3583 threshold=2037`.
+    - Waiting for that byte can block boot indefinitely, so the calibration is off by default (`kCalibrationEnabled = false`, compiled out with `if constexpr`) and `kFallbackThreshold` keeps the last calibrated value, 2037.
+    - **Electrode contact drifts:** within a few minutes of calibration, the relaxed signal rose close to the clenched level and oscillated around the threshold. Likely electrode contact or sweat; left for later.
 
 * **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.

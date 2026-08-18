@@ -26,6 +26,7 @@ src/i2c_mpu6050_hello_main.c          Stage 4a: I2C1 (PB6/PB7) raw accelerometer
 src/complementary_filter_hello_main.cpp  Stage 4b: ComplementaryFilter on real MPU6050 data
 src/i2c_bus_scan_main.c               Diagnostic: scans every I2C1 address (tools/check_hardware_ready.py --i2c-scan)
 src/complementary_filter_stress_test_main.cpp  Diagnostic: the ComplementaryFilter loop on synthetic data, no MPU6050 needed
+src/emg_grip_control_main.cpp         Stage 5a: MyoWare signal drives GripStateMachine + SlewRateLimiter (no MPU6050)
 ```
 
 ## Toolchain (once)
@@ -194,6 +195,17 @@ Electrode placement (snap connectors, forearm flexors for grip):
 - **END**: toward the wrist, same muscle
 - **REF**: bony or neutral spot (e.g. the elbow); a poor REF contact degrades the signal
 
+## Power (single supply, 2026-08-18)
+
+On the breadboard only one device supplies power; every other device connects signal lines and ground only:
+
+- **The board:** powered from its own USB port, which gives both the 3.3 V and the 5 V rail.
+- **ST-Link:** `SWCLK`, `SWDIO` and `GND` only; **not `3.3V`/`VCC`**.
+- **USB-serial adapter:** `GND`, `TXD`, `RXD` only (below).
+- All grounds are connected together.
+
+A finished device would run from its own battery; this rule is for the breadboard.
+
 ## USB-serial wiring (UART for diagnostics)
 
 **USART2** (`PA2` = TX, `PA3` = RX) is this board's standard debug console in Zephyr's board files, and does not clash with the other pins in use (`PC13` LED, `PA13`/`PA14` SWD, `PA0` MyoWare).
@@ -215,7 +227,7 @@ On the Mac, `ls /dev/tty.usbserial-*` shows whether the adapter enumerated, befo
 
 | GY-521 pin | To | Notes |
 | --- | --- | --- |
-| `VCC` | STM32 3.3V | The MPU6050 itself takes 2.375–3.46 V. |
+| `VCC` | STM32 **5V** | The GY-521 board has its own regulator, which needs headroom, so it is fed 5 V rather than 3.3 V. |
 | `GND` | STM32 GND | Common ground. |
 | `SCL` | STM32 `PB6` (I2C1_SCL, AF4) | Datasheet Table 9; no clash with `PA0`/`PA2`/`PA3`/`PA13`/`PA14`. |
 | `SDA` | STM32 `PB7` (I2C1_SDA, AF4) | As above. |
@@ -225,7 +237,21 @@ On the Mac, `ls /dev/tty.usbserial-*` shows whether the adapter enumerated, befo
 
 `WHO_AM_I` (0x75) is documented as `0x68`, but these GY-521 boards consistently return `0x72` (a compatible chip); the firmware accepts both.
 
-**Status (2026-08-17): neither GY-521 module communicates; the fault is in the modules.** The I2C1 firmware works with an LCD1602 (PCF8574, `0x27`), but both modules NACK their address (PRD.md, Stage 4b).
+**Status (2026-08-18): neither GY-521 module communicates, also on 5 V; the fault is in the modules.** The I2C1 firmware still works with the LCD1602 on the single-supply wiring. An Adafruit MPU-6050 is ordered (PRD.md, Stage 4b).
+
+## Stage 5a: EMG grip control (`emg_grip_control`)
+
+```sh
+cmake --build build --target flash_emg_grip_control
+```
+
+The EMG half of the Phase 3 design (PRD.md §3), without the MPU6050: TIM2 + ADC1 read the MyoWare `ENV` at 1 kHz into `GripStateMachine` (`include/edgeneuro/control/grip_state_machine.hpp`) and `SlewRateLimiter`. Wiring as in the MyoWare and USB-serial sections, `ENV → PA0`.
+
+**Watch it live with `python3 tools/watch_myoware_uart.py`.**
+
+**Threshold calibration (`kCalibrationEnabled`, off by default):** a compile-time switch at the top of `emg_grip_control_main.cpp`. Off, the board boots with `kFallbackThreshold` (2037, the last calibration). On, it guides a calibration over UART: each phase (relaxed, then clenched) starts when a byte arrives, e.g. `serial.Serial(port, 9600).write(b'\n')`, then samples for 3 s. It prints `relaxed_max`, `contracted_min` and the `threshold`; copy the new value into `kFallbackThreshold`.
+
+**Result (2026-08-18):** with real electrodes, relaxed `~434–495`, clenched `~3700+`; the existing `threshold=1220` sits between them. Repeated clench/relax cycles give clean `EDGE -> Gripping` / `EDGE -> Released` transitions, and the natural decay on relaxing does not trigger early.
 
 ## Known issues
 

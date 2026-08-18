@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Live terminal view of firmware/src/timer_adc_1khz_main.c's UART output.
+"""Live terminal view of MyoWare UART output -- recognizes two firmware
+stages' formats and auto-detects which one is running:
 
-That firmware reports one line per ~1000 ADC samples (~once/second at the
-hardware-timed 1kHz rate -- see PRD.md Phase 1.5 stage 3c/3d):
+  firmware/src/timer_adc_1khz_main.c (Stage 3c/3d), one line per ~1000
+  ADC samples (~once/second at the hardware-timed 1kHz rate):
 
     samples=<count> min=<0-4095> max=<0-4095>
+
+  firmware/src/emg_grip_control_main.cpp (Stage 5a), same ~1s cadence
+  plus an immediate line the instant GripStateMachine actually flips
+  state (not just periodic):
+
+    raw_min=<0-4095> raw_max=<0-4095> gripping=<0|1> setpoint_x1000=<int>
+    EDGE -> Gripping
+    EDGE -> Released
 
 min/max are the smallest and largest raw 12-bit ADC readings seen during
 that ~1-second window -- this is what actually shows a real muscle
@@ -26,7 +35,9 @@ import time
 
 import serial
 
-LINE_RE = re.compile(r"samples=(\d+)\s+min=(\d+)\s+max=(\d+)")
+TIMER_ADC_RE = re.compile(r"samples=(\d+)\s+min=(\d+)\s+max=(\d+)")
+GRIP_RE = re.compile(r"raw_min=(\d+)\s+raw_max=(\d+)\s+gripping=(\d)\s+setpoint_x1000=(-?\d+)")
+EDGE_RE = re.compile(r"EDGE -> (Gripping|Released)")
 ADC_FULL_SCALE = 4095
 
 
@@ -55,16 +66,29 @@ def main() -> None:
                 delta = "" if prev_t is None else f"(+{now - prev_t:5.3f}s)"
                 prev_t = now
 
-                match = LINE_RE.search(line)
-                if match:
-                    samples, lo, hi = (int(x) for x in match.groups())
+                timer_adc_match = TIMER_ADC_RE.search(line)
+                grip_match = GRIP_RE.search(line)
+                edge_match = EDGE_RE.search(line)
+
+                if timer_adc_match:
+                    samples, lo, hi = (int(x) for x in timer_adc_match.groups())
                     swing = hi - lo
                     bar_len = int(hi / ADC_FULL_SCALE * args.bar_width)
                     bar = "#" * bar_len + "." * (args.bar_width - bar_len)
                     print(f"{delta:>10}  samples={samples:<8} min={lo:<5} max={hi:<5} "
                           f"swing={swing:<5} [{bar}]")
+                elif grip_match:
+                    lo, hi, gripping, setpoint = (int(x) for x in grip_match.groups())
+                    bar_len = int(hi / ADC_FULL_SCALE * args.bar_width)
+                    bar = "#" * bar_len + "." * (args.bar_width - bar_len)
+                    state = "GRIPPING" if gripping else "released"
+                    print(f"{delta:>10}  raw=[{lo:<5}{hi:<5}] {state:<9} "
+                          f"setpoint={setpoint / 1000:5.2f} [{bar}]")
+                elif edge_match:
+                    print(f"{delta:>10}  >>> {edge_match.group(1).upper()} <<<")
                 else:
-                    # Non-matching line (e.g. garbled on a fresh connection) -- show it raw.
+                    # Non-matching line (e.g. garbled on a fresh connection, or a
+                    # plain string like a firmware boot banner) -- show it raw.
                     print(f"{delta:>10}  {line!r}")
     except KeyboardInterrupt:
         pass
