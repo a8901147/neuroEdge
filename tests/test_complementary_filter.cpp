@@ -54,6 +54,20 @@ TEST_CASE("ComplementaryFilter with alpha=1 is pure gyro integration", "[fusion]
     REQUIRE(filter.roll() == Approx(kRate * kDt * kSteps).epsilon(0.001));
 }
 
+TEST_CASE("ComplementaryFilter's per-call dt overload uses the passed dt, not the constructor's", "[fusion]") {
+    // Stage 5b's combined EMG+IMU loop calls update() at an irregular
+    // cadence (whenever a non-blocking I2C read happens to finish), so it
+    // must be able to override dt per call -- constructed with a dt that,
+    // if silently used instead, would give a visibly different answer.
+    constexpr float kRate = 1.0f;
+    constexpr float kWrongDt = 0.1f;
+    constexpr float kRealDt = 0.5f;
+    ComplementaryFilter<float> filter(1.0f, kWrongDt); // alpha=1: pure gyro integration
+    filter.update(kRate, 0.0f, 0.0f, 0.0f, 1.0f, kRealDt);
+    REQUIRE(filter.roll() == Approx(kRate * kRealDt).epsilon(0.001));
+    REQUIRE(filter.roll() != Approx(kRate * kWrongDt).epsilon(0.001));
+}
+
 TEST_CASE("ComplementaryFilter bounds a constant gyro bias that pure integration lets grow without bound", "[fusion]") {
     // A real gyro has a small constant bias even when stationary. Pure
     // integration (alpha=1) accumulates it linearly forever; the whole

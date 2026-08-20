@@ -27,6 +27,7 @@ src/complementary_filter_hello_main.cpp  階段 4b:ComplementaryFilter 融合真
 src/i2c_bus_scan_main.c               診斷工具(非 pipeline 階段):掃描 I2C1 全部位址,見 tools/check_hardware_ready.py --i2c-scan
 src/complementary_filter_stress_test_main.cpp  診斷工具(非 pipeline 階段):合成資料跑 ComplementaryFilter 迴圈,不需要真的 MPU6050
 src/emg_grip_control_main.cpp         階段 5a:真實 MyoWare 訊號驅動 GripStateMachine + SlewRateLimiter,不依賴 MPU6050
+src/phase3_control_loop_main.cpp      階段 5b:EMG+IMU 合併成真正的 1kHz 主迴圈,不阻塞 I2C 讀取狀態機
 ```
 
 ## 工具鏈設定(僅需一次)
@@ -252,6 +253,20 @@ cmake --build build --target flash_emg_grip_control
 **閾值校準（`kCalibrationEnabled`，預設關閉）**：`emg_grip_control_main.cpp` 開頭有一個編譯期開關。預設 `false`，開機直接用 `kFallbackThreshold`（目前是上次真實校準得到的 2037）進入正常運作，不需要任何人互動。想重新校準時改成 `true`、重新編譯燒錄，開機後會透過 UART 互動式引導：先印出「放鬆，準備好後送任意一個位元組」，等收到位元組才開始 3 秒取樣，握拳階段同理——**刻意不用固定延遲**，因為透過對話/腳本操作時的真人反應時間跟韌體自主計時對不上，之前踩過兩次坑。互動時可以用一小段 Python(`serial.Serial(port, 9600); ser.write(b'\n')`)在準備好的當下送出觸發位元組。校準完成後會印出 `relaxed_max`/`contracted_min`/算出的 `threshold`，記得把新數字更新回 `kFallbackThreshold`，下次開機才不用重新校準。
 
 **實測結果(2026-08-18)**：真實電極訊號動態範圍遠比階段 3e 手指觸碰測試乾淨——放鬆 `~434-495`、持續握拳 `~3700+`，原本沿用階段 3e 舊資料設的 `threshold=1220` 意外地已經落在中間、不用調。反覆握拳/放鬆循環測試，轉態(`EDGE -> Gripping`/`EDGE -> Released`)都乾淨對應真實動作，放鬆時的自然訊號衰減也沒有被誤判成雜訊觸發。順便把先前延後處理的 MyoWare 增益調整(未知數 4)用真實資料收尾。
+
+## 階段 5b:EMG+IMU 合併主迴圈(`phase3_control_loop`)
+
+```sh
+cmake --build build --target flash_phase3_control_loop
+```
+
+把階段 5a 的 EMG 迴圈跟 `ComplementaryFilter` 姿態融合合併成同一個 1kHz 主迴圈——這是真正接近 Phase 3 最終韌體的形狀。核心是 `ImuReader`：把一次完整 14-byte I2C 讀取拆成 10 個顯式狀態，`step()` 每次只檢查一個硬體旗標就返回，不會阻塞 EMG 取樣。接線同時需要「MyoWare 2.0 接線」（EMG，`ENV → PA0`）跟「MPU6050/GY-521 接線」兩節（IMU，`SCL → PB6`、`SDA → PB7`）。
+
+**⚠️ 目前 `kImuTargetAddr` 設定的是 LCD1602(0x27),不是真的 MPU6050(0x68)**——兩顆 MPU6050 都還故障(見上方),先拿 LCD 當替代品驗證協定時序,PB6/PB7 這次要接 LCD1602,不是 MPU6050。等新模組到貨,把這個常數改回 `0x68` 即可,`ImuReader` 本身不用再改。LCD 讀出來的 `roll_x1000`/`pitch_x1000` 不是真實姿態,只是 PCF8574 目前輸入腳位電位換算出來的數字,拿來驗證的是**協定時序有沒有跑對**,不是感測器資料本身。
+
+**實測結果(2026-08-20/21)**：第一版把 `imu_reader.step()` 綁在 `if (ADC1->SR & ADC_SR_EOC)` 裡,只跟著 EMG tick(1ms)呼叫一次,一秒只完成 47-48 次完整讀取——遠低於 100kHz 匯流排理論上限(約 500-650 次/秒)。原因是輪詢頻率被 tick 卡住,不是匯流排慢。把 `step()` 移到主迴圈最外層、跟 ADC EOC 判斷脫鉤,讓它利用兩次取樣之間的 CPU 閒置時間盡量多跑,改完後**躍升到 592-593 次/秒**,非常接近硬體上限。EMG tick 節奏全程沒受影響,證實不阻塞設計確實有效。
+
+**下一步(等 MPU6050 到貨)**：把 `kImuTargetAddr` 改回 `0x68`;評估切到 I2C Fast Mode(400kHz,MPU6050 晶片本身支援,官方 product spec 查證過)看能不能把完成速度再往上推。
 
 ## 已知問題
 

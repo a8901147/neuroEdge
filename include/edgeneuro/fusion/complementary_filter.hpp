@@ -56,12 +56,28 @@ public:
     // gyro_x/gyro_y: angular rate about the X/Y axes (rad/s).
     // accel_x/y/z: accelerometer reading (the gravity vector, when the
     // sensor isn't also undergoing significant linear acceleration).
+    // Uses the constructor's fixed dt_ -- only correct when update() is
+    // actually called at that exact fixed interval. Stage 5b's combined
+    // EMG+IMU loop calls update() whenever a non-blocking I2C read
+    // happens to complete, which isn't fixed-interval (varies ~2-4 EMG
+    // ticks depending on bus timing) -- that caller must use the
+    // dt-overload below instead, or every gyro integration step would be
+    // silently wrong by whatever factor the real interval differs from
+    // dt_.
     void update(ValueType gyro_x, ValueType gyro_y, ValueType accel_x, ValueType accel_y, ValueType accel_z) noexcept {
+        update(gyro_x, gyro_y, accel_x, accel_y, accel_z, dt_);
+    }
+
+    // Same as above but with an explicit per-call dt (seconds), overriding
+    // the constructor's fixed dt_ for this one call -- for callers whose
+    // update() cadence isn't actually fixed-interval.
+    void update(ValueType gyro_x, ValueType gyro_y, ValueType accel_x, ValueType accel_y, ValueType accel_z,
+                ValueType dt) noexcept {
         const ValueType accel_roll = accel_roll_angle(accel_y, accel_z);
         const ValueType accel_pitch = accel_pitch_angle(accel_x, accel_y, accel_z);
 
-        roll_ = alpha_ * (roll_ + gyro_x * dt_) + (ValueType{1} - alpha_) * accel_roll;
-        pitch_ = alpha_ * (pitch_ + gyro_y * dt_) + (ValueType{1} - alpha_) * accel_pitch;
+        roll_ = alpha_ * (roll_ + gyro_x * dt) + (ValueType{1} - alpha_) * accel_roll;
+        pitch_ = alpha_ * (pitch_ + gyro_y * dt) + (ValueType{1} - alpha_) * accel_pitch;
     }
 
     // Seeds roll/pitch directly from the accelerometer-derived angle,
