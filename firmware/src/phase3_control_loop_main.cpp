@@ -32,11 +32,33 @@
 // working MPU6050 arrives, flip kImuTargetAddr to 0x68 and the state
 // machine needs no other changes.
 
+// Command trajectory smoothing on the IMU side: a light low-pass on
+// roll()/pitch() to remove residual sample-to-sample jitter before it
+// reaches an actuator setpoint -- distinct from ComplementaryFilter's own
+// smoothing, which turns a noisy *measurement* into a believable angle,
+// not a noisy *already-fused* angle into a smoother command (see
+// include/edgeneuro/control/slew_rate_limiter.hpp's header comment for
+// the same distinction on the EMG side). Reuses the project's existing
+// IirFilter rather than a new component, per PRD.md Stage 5b's control-
+// architecture note.
+//
+// Configured as a single-pole exponential moving average expressed as
+// IirFilter's biquad (b0=kSmoothAlpha, a1=kSmoothAlpha-1, everything else
+// 0): y[n] = alpha*x[n] + (1-alpha)*y[n-1]. kSmoothAlpha=0.5 is a
+// starting placeholder, not a derived cutoff frequency -- IMU reads
+// complete irregularly (see ImuReader below) so the real sample rate
+// isn't fixed yet, making a proper frequency-domain design premature.
+// Retune once real MPU6050 jitter is available to look at (LCD1602's
+// stand-in readings are constant, not jittery, so there's nothing to
+// tune against yet -- see PRD.md Stage 5b).
+static constexpr float kSmoothAlpha = 0.5f;
+
 #include <cstdint>
 
 #include "edgeneuro/control/grip_state_machine.hpp"
 #include "edgeneuro/control/slew_rate_limiter.hpp"
 #include "edgeneuro/control/threshold_calibrator.hpp"
+#include "edgeneuro/filters/iir_filter.hpp"
 #include "edgeneuro/fusion/complementary_filter.hpp"
 #include "stm32f4xx.h"
 
@@ -236,7 +258,21 @@ public:
             g_sr1_at_timeout = I2C1->SR1;
             g_sr2_at_timeout = I2C1->SR2;
             g_timeout_count = g_timeout_count + 1;
+            // A plain STOP isn't enough to recover a genuinely wedged
+            // peripheral state (BUSY latched from an interrupted prior
+            // transaction, not just bus contention) -- confirmed the hard
+            // way in Stage 4a/4b, where only SWRST reliably cleared it.
+            // Doing the same full reset+reconfigure here means a
+            // transient stuck-bus condition self-recovers on the next
+            // begin() instead of requiring a manual reflash.
             I2C1->CR1 |= I2C_CR1_STOP;
+            I2C1->CR1 |= I2C_CR1_SWRST;
+            I2C1->CR1 &= ~I2C_CR1_SWRST;
+            I2C1->CR1 &= ~I2C_CR1_PE;
+            I2C1->CR2 = 16u;
+            I2C1->CCR = 0x50u;
+            I2C1->TRISE = 0x11u;
+            I2C1->CR1 |= I2C_CR1_PE;
             state_ = ImuReadState::Idle;
             return false;
         }
@@ -403,6 +439,10 @@ int main(void) {
     edgeneuro::SlewRateLimiter<float> setpoint(kSlewRate);
     edgeneuro::ComplementaryFilter<float> filter(0.98f, kDtPerTick);
     ImuReader imu_reader;
+    // Trajectory smoothing (see header comment for kSmoothAlpha): y[n] =
+    // alpha*x[n] + (1-alpha)*y[n-1], expressed as IirFilter's biquad.
+    edgeneuro::IirFilter<float> roll_smoother(kSmoothAlpha, 0.0f, 0.0f, kSmoothAlpha - 1.0f, 0.0f);
+    edgeneuro::IirFilter<float> pitch_smoother(kSmoothAlpha, 0.0f, 0.0f, kSmoothAlpha - 1.0f, 0.0f);
 
     uint32_t tick_count = 0;
     uint32_t imu_completions = 0;
@@ -411,6 +451,8 @@ int main(void) {
     uint32_t emg_window_max = 0u;
 
     float sp = 0.0f; // last EMG setpoint, for the periodic report below (updated only on EOC)
+    float roll_smoothed = 0.0f;
+    float pitch_smoothed = 0.0f;
 
     while (1) {
         // --- IMU: advance the non-blocking read every pass of this loop,
@@ -435,6 +477,8 @@ int main(void) {
             const float dt = (float)(tick_count - last_imu_completion_tick) * kDtPerTick;
             last_imu_completion_tick = tick_count;
             filter.update(gx, gy, ax, ay, az, dt); // real elapsed dt, not the fixed constructor value
+            roll_smoothed = roll_smoother.process(filter.roll());
+            pitch_smoothed = pitch_smoother.process(filter.pitch());
         }
 
         if (ADC1->SR & ADC_SR_EOC) {
@@ -470,6 +514,10 @@ int main(void) {
                 usart2_send_float_x1000(filter.roll());
                 usart2_send_string(" pitch_x1000=");
                 usart2_send_float_x1000(filter.pitch());
+                usart2_send_string(" roll_smoothed_x1000=");
+                usart2_send_float_x1000(roll_smoothed);
+                usart2_send_string(" pitch_smoothed_x1000=");
+                usart2_send_float_x1000(pitch_smoothed);
                 usart2_send_string("\r\n");
                 GPIOC->ODR ^= (1u << LED_PIN);
                 emg_window_min = 0xFFFu;

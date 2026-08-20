@@ -268,6 +268,10 @@ cmake --build build --target flash_phase3_control_loop
 
 **下一步(等 MPU6050 到貨)**：把 `kImuTargetAddr` 改回 `0x68`;評估切到 I2C Fast Mode(400kHz,MPU6050 晶片本身支援,官方 product spec 查證過)看能不能把完成速度再往上推。
 
+**指令軌跡平滑化(2026-08-21)**：`roll_smoother`/`pitch_smoother`(`IirFilter`,單極指數移動平均,`kSmoothAlpha=0.5`)已經接上,套用在 `roll`/`pitch` 輸出。`kSmoothAlpha` 是暫定值,不是推導出來的截止頻率——現在 LCD 假資料很穩定沒有抖動,等真的接上 MPU6050、有真實雜訊可以看,再回頭校準。
+
+**`ImuReader` 逾時自我修復**：逾時後除了 `STOP`,也會比照 `i2c1_init()` 做一次完整 `SWRST` + 重新設定 `CR2`/`CCR`/`TRISE`,讓暫時性的匯流排 `BUSY` 卡死能自動恢復,不用每次都手動重插線、重新燒錄。診斷用全域變數 `g_timeout_count`/`g_imu_state_at_timeout`/`g_sr1_at_timeout`/`g_sr2_at_timeout` 可以用 SWD 讀出來確認有沒有在重試。
+
 ## 已知問題
 
 - **WeAct 官方的 HID bootloader 燒錄工具在這台 Apple Silicon Mac 上不能用**——追查到根因是 `hid_enumerate()` 回傳空的裝置路徑(這支 2019 年工具跟現今 IOKit 有深層相容性問題，不值得繼續修)。改用 ST-Link + OpenOCD 燒錄；完整調查過程見 PRD.md 的 Phase 1.5 章節。
