@@ -220,6 +220,15 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     - Waiting for that byte can block boot indefinitely, so the calibration is off by default (`kCalibrationEnabled = false`, compiled out with `if constexpr`) and `kFallbackThreshold` keeps the last calibrated value, 2037.
     - **Electrode contact drifts:** within a few minutes of calibration, the relaxed signal rose close to the clenched level and oscillated around the threshold. Likely electrode contact or sweat; left for later.
 
+  * **Stage 5b: EMG and IMU in one 1 kHz loop with non-blocking I2C (2026-08-20/21):** `firmware/src/phase3_control_loop_main.cpp` combines the Stage 5a EMG loop (`GripStateMachine` + `SlewRateLimiter`) with IMU fusion (`ComplementaryFilter`) in one main loop.
+    - **Non-blocking I2C:** a 14-byte read at 100 kHz takes 1.5–2 ms, longer than the 1 ms EMG tick. `ImuReader` splits it into explicit states (`WaitStart1` … `WaitBtfLast`); `step()` checks one flag and returns. The sequence matches the verified blocking driver. Its timeout counts elapsed ticks, not calls.
+    - With both MPU6050s faulty, the state machine was first tested against the LCD1602 (PCF8574, `0x27`), which goes through the same START/ADDR/TXE/BTF/RXNE/STOP sequence, including the multi-byte BTF tail. A real MPU6050 only needs `kImuTargetAddr` changed to `0x68`.
+    - **Polling rate:** calling `step()` once per EMG tick gave only 47–48 reads/s, since a read needs ~22 state steps. Calling it on every loop pass, between ADC samples, raised that to **592–593 reads/s**, close to the bus limit. With steady operation `g_timeout_count` stays 0.
+    - **`ComplementaryFilter::update()` takes `dt`:** reads now complete every 2–4 ticks, so a fixed `dt_` would integrate the gyroscope wrongly. A new overload takes the elapsed time; a test checks that it is used.
+    - **Later:** the MPU6050 supports 400 kHz I2C, which could cut a read to about a quarter.
+    - **IMU smoothing (2026-08-21):** `roll_smoother`/`pitch_smoother` reuse `IirFilter` as a one-pole EMA (`b0=alpha`, `a1=alpha-1`); `kSmoothAlpha=0.5` is a starting value, to be tuned on real jitter.
+    - **Self-recovery:** a loose breadboard contact hung the bus again (`BUSY`, 758 timeouts in `WaitStart1`). A timeout now does a full `SWRST` and re-configuration, as at boot, so a temporary hang recovers on the next `begin()`.
+
 * **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.
   * A bridge that maps the engine's output to a simulated hand (for example the Shadow Hand).

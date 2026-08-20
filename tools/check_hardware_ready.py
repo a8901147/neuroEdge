@@ -171,17 +171,20 @@ def run_i2c_scan() -> bool:
     scan_done = _mdw_read(addrs["g_scan_done"])[0]
     bitmap = _mdw_read(addrs["g_scan_bitmap"], 4)
 
-    if busy_before not in (0, 1):
-        print(f"[WARN] g_bus_busy_before_scan read as 0x{busy_before:08x} (unexpected -- stale read?)")
-    elif busy_before == 1:
+    # g_bus_busy_before_scan holds I2C1->SR2 & I2C_SR2_BUSY -- the raw
+    # masked bit value (0x2 for the BUSY bit, not a normalized 0/1), so
+    # "busy" is "nonzero", not "== 1". (Found this the hard way: it
+    # mis-reported a real stuck-BUSY case as an "unexpected" value instead
+    # of the proper FAIL below.)
+    if busy_before == 0:
+        print("[OK  ] I2C1 bus was not BUSY before the scan")
+    else:
         print(
-            "[FAIL] I2C1 bus was already BUSY (stuck) before the scan even started -- "
+            f"[FAIL] I2C1 bus was already BUSY (stuck) before the scan even started (raw=0x{busy_before:08x}) -- "
             "a device is holding SDA or SCL low, or the peripheral's internal state is "
             "wedged. Check module seating, then re-run (SWRST in i2c1_init() should "
             "clear a wedged peripheral state, but not a genuinely shorted/held line)."
         )
-    else:
-        print("[OK  ] I2C1 bus was not BUSY before the scan")
 
     if scan_done != 1:
         print(f"[FAIL] scan did not complete (g_scan_done=0x{scan_done:08x}) -- target may be halted/crashed")

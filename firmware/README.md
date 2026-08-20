@@ -27,6 +27,7 @@ src/complementary_filter_hello_main.cpp  Stage 4b: ComplementaryFilter on real M
 src/i2c_bus_scan_main.c               Diagnostic: scans every I2C1 address (tools/check_hardware_ready.py --i2c-scan)
 src/complementary_filter_stress_test_main.cpp  Diagnostic: the ComplementaryFilter loop on synthetic data, no MPU6050 needed
 src/emg_grip_control_main.cpp         Stage 5a: MyoWare signal drives GripStateMachine + SlewRateLimiter (no MPU6050)
+src/phase3_control_loop_main.cpp      Stage 5b: EMG + IMU in one 1 kHz loop, non-blocking I2C
 ```
 
 ## Toolchain (once)
@@ -252,6 +253,24 @@ The EMG half of the Phase 3 design (PRD.md §3), without the MPU6050: TIM2 + ADC
 **Threshold calibration (`kCalibrationEnabled`, off by default):** a compile-time switch at the top of `emg_grip_control_main.cpp`. Off, the board boots with `kFallbackThreshold` (2037, the last calibration). On, it guides a calibration over UART: each phase (relaxed, then clenched) starts when a byte arrives, e.g. `serial.Serial(port, 9600).write(b'\n')`, then samples for 3 s. It prints `relaxed_max`, `contracted_min` and the `threshold`; copy the new value into `kFallbackThreshold`.
 
 **Result (2026-08-18):** with real electrodes, relaxed `~434–495`, clenched `~3700+`; the existing `threshold=1220` sits between them. Repeated clench/relax cycles give clean `EDGE -> Gripping` / `EDGE -> Released` transitions, and the natural decay on relaxing does not trigger early.
+
+## Stage 5b: EMG + IMU in one loop (`phase3_control_loop`)
+
+```sh
+cmake --build build --target flash_phase3_control_loop
+```
+
+The Stage 5a EMG loop and `ComplementaryFilter` in one 1 kHz main loop. `ImuReader` splits a 14-byte I2C read into explicit states and checks one flag per call, so EMG sampling never waits. Wiring: the MyoWare (`ENV → PA0`) and the MPU6050 (`SCL → PB6`, `SDA → PB7`).
+
+**`kImuTargetAddr` is set to the LCD1602 (`0x27`), not an MPU6050 (`0x68`),** while both MPU6050s are faulty: the LCD exercises the same I2C sequence, so connect it to PB6/PB7 for now. Its `roll_x1000`/`pitch_x1000` are not orientation, only a check that the protocol runs.
+
+**Result (2026-08-20/21):** with `step()` called once per EMG tick, only 47–48 reads/s completed; called on every loop pass, **592–593 reads/s**, close to the bus limit, with the EMG tick unaffected.
+
+**Next (with a working MPU6050):** set `kImuTargetAddr` back to `0x68`; try 400 kHz I2C, which the MPU6050 supports.
+
+**Smoothing (2026-08-21):** `roll_smoother`/`pitch_smoother` (`IirFilter` as a one-pole EMA, `kSmoothAlpha=0.5`) on `roll`/`pitch`. `kSmoothAlpha` is a starting value, to be tuned on real sensor noise.
+
+**`ImuReader` recovers from a timeout:** besides `STOP`, it does a full `SWRST` and re-configuration, as `i2c1_init()` does, so a temporary `BUSY` hang clears itself. `g_timeout_count`, `g_imu_state_at_timeout`, `g_sr1_at_timeout`, `g_sr2_at_timeout` can be read over SWD.
 
 ## Known issues
 

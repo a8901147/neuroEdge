@@ -116,3 +116,10 @@ firmware_add_target(complementary_filter_stress_test src/startup.c src/complemen
 # SlewRateLimiter) on real MyoWare hardware, independent of the
 # still-blocked MPU6050 side. See this target's own file header.
 firmware_add_target(emg_grip_control src/startup.c src/emg_grip_control_main.cpp)
+
+# Stage 5b: EMG + IMU combined into the real Phase 3 loop shape, with a
+# non-blocking I2C1 read state machine (necessary since a blocking 14-byte
+# read takes longer than one EMG tick). Targets the LCD1602 stand-in
+# address until a working MPU6050 arrives -- see this target's own file
+# header for why.
+firmware_add_target(phase3_control_loop src/startup.c src/phase3_control_loop_main.cpp)
