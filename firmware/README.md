@@ -276,7 +276,7 @@ cmake --build build --target flash_phase3_control_loop
 
 **實測結果**：`roll_x1000`/`pitch_x1000` 靜止時穩定,手動傾斜/旋轉板子時即時、正確連續變化(觀察到 roll 1150–1705、pitch 381–1218 隨動作變動),`roll_smoothed`/`pitch_smoothed` 正確跟隨。`imu_completions` 維持 591-593 次/秒,**跟先前 LCD1602 替代測試量到的速度一致**——證實輪詢脫鉤的速度分析換成真實感測器後依然成立。本專案第一次完整驗證：真實 IMU 資料 → `ComplementaryFilter` 融合 → `IirFilter` 平滑,全部在真實硬體、真實動作下正確運作。
 
-**下一步**：評估切到 I2C Fast Mode(400kHz,MPU6050 晶片本身支援,官方 product spec 查證過)看能不能把完成速度再往上推。
+**I2C Fast Mode(400kHz)測過了,晶片/算式都沒問題,但這組麵包板接線不穩定(2026-08-22)**：`CCR=14`/`TRISE=6`(RM0368 18.6.8/18.6.9 Fast mode 公式算出,不是隨便選的)第一次測完全成功,`imu_completions` 從 592/秒衝到 **2028/秒**(約 3.4 倍)。但接線稍微被碰過(搖晃測試抖動時)之後,**同一組已經在 100kHz 下驗證正常的接線,只改回 400kHz 就立刻 `BUSY` 卡死**——排除了單純接線鬆脫的解釋,結論是麵包板杜邦線的寄生電容撐不住 Fast mode 較嚴格的上升時間預算,不是計算錯誤。**目前預設維持 100kHz(可靠)**,400kHz 的常數(`kI2cCcrFastMode400k`/`kI2cTriseFastMode400k`)保留在程式碼裡但未使用——換成焊接短導線的正式板子後這個提速應該還能用。
 
 ## MPU6050 接線(Adafruit,階段 5c)
 

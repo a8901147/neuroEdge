@@ -80,6 +80,29 @@ static constexpr uint8_t kImuRegAddr = 0x3Bu;    // ACCEL_XOUT_H -- meaningless 
 static constexpr uint32_t kImuReadLen = 14u;
 static constexpr uint32_t kImuMaxTicksPerRead = 50u; // abort+retry a read stuck > 50ms
 
+// I2C1 Fast Mode (400kHz, register math below) was tried once a real
+// MPU6050 arrived (PRD.md Stage 5c) and measured a real ~3.4x throughput
+// win (592/s -> 2028/s completions) -- but a second test on the same
+// wiring immediately after a physical disturbance (shaking the board to
+// look at IMU jitter) got stuck BUSY at 400kHz on wiring that worked fine
+// at 100kHz moments earlier, reproducibly. Conclusion: the chip and this
+// register math both support 400kHz, but this breadboard/jumper-wire
+// setup's parasitic capacitance likely pushes real SCL/SDA rise times
+// past Fast mode's tighter 300ns budget (vs. Sm mode's 1000ns) even when
+// TRISE is computed correctly for it -- not a math bug, a real signal-
+// integrity limit of this prototyping hardware. 100kHz stays the default
+// for reliability; kept the Fast-mode constants (unused now) since the
+// speed win is real if this ever moves to a soldered/shorter-trace board.
+// RM0368 18.6.8/18.6.9: Fast-mode period=3*CCR*Tpclk1 (DUTY=0, not Sm
+// mode's 2*CCR*Tpclk1), max rise time 300ns. At 16MHz Tpclk1=62.5ns:
+// CCR=16,000,000/400,000/3=13.33, rounded UP to 14 (13 would give
+// ~410kHz, over the Fast-mode max) -> ~381kHz. TRISE=(300/62.5)+1=5.8,
+// rounded up to 6. F/S=1 (bit15) selects Fast mode; DUTY=0 (bit14).
+static constexpr uint32_t kI2cCcrFastMode400k = 0x800Eu;  // F/S=1, DUTY=0, CCR=14 -- unused, see above
+static constexpr uint32_t kI2cTriseFastMode400k = 6u;     // unused, see above
+static constexpr uint32_t kI2cCcr100k = 0x50u;
+static constexpr uint32_t kI2cTrise100k = 0x11u;
+
 // Diagnostic-only globals, readable via `openocd ... mdw` -- see PRD.md
 // Stage 5b debugging notes.
 volatile int g_imu_state_at_timeout = -1;
@@ -203,8 +226,8 @@ static void i2c1_init(void) {
 
     I2C1->CR1 &= ~I2C_CR1_PE;
     I2C1->CR2 = 16u;
-    I2C1->CCR = 0x50u;
-    I2C1->TRISE = 0x11u;
+    I2C1->CCR = kI2cCcr100k;
+    I2C1->TRISE = kI2cTrise100k;
     I2C1->CR1 |= I2C_CR1_PE;
 }
 
@@ -316,8 +339,8 @@ public:
             I2C1->CR1 &= ~I2C_CR1_SWRST;
             I2C1->CR1 &= ~I2C_CR1_PE;
             I2C1->CR2 = 16u;
-            I2C1->CCR = 0x50u;
-            I2C1->TRISE = 0x11u;
+            I2C1->CCR = kI2cCcr100k;
+            I2C1->TRISE = kI2cTrise100k;
             I2C1->CR1 |= I2C_CR1_PE;
             state_ = ImuReadState::Idle;
             return false;
