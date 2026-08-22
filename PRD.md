@@ -26,6 +26,8 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
 > **⚠️ Phase 3 實際控制架構的修正（2026-08-17）：EMG 跟 IMU 不會共用同一個 `classifier_.classify()` 決策。** 上面「模式 A」把 EMG+IMU 全部通道併成一個 feature 向量、餵給同一個 `Classifier`、吐出一個 class index 的寫法，是 Phase 1 為了展示 `EdgeNeuro<>` 模板通用性（`EmgChannels`/`ImuChannels` 都是模板參數）刻意設計的展示情境，**不是** Phase 3 真實產品要的控制邏輯。真實需求（使用者親口確認）：陀螺儀貼在使用者真手上，即時、連續帶動假手的上下左右方位（不能等 window 存滿才動，`WindowSize=200` 在 1kHz 下等於 200ms 延遲，會非常卡頓）；EMG 則是偵測「持續用力一段時間 → 抓」「持續放鬆一段時間 → 放」，本質是離散事件觸發，累積一段時間判斷才有意義，用現有 `Pipeline` 的 window/feature/classify 機制(或簡化成純粹的持續時間閾值狀態機)沒問題。**結論：Phase 3 會是兩條獨立控制迴路**——IMU 完全繞過 `EdgeNeuro<>`/`Pipeline`，`ComplementaryFilter` 算完 roll/pitch 直接送去方位致動器；EMG 繼續走 `Pipeline` 的 window/classify(或簡化狀態機)。兩者共用同一顆 STM32、同一組感測器，但邏輯上不合併成一個 `classifier_.classify()` 呼叫。`ComplementaryFilter` 因此也不需要想辦法塞進 `ImuFilterT` 插槽——它本來就不該進 `Pipeline`。上面的模式 A/B 描述保留作為 Phase 1 引擎通用性的展示，Phase 3 韌體設計以本段為準。
 >
 > **EMG 這條路也不用 `LdaClassifier`，改用閾值+持續時間狀態機（2026-08-17）：** 確認 Phase 3 目前規劃只用**一顆** MyoWare 2.0（單通道），且接的是 `ENV`（Envelope）輸出腳位——感測器板子上的類比電路已經做完整流+低通濾波，輸出本身就是可以直接跟閾值比較的「目前出力大小」訊號，不需要再用 `IirFilter`/`MavFeature`/`RmsFeature` 這套 DSP 鏈重新萃取特徵。更根本的原因：單一 EMG 通道物理上只能表達「這條肌肉出力多大」一個維度的資訊，無法像多通道那樣分辨不同手勢，`LdaClassifier` 這種多手勢分類器在單通道情境下沒有實質效益，只換來 window（例如 200 samples@1kHz=200ms，且是不重疊 window，最差反應延遲逼近 400ms）造成的固定延遲。改用簡單的閾值+遲滯（hysteresis）狀態機——持續超過閾值 T_on 毫秒才觸發「抓」、持續低於閾值 T_off 毫秒才觸發「放」——這也是市售肌電義肢常見的實際做法，不是自創，延遲可以做到 50–150ms 等級，遠低於 window 分類器。**`LdaClassifier`/`Pipeline` 架構不刪除**：以後如果真的加裝第二、第三顆 MyoWare 貼在不同肌肉、想做多手勢辨識，屆時多通道的組合模式才是這套架構真正該發揮的地方，現在只是不在這條路上用它。
+>
+> **Phase 3 IMU 數量修正為 2 顆（2026-08-22）：** 先前規劃/PRD 內容都假設**一顆** MPU6050（貼在手腕/前臂，直接輸出手掌方位）。使用者確認實際會用**兩顆** MPU6050：一顆貼**上臂**、一顆貼**前臂**。感測器→自由度對應：上臂 IMU 的 `ComplementaryFilter` roll/pitch（相對重力的絕對角度）驅動**肩關節**兩個自由度（pitch=前後伸展、roll=左右外展）；前臂 IMU 的 pitch 減去上臂 IMU 的 pitch（相對角度）驅動**肘關節**一個自由度（彎曲程度）。兩顆都只是 6 軸（無磁力計）——**yaw（水平朝向）依然量不到**，這個限制不會因為多一顆 IMU 而改變，`elbow = forearm_pitch - shoulder_pitch` 這個算法只有在手臂大致維持同一平面內動作時才準確，是刻意的簡化、不是 bug。這個 2-IMU 方案已經在 Phase 2 的 MuJoCo 模擬層驗證過幾何/控制映射是可行的（見下方 Phase 2 小節），但**尚未接上真實硬體**——`ComplementaryFilter` 需要建立第二個獨立實例（本身無共用/全域狀態，可以安全地建立兩個），韌體主迴圈需要輪詢兩組 I2C 位址（或用不同 I2C bus/多工），這些都還沒做。
 
 | 模組分層 | 職責與技術規格 | 實作要求 |
 | --- | --- | --- |
@@ -255,7 +257,15 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
     - 手部模型採用 `mujoco_menagerie` 的 Shadow Hand（Apache-2.0，`shadow_hand/scene_right.xml`，pin 在 commit `da76818e269b82289eba39808e2fb91d679d6994`）——透過 sparse checkout 取得，作為**未追蹤的本地依賴**（`mujoco_menagerie/` 已加入 `.gitignore`，不 vendor 進版本庫），`rh_forearm` 沒有 joint、焊死在世界座標，這個 iteration 不需要真的手臂骨架。
     - `tools/mujoco_bridge/run_demo.py`：`subprocess.Popen` 啟動 C++ binary、背景 `threading.Thread` 持續 `readline()` 解析 stdout 存進上鎖的共享物件（**不能**在 render loop 裡直接 `readline()`，否則會卡住等下一筆樣本、拖慢 MuJoCo 自己的步調），主迴圈依 MuJoCo 官方文件的 `launch_passive`/`mj_step`/`viewer.sync()` 節奏套用最新讀值。抓握映射：`grip∈[0,1]` 乘上各手指/拇指 actuator 的 ctrlrange 上界；`roll`/`pitch` clamp 到 `rh_A_WRJ2`/`rh_A_WRJ1` 的 ctrlrange 後直接送入（豎起大拇指、外展等 actuator 這個 iteration 不驅動，留在 `ctrl=0` 中性姿態）。macOS 上必須用套件自帶的 `mjpython`,不能用一般 `python3`（`launch_passive` 在 macOS 的 plain CPython 下會丟 `RuntimeError`)。
     - **實測驗證通過**：手指隨 EMG 收縮區間開合、手腕隨合成 IMU 訊號連續轉動，CSV 播放完畢後 viewer 正確 hold 住最後姿勢不當機，全程無多秒等待卡頓（證實 C++ 端 flush 修正確實有效）。
-    - **繞了一圈的教訓（2026-08-22）**：session 中途曾嘗試擴充成雙 IMU 肩肘手臂 + 真實物理抓取物體，投入大量心力調 MJCF 骨架、物理接觸參數。後來使用者提醒「這樣做的初衷是什麼」，回頭檢視才發現：雙 IMU 手臂的感測器預算，跟這裡（第 6 節 Phase 1.5）記錄的真實硬體規劃(僅 1 顆 MyoWare、規劃中的 IMU 也只有 1 顆)對不上，等於是在幫一個尚未存在、也還沒定案的硬體做視覺化，偏離了「MuJoCo 呈現真實裝置解碼輸出」的原始目的。已回退到本節描述的單 IMU 版本；若之後真的要做手臂級展示，應該先確認 Phase 3 的感測器規格再回頭決定模擬範圍，而不是反過來。
+    - **繞了一圈的教訓（2026-08-22）**：session 中途曾嘗試擴充成雙 IMU 肩肘手臂 + 真實物理抓取物體，投入大量心力調 MJCF 骨架、物理接觸參數。當時使用者提醒「這樣做的初衷是什麼」，回頭檢視發現：雙 IMU 手臂的感測器預算，跟當時記錄的真實硬體規劃（僅 1 顆 MyoWare、規劃中的 IMU 也只有 1 顆）對不上，等於在幫一個尚未定案的硬體做視覺化，偏離「MuJoCo 呈現真實裝置解碼輸出」的原始目的，因此先回退到本節描述的單 IMU 版本。**同一天使用者確認 Phase 3 真的會用兩顆 IMU**（見第 3 節架構修正、第 6 節硬體規格），前提條件成立，於是重新實作——見下方 Iteration 2。
+
+  * **Iteration 2：雙 IMU 肩肘手臂 + 物理抓取，動作部分完成、抓取為已知限制（2026-08-22）**——感測器數量對齊剛確認的真實 Phase 3 硬體規劃（2 顆 MPU6050 + 1 顆 MyoWare），不再是憑空延伸。
+    - **感測器→自由度對應**：上臂 IMU 的 `ComplementaryFilter` roll/pitch 驅動新增的**肩關節**（2 自由度：pitch=前後伸展、roll=左右外展）；前臂 IMU 的 pitch 減去上臂 IMU 的 pitch（相對角度）驅動**肘關節**（1 自由度，彎曲程度）。`src/mujoco_bridge_demo.cpp` 建立兩個獨立 `ComplementaryFilter` 實例（本身無共用狀態，安全）；stdout 格式改為 `tick=<n> grip=<f> gripping=<0|1> shoulder_pitch=<f> shoulder_roll=<f> elbow=<f>`，不再輸出 `roll`/`pitch`——手腕本身的方位在只有 2 顆 IMU 的預算下已經不是獨立可觀測量，`rh_A_WRJ1`/`rh_A_WRJ2` 這個 iteration 固定在 `ctrl=0` 中性姿態，交給新的肩肘關節帶動整條手臂。
+    - **手臂骨架**：新增 `tools/mujoco_bridge/arm_hand_scene.xml`，把 `right_hand.xml` 的 `rh_forearm` 子樹（含底下所有手指/拇指幾何、joint range、actuator ctrlrange）**逐字複製、完全不改**，只改它的父層——從直接焊死在世界座標，改成新增的肩（2 joint）+ 肘（1 joint）鏈狀結構，讓整隻手臂能在 3D 空間中真的擺動。MJCF 的 `<include>` 沒辦法把已定義的 body 重新掛到新父層底下，所以是文字複製（fork），不是 include；網格等二進位資源仍從未追蹤的 `mujoco_menagerie/` sparse checkout 讀取，不重複進版本庫。
+    - **手掌方向的幾何 bug（已修正）**：`rh_forearm` 原本的 `quat="0 1 0 1"` 是針對「直接焊在世界座標」這個情境調的，接上新的肩肘鏈之後（直接讀 palm 的旋轉矩陣驗證），手掌在伸展姿勢時朝向幾乎是**正上方**，變成「用手心撈」而不是自然的手心朝下抓取——這是使用者實際看畫面後才抓到的問題。修正：手動用四元數乘法算出額外疊加一個沿伸展軸的 180 度翻轉，`quat="1 0 1 0"`，在模擬中確認手掌法向量從 `(0.34,0,+0.94)`（朝上）翻成 `(-0.29,0,-0.96)`（朝下），而伸展方向的抓取點位置幾乎不變。
+    - **肩肘關節阻尼不足導致的震盪（已修正）**：初版 `damping="2" armature="0.02"`（肩）/`damping="1" armature="0.01"`（肘）在固定目標角度下，手臂會大幅震盪好幾百個 timestep 才勉強收斂，導致抓取點軌跡完全不可預期。調高到 `damping="8" armature="0.05"`（肩）/`damping="5" armature="0.03"`（肘）後乾淨收斂，不再震盪。
+    - **抓取物體/台座調整**：物體從原本 `scene_right.xml` 的橢球改成球體（`type="sphere"`），對不完美的多指接近角度比較寬容；質量、摩擦力、台座尺寸、位置都經過多輪直接對模擬做時間軸測試（不是單純看靜態終點）才定案，細節見 `arm_hand_scene.xml` 內的註解。
+    - **已知限制：抓取不是穩固的零滑動夾持**——測量發現即使 `grip` 拉到最大，五根指尖離球面仍有約 3–8 公分空隙（在多組物體大小/位置/收攏力道組合下都是如此），球會被手臂動作帶著移動一段，但最終會滑落。這是**多指靈巧手的 grasp synthesis 問題**（每根手指目前用同一個比例線性收攏，不是針對物體形狀算出來的個別手指目標角度），比「調物理參數」更根本，超出這個 iteration 的範圍。手臂本身的伸展/外展/彎曲動作已經正確、順暢，是目前這版可以展示的部分；抓取需要更進階的手指控制策略（例如逆向運動學求解各指目標角度，或簡化成拇指+食指兩點式夾取）才能真正解決，留待未來 iteration。
 
 ---
 
@@ -263,7 +273,7 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
 Phase 1.5 的可行性驗證確認四個關鍵未知數皆可行後，再依 Phase 1.5 的實測結果，決定 MuJoCo 與完整硬體部署的投入比重與順序，逐步將韌體大腦置入物理 MCU 與神經電生理感測器中。
 
 * **Phase 3: 硬體抽象層對接 (STM32 HAL / Sensor Stream)**
-  * 於 CMake + `arm-none-eabi-gcc` 環境（延續 Phase 1.5 的 `firmware/` 專案），設定 ADC（讀取 **MyoWare 2.0** 肌電訊號）與 I2C（讀取 MPU6050 慣性通訊）。
+  * 於 CMake + `arm-none-eabi-gcc` 環境（延續 Phase 1.5 的 `firmware/` 專案），設定 ADC（讀取 **MyoWare 2.0** 肌電訊號）與 I2C（讀取**兩顆** MPU6050 慣性通訊——上臂一顆、前臂一顆，2026-08-22 確認，見第 3 節架構修正；韌體需輪詢兩組 I2C 位址或改用多工/雙 bus，Phase 1.5 目前的單 IMU 非阻塞讀取狀態機需要擴充成兩份獨立實例）。
   * 撰寫 HAL 抽象封裝層，實作 `Stm32AdcProvider` 取代原本的 `CsvSignalProvider`（透過 Timer + DMA 驅動採樣）。
   * 秉持零修改原則，將 Stage 1 已徹底驗證的 C++ Core 演算法檔案與 Ring Buffer 結構直接置入 MCU 編譯與運行。
   * **(HIL 物理仿真整合)**：透過 Serial / USB 傳輸，讓實體 **STM32F401RCT6 Black Pill** 上採集的肌電感測特徵，高達千赫茲地輸出給電腦端的 **MuJoCo 3D 義肢模擬環境**。瞬間讓專案升級擁有高級航空與機電控制專業領域的「**硬體在環（Hardware-in-the-Loop, HIL） 3D 神經義肢仿真測試中心**」！

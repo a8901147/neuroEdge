@@ -96,7 +96,9 @@ cmake --build build/gui-demo -j
 
 ## MuJoCo bridge demo (Phase 2)
 
-Drives a [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie) Shadow Hand from the same real-hardware-validated control logic as Phase 1.5's firmware (`GripStateMachine` + `ComplementaryFilter` + `SlewRateLimiter`, bypassing `Pipeline`/`EdgeNeuro<>` — see PRD §3's architecture note) — `src/mujoco_bridge_demo.cpp` replays a CSV instead of real ADC/I2C hardware and streams decoded grip/orientation to a Python viewer. Sensor count deliberately matches what's actually been validated on real hardware (1 IMU + 1 EMG channel), not a speculative extension — see PRD §6 Phase 2 for why.
+Drives a whole-arm [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie) Shadow Hand (a shoulder+elbow chain fork of `shadow_hand`, see `tools/mujoco_bridge/arm_hand_scene.xml`) from the same real-hardware-validated control logic as Phase 1.5's firmware (`GripStateMachine` + two `ComplementaryFilter` instances + `SlewRateLimiter`, bypassing `Pipeline`/`EdgeNeuro<>` — see PRD §3's architecture note) — `src/mujoco_bridge_demo.cpp` replays a CSV instead of real ADC/I2C hardware and streams decoded grip/shoulder/elbow state to a Python viewer. Sensor count matches the confirmed real Phase 3 hardware budget (2x MPU6050 + 1x MyoWare) — see PRD §3/§6 for the sensor-to-DOF mapping.
+
+**Known limitation**: the arm's reach/shoulder/elbow motion is solid, but the multi-finger grasp is not a secure zero-slip hold — the object gets touched/nudged and partially carried but can slip free, since all fingers currently curl by the same uniform fraction rather than per-finger targets computed for the object's shape. See PRD §6 Phase 2 iteration 2 for the full writeup.
 
 ```sh
 # One-time setup
@@ -109,6 +111,7 @@ git clone --no-checkout --depth 1 --filter=blob:none https://github.com/google-d
 cd mujoco_menagerie && git sparse-checkout init --cone && git sparse-checkout set shadow_hand
 git checkout da76818e269b82289eba39808e2fb91d679d6994 && cd ..
 
+python3 tools/generate_sample_data.py   # regenerate data/*.csv if needed
 cmake --build build/debug-heapguard --target edgeneuro_mujoco_bridge_demo
 .venv/bin/mjpython tools/mujoco_bridge/run_demo.py   # macOS: must be mjpython, not python3
 ```
