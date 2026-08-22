@@ -262,15 +262,31 @@ cmake --build build --target flash_phase3_control_loop
 
 The Stage 5a EMG loop and `ComplementaryFilter` in one 1 kHz main loop. `ImuReader` splits a 14-byte I2C read into explicit states and checks one flag per call, so EMG sampling never waits. Wiring: the MyoWare (`ENV → PA0`) and the MPU6050 (`SCL → PB6`, `SDA → PB7`).
 
-**`kImuTargetAddr` is set to the LCD1602 (`0x27`), not an MPU6050 (`0x68`),** while both MPU6050s are faulty: the LCD exercises the same I2C sequence, so connect it to PB6/PB7 for now. Its `roll_x1000`/`pitch_x1000` are not orientation, only a check that the protocol runs.
+**Result (2026-08-20/21, with the LCD1602):** with `step()` called once per EMG tick, only 47–48 reads/s completed; called on every loop pass, **592–593 reads/s**, close to the bus limit, with the EMG tick unaffected.
 
-**Result (2026-08-20/21):** with `step()` called once per EMG tick, only 47–48 reads/s completed; called on every loop pass, **592–593 reads/s**, close to the bus limit, with the EMG tick unaffected.
-
-**Next (with a working MPU6050):** set `kImuTargetAddr` back to `0x68`; try 400 kHz I2C, which the MPU6050 supports.
-
-**Smoothing (2026-08-21):** `roll_smoother`/`pitch_smoother` (`IirFilter` as a one-pole EMA, `kSmoothAlpha=0.5`) on `roll`/`pitch`. `kSmoothAlpha` is a starting value, to be tuned on real sensor noise.
+**Smoothing (2026-08-21):** `roll_smoother`/`pitch_smoother` (`IirFilter` as a one-pole EMA, `kSmoothAlpha=0.5`) on `roll`/`pitch`. `kSmoothAlpha` is a starting value.
 
 **`ImuReader` recovers from a timeout:** besides `STOP`, it does a full `SWRST` and re-configuration, as `i2c1_init()` does, so a temporary `BUSY` hang clears itself. `g_timeout_count`, `g_imu_state_at_timeout`, `g_sr1_at_timeout`, `g_sr2_at_timeout` can be read over SWD.
+
+## A real Adafruit MPU-6050; `kImuTargetAddr` back to `0x68` (2026-08-22)
+
+Pins (see the table below): `Vin → STM32 3.3V` (its regulator accepts 3–5 V), `GND`, `SCL → PB6`, `SDA → PB7`. With `AD0` open the address is `0x68`.
+
+**Bug fixed:** this firmware had never woken the sensor (`PWR_MGMT_1`, 0x6B), so reads completed (591–593/s) but roll and pitch stayed 0. `mpu6050_write_reg_blocking()` wakes it once at boot.
+
+**Result:** roll and pitch are steady at rest and follow tilting in real time (roll 1150–1705, pitch 381–1218 in `x1000` units); the smoothed values follow. Reads stay at 591–593/s, as with the LCD1602.
+
+**400 kHz I2C works but not on this breadboard (2026-08-22):** `CCR=14`/`TRISE=6` (RM0368 18.6.8/18.6.9) raised reads from 592/s to **2028/s**. After the wiring had been disturbed, the same wiring that worked at 100 kHz hung `BUSY` as soon as it was switched back to 400 kHz: the breadboard's capacitance is too much for fast mode's rise time. **100 kHz stays the default;** `kI2cCcrFastMode400k`/`kI2cTriseFastMode400k` are kept for soldered wiring.
+
+## MPU6050 wiring (Adafruit, Stage 5c)
+
+| Adafruit pin | To | Notes |
+| --- | --- | --- |
+| `Vin` | STM32 **3.3V** | The board's regulator accepts 3–5 V. |
+| `GND` | STM32 GND | Common ground. |
+| `SCL` | STM32 `PB6` | I2C1. |
+| `SDA` | STM32 `PB7` | I2C1. |
+| `3Vo`/`INT`/`AD0`/`FS`/`SCE`/`SDE`/`CLKIN` | not connected | With `AD0` open the address is `0x68`. |
 
 ## Known issues
 

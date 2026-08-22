@@ -227,7 +227,16 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     - **`ComplementaryFilter::update()` takes `dt`:** reads now complete every 2–4 ticks, so a fixed `dt_` would integrate the gyroscope wrongly. A new overload takes the elapsed time; a test checks that it is used.
     - **Later:** the MPU6050 supports 400 kHz I2C, which could cut a read to about a quarter.
     - **IMU smoothing (2026-08-21):** `roll_smoother`/`pitch_smoother` reuse `IirFilter` as a one-pole EMA (`b0=alpha`, `a1=alpha-1`); `kSmoothAlpha=0.5` is a starting value, to be tuned on real jitter.
+    - **`kSmoothAlpha` not yet tuned (2026-08-22):** at rest the real MPU6050 barely jitters after the complementary filter (α = 0.98), so its effect could not be seen; `kSmoothAlpha=0.5` stays unverified.
     - **Self-recovery:** a loose breadboard contact hung the bus again (`BUSY`, 758 timeouts in `WaitStart1`). A timeout now does a full `SWRST` and re-configuration, as at boot, so a temporary hang recovers on the next `begin()`.
+
+  * **Stage 5c: a real Adafruit MPU-6050; fusion verified on the hardware (2026-08-22).** Four wires (`Vin` to 3.3 V, `GND`, `SCL` PB6, `SDA` PB7); address `0x68` with `AD0` open. `i2c_bus_scan` sees it at once.
+    - **Bug found:** `phase3_control_loop_main.cpp` never woke the sensor (`PWR_MGMT_1`, 0x6B), so reads completed (591–593/s) but roll and pitch stayed 0. `mpu6050_write_reg_blocking()` now wakes it at boot.
+    - **Result:** roll and pitch are steady at rest and follow tilting and turning in real time; the smoothed values follow with a small lag. Reads stay at 591–593/s, as measured with the LCD1602. Real IMU data → `ComplementaryFilter` → `IirFilter` works on the hardware.
+
+  * **I2C fast mode (400 kHz): the chip and the math work, the breadboard does not (2026-08-22).** RM0368 18.6.8/18.6.9: `CCR=14`, `TRISE=6` at 16 MHz. **First test:** reads went from 592/s to **2028/s** (about 3.4×), with correct roll and pitch.
+    - Shaking the sensor to look at jitter loosened the wiring: roll and pitch stuck at 0 with reads still completing, and the bus later hung at 100 kHz too. Re-seating the wires fixed both.
+    - **Decisive test:** with the wiring working at 100 kHz and untouched, only switching `CCR`/`TRISE` back to 400 kHz reproduced the hang at once. The breadboard's capacitance likely pushes rise times past fast mode's 300 ns. **The firmware stays at 100 kHz;** the 400 kHz constants are kept for soldered wiring.
 
 * **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.
