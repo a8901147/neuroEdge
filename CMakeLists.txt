@@ -64,6 +64,16 @@ if(TARGET edgeneuro_heap_guard)
 endif()
 
 # ---------------------------------------------------------------------------
+# Phase 2: CSV-replaying "twin" of the real firmware control loop
+# (GripStateMachine + ComplementaryFilter + SlewRateLimiter, bypassing
+# Pipeline/EdgeNeuro<> -- see the file's own header comment), emitting one
+# line/tick to stdout for tools/mujoco_bridge/run_demo.py to consume.
+# ---------------------------------------------------------------------------
+add_executable(edgeneuro_mujoco_bridge_demo src/mujoco_bridge_demo.cpp)
+target_link_libraries(edgeneuro_mujoco_bridge_demo PRIVATE edgeneuro_core)
+target_compile_options(edgeneuro_mujoco_bridge_demo PRIVATE ${EDGENEURO_WARNING_FLAGS})
+
+# ---------------------------------------------------------------------------
 # Third-party test/benchmark frameworks (setup-time allocation only; never
 # linked into the hot loop itself).
 # ---------------------------------------------------------------------------

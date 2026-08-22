@@ -25,6 +25,8 @@ Each stage is a C++20 concept, resolved at compile time. The value type (`float`
 > **Control architecture for Phase 3 (2026-08-17): EMG and IMU do not share one `classifier_.classify()` decision.** Mode A above, which feeds all channels into one classifier, shows that `EdgeNeuro<>` is generic; it is not the control logic for the arm. Arm orientation must follow the IMUs continuously (a 200-sample window at 1 kHz would add 200 ms), while the grip is a discrete event decided over a short time. **Phase 3 therefore runs two independent paths:** the IMUs bypass `Pipeline` (`ComplementaryFilter` → orientation), and the EMG goes through a grip decision. `ComplementaryFilter` does not need an `ImuFilterT` slot.
 >
 > **The EMG path uses a threshold state machine, not `LdaClassifier` (2026-08-17):** Phase 3 has one MyoWare 2.0 on its `ENV` output, already rectified and low-passed in hardware. One channel carries one dimension (how hard the muscle contracts), so a multi-class classifier adds only window latency. A threshold with on and off durations, the usual approach in commercial myoelectric hands, reacts in 50–150 ms. `LdaClassifier` and `Pipeline` stay for a later multi-channel setup.
+>
+> **Two IMUs for Phase 3 (2026-08-22):** one MPU6050 on the upper arm and one on the forearm. The upper-arm roll/pitch drives the shoulder (2 DOF); forearm pitch minus upper-arm pitch drives the elbow (1 DOF). Both are 6-axis, so yaw stays unobservable, and the elbow formula holds only for motion roughly in one plane. Verified in the MuJoCo simulation (Phase 2), not yet on the hardware.
 
 | Layer | Role | Requirement |
 | --- | --- | --- |
@@ -241,6 +243,21 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
 * **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.
   * A bridge that maps the engine's output to a simulated hand (for example the Shadow Hand).
+  * **Iteration 1: Python + MuJoCo bridge, done (2026-08-22).** The official MuJoCo Python package gives a working 3D demo first; a WebAssembly version can come later.
+    - `src/mujoco_bridge_demo.cpp` replays `data/wearable_1emg_6imu.csv` through the hardware-verified `GripStateMachine`, `ComplementaryFilter` and `SlewRateLimiter` (not `Pipeline`, §3) at 1 kHz and prints `tick=<n> grip=<f> gripping=<0|1> roll=<f> pitch=<f>`, flushing each line so the pipe does not buffer.
+    - The sensors match the verified hardware (one MPU-6050, one MyoWare 2.0), so MuJoCo shows what the real device would decode.
+    - The hand is the Shadow Hand from `mujoco_menagerie` (Apache-2.0, `shadow_hand/scene_right.xml`, commit `da76818e269b82289eba39808e2fb91d679d6994`), fetched by sparse checkout and ignored by git.
+    - `tools/mujoco_bridge/run_demo.py` starts the C++ binary, reads its output on a background thread, and applies the latest values in the `launch_passive`/`mj_step`/`viewer.sync()` loop: `grip` in [0,1] scales the finger actuators, `roll`/`pitch` drive the wrist (`rh_A_WRJ2`/`rh_A_WRJ1`). On macOS it needs `mjpython`.
+    - **Result:** the fingers close and open with the EMG, the wrist follows the IMU data, and the viewer holds the last pose when the file ends.
+    - A two-IMU arm was tried first and set aside because it did not match the hardware planned at the time; once two IMUs were confirmed the same day, it became Iteration 2.
+
+  * **Iteration 2: two-IMU shoulder and elbow, with physical grasping; motion done, grasping a known limitation (2026-08-22).** The sensors match the planned hardware (2× MPU6050, 1× MyoWare).
+    - **Sensors to joints:** upper-arm roll/pitch → shoulder (2 DOF); forearm pitch minus upper-arm pitch → elbow (1 DOF). Two `ComplementaryFilter` instances; output `tick=<n> grip=<f> gripping=<0|1> shoulder_pitch=<f> shoulder_roll=<f> elbow=<f>`. The wrist stays neutral: two IMUs cannot observe it separately.
+    - **Arm model:** `tools/mujoco_bridge/arm_hand_scene.xml` copies the `rh_forearm` subtree from `right_hand.xml` unchanged and mounts it on a new shoulder (2 joints) and elbow (1 joint). MJCF `<include>` cannot re-parent a body, hence the copy; meshes still come from `mujoco_menagerie/`.
+    - **Palm orientation fixed:** on the new arm the palm faced up when reaching; an extra 180° turn (`quat="1 0 1 0"`) points it down (normal from `(0.34,0,+0.94)` to `(-0.29,0,-0.96)`).
+    - **Joint damping fixed:** the arm oscillated for hundreds of steps; damping and armature raised to 8/0.05 (shoulder) and 5/0.03 (elbow).
+    - **Object:** a sphere instead of an ellipsoid; mass, friction and pedestal tuned against the simulation over time (see `arm_hand_scene.xml`).
+    - **Known limitation:** even at full grip the fingertips stay 3–8 cm from the ball, which is carried for a while and then slips. Every finger closes by the same fraction; a real grasp needs per-finger targets (grasp synthesis), beyond this iteration. The arm motion itself works.
 
 ---
 
@@ -248,7 +265,7 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
 Once Phase 1.5 answers its four questions, its results set how much goes into MuJoCo and how much into the full hardware build.
 
 * **Phase 3: hardware abstraction (STM32 / sensor stream)**
-  * CMake + `arm-none-eabi-gcc` (the `firmware/` project): ADC for the **MyoWare 2.0** and I2C for the MPU6050.
+  * CMake + `arm-none-eabi-gcc` (the `firmware/` project): ADC for the **MyoWare 2.0** and I2C for **two** MPU6050s (upper arm and forearm, §3), which needs a second reader instance.
   * A `Stm32AdcProvider` in place of `CsvSignalProvider` (timer-driven sampling).
   * The verified C++ core and ring buffer compile for the MCU unchanged.
   * **Hardware in the loop:** the **STM32F401RCT6 Black Pill** streams its decoded output over serial to the MuJoCo model on the PC.
