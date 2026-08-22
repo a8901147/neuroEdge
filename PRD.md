@@ -249,6 +249,13 @@ EdgeNeuro 是一套專為邊緣運算與神經義肢控制設計的 C++ 即時�
   * 引入 **MuJoCo** 生物物理動力學仿真框架（歐洲殿堂級機器人與計算神經科學實驗室核心標準工具）。
   * 實作即時解碼回報接縫（Bridging Layer），將已堅固屹立的 EdgeNeuro 引擎解碼出的意圖/多通道指令映射至 **MuJoCo 3D 神經義肢模型**（例如 MPL Hand 或 Shadow Hand），展現流暢神經控制閉環與力學運動反饋。
   * 針對免安裝 Demo，採用「**零自建前端切版、既有技術棧插栓即用**」策略：引入開源成熟的 Wasm 力學渲染環境（如 `mujoco-wasm` / 免運營開源科研圖表框架），直接封裝部署至 GitHub Pages，形成攻無不克之頂尖 PhD 申請作品清單（Research Portfolio）。
+  * **Iteration 1：Python + MuJoCo 原生套件橋接，已完成並驗證（2026-08-22）**——選擇先用 Python + MuJoCo 官方套件（而非直接跳到 wasm）快速做出能動的 3D demo，wasm 移植留待之後獨立處理。
+    - 新增 `src/mujoco_bridge_demo.cpp`：CSV 播放版的「真實韌體主迴圈分身」，刻意繞過 `Pipeline`/`EdgeNeuro<>`/`LdaClassifier`（那是 Phase 1 引擎通用性展示，不是 Phase 3 真實控制邏輯，見第 3 節架構修正），直接重用已在真實硬體驗證過的 `GripStateMachine`（EMG）+ `ComplementaryFilter`（IMU）+ `SlewRateLimiter`（平滑），逐筆讀 `data/wearable_1emg_6imu.csv`、以 1kHz 步調印出 `tick=<n> grip=<f> gripping=<0|1> roll=<f> pitch=<f>` 到 stdout（顯式 `flush()`，因為變成 pipe 之後 stdout 預設是 full-buffered、不是 line-buffered，否則 Python 端會卡住收不到資料）。
+    - 感測器數量刻意對齊 Phase 1.5 實際驗證過的真實硬體規格（1 顆 Adafruit MPU-6050 + 1 顆 MyoWare 2.0），維持「MuJoCo 呈現的是真實裝置解碼輸出」的定位,不是憑空延伸的想像動畫。
+    - 手部模型採用 `mujoco_menagerie` 的 Shadow Hand（Apache-2.0，`shadow_hand/scene_right.xml`，pin 在 commit `da76818e269b82289eba39808e2fb91d679d6994`）——透過 sparse checkout 取得，作為**未追蹤的本地依賴**（`mujoco_menagerie/` 已加入 `.gitignore`，不 vendor 進版本庫），`rh_forearm` 沒有 joint、焊死在世界座標，這個 iteration 不需要真的手臂骨架。
+    - `tools/mujoco_bridge/run_demo.py`：`subprocess.Popen` 啟動 C++ binary、背景 `threading.Thread` 持續 `readline()` 解析 stdout 存進上鎖的共享物件（**不能**在 render loop 裡直接 `readline()`，否則會卡住等下一筆樣本、拖慢 MuJoCo 自己的步調），主迴圈依 MuJoCo 官方文件的 `launch_passive`/`mj_step`/`viewer.sync()` 節奏套用最新讀值。抓握映射：`grip∈[0,1]` 乘上各手指/拇指 actuator 的 ctrlrange 上界；`roll`/`pitch` clamp 到 `rh_A_WRJ2`/`rh_A_WRJ1` 的 ctrlrange 後直接送入（豎起大拇指、外展等 actuator 這個 iteration 不驅動，留在 `ctrl=0` 中性姿態）。macOS 上必須用套件自帶的 `mjpython`,不能用一般 `python3`（`launch_passive` 在 macOS 的 plain CPython 下會丟 `RuntimeError`)。
+    - **實測驗證通過**：手指隨 EMG 收縮區間開合、手腕隨合成 IMU 訊號連續轉動，CSV 播放完畢後 viewer 正確 hold 住最後姿勢不當機，全程無多秒等待卡頓（證實 C++ 端 flush 修正確實有效）。
+    - **繞了一圈的教訓（2026-08-22）**：session 中途曾嘗試擴充成雙 IMU 肩肘手臂 + 真實物理抓取物體，投入大量心力調 MJCF 骨架、物理接觸參數。後來使用者提醒「這樣做的初衷是什麼」，回頭檢視才發現：雙 IMU 手臂的感測器預算，跟這裡（第 6 節 Phase 1.5）記錄的真實硬體規劃(僅 1 顆 MyoWare、規劃中的 IMU 也只有 1 顆)對不上，等於是在幫一個尚未存在、也還沒定案的硬體做視覺化，偏離了「MuJoCo 呈現真實裝置解碼輸出」的原始目的。已回退到本節描述的單 IMU 版本；若之後真的要做手臂級展示，應該先確認 Phase 3 的感測器規格再回頭決定模擬範圍，而不是反過來。
 
 ---
 

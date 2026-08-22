@@ -2,17 +2,18 @@
 
 Modular, zero-allocation, real-time BCI/neuroprosthetic signal-processing engine in C++20. See [PRD.md](PRD.md) for the full product/architecture spec. This README covers day-to-day build/test/run commands only.
 
-**Phase 1** (host-side C++20 algorithmic core) is done — validated for `malloc_count == 0` and sub-microsecond per-sample latency. Currently in **Phase 1.5**: a scoped feasibility spike putting the same engine on real STM32F401 hardware before committing to full Phase 3. No MuJoCo (Phase 2) code exists yet — see PRD §6 for the quality-gate discipline and Phase 1.5's rationale.
+**Phase 1** (host-side C++20 algorithmic core) is done — validated for `malloc_count == 0` and sub-microsecond per-sample latency. Currently in **Phase 1.5**: a scoped feasibility spike putting the same engine on real STM32F401 hardware before committing to full Phase 3. **Phase 2 iteration 1** (MuJoCo bridge, see below) is also done — see PRD §6 for the quality-gate discipline and Phase 1.5's rationale.
 
 ## Layout
 
 ```
 include/edgeneuro/   Header-only engine: concepts, ring buffer, filters, features, classifiers, providers, pipeline, bump allocator
-src/                 no_heap_guard.cpp (allocation counter) + main.cpp (terminal demo) + gui_demo.cpp (ImGui/ImPlot demo)
+src/                 no_heap_guard.cpp (allocation counter) + main.cpp (terminal demo) + gui_demo.cpp (ImGui/ImPlot demo) + mujoco_bridge_demo.cpp (Phase 2 MuJoCo bridge)
 tests/               Catch2 unit + integration tests
 benchmarks/          Google Benchmark suite (<1,6> wearable fusion, <32,0> HD-sEMG stress)
 data/                Synthetic CSV fixtures (not real Ninapro data — see tools/generate_sample_data.py)
 firmware/            Phase 1.5: STM32F401 feasibility spike (bare CMake + arm-none-eabi-gcc) — see firmware/README.md
+tools/mujoco_bridge/ Phase 2: Python + MuJoCo viewer that drives a Shadow Hand from mujoco_bridge_demo.cpp's stdout
 ```
 
 ## Build
@@ -91,6 +92,25 @@ Same engine and CSV, rendered as a real line chart in a native window instead of
 cmake -S . -B build/gui-demo -DEDGENEURO_BUILD_GUI_DEMO=ON -DEDGENEURO_BUILD_TESTS=OFF -DEDGENEURO_BUILD_BENCHMARKS=OFF
 cmake --build build/gui-demo -j
 ./build/gui-demo/edgeneuro_gui_demo data/wearable_1emg_6imu.csv
+```
+
+## MuJoCo bridge demo (Phase 2)
+
+Drives a [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie) Shadow Hand from the same real-hardware-validated control logic as Phase 1.5's firmware (`GripStateMachine` + `ComplementaryFilter` + `SlewRateLimiter`, bypassing `Pipeline`/`EdgeNeuro<>` — see PRD §3's architecture note) — `src/mujoco_bridge_demo.cpp` replays a CSV instead of real ADC/I2C hardware and streams decoded grip/orientation to a Python viewer. Sensor count deliberately matches what's actually been validated on real hardware (1 IMU + 1 EMG channel), not a speculative extension — see PRD §6 Phase 2 for why.
+
+```sh
+# One-time setup
+brew install python@3.12
+python3.12 -m venv .venv
+.venv/bin/pip install -r tools/mujoco_bridge/requirements.txt
+
+# mujoco_menagerie is an untracked local dependency (gitignored, not vendored) — sparse checkout:
+git clone --no-checkout --depth 1 --filter=blob:none https://github.com/google-deepmind/mujoco_menagerie.git
+cd mujoco_menagerie && git sparse-checkout init --cone && git sparse-checkout set shadow_hand
+git checkout da76818e269b82289eba39808e2fb91d679d6994 && cd ..
+
+cmake --build build/debug-heapguard --target edgeneuro_mujoco_bridge_demo
+.venv/bin/mjpython tools/mujoco_bridge/run_demo.py   # macOS: must be mjpython, not python3
 ```
 
 ## Real-dataset compatibility (EMG-EPN-612)
