@@ -19,18 +19,19 @@
 // exact period Stage 5a's kDt used) -- not a guess, and not the same
 // value every call, since reads don't complete on a fixed schedule.
 //
-// kImuTargetAddr defaults to the LCD1602/PCF8574 backpack's address
-// (0x27), NOT the real MPU6050 address (0x68) -- both real MPU6050 units
-// are still confirmed dead (PRD.md Stage 4b) and can't be used to
-// validate this state machine at all. The LCD ACKs address+W, accepts
-// any byte as if it were a register address (PCF8574 doesn't have
-// registers, it just latches GPIO state), and ACKs address+R, returning
-// whatever's on its input pins -- not real sensor data, but real I2C bus
-// timing that exercises the exact same START/ADDR/TXE/BTF/RXNE/STOP
-// sequence, including the multi-byte-read BTF tail timing that was the
-// actual bug in Stage 4a's original blocking implementation. Once a
-// working MPU6050 arrives, flip kImuTargetAddr to 0x68 and the state
-// machine needs no other changes.
+// kImuTargetAddr: originally validated against the LCD1602/PCF8574
+// backpack's address (0x27) while both original MPU6050/GY-521 units
+// were dead (PRD.md Stage 4b) -- the LCD ACKs address+W, accepts any
+// byte as if it were a register address (PCF8574 doesn't have registers,
+// it just latches GPIO state), and ACKs address+R, returning whatever's
+// on its input pins. Not real sensor data, but real I2C bus timing that
+// exercises the exact same START/ADDR/TXE/BTF/RXNE/STOP sequence,
+// including the multi-byte-read BTF tail timing that was the actual bug
+// in Stage 4a's original blocking implementation, which is what gave
+// confidence this state machine's protocol logic was correct before a
+// working MPU6050 was available to test against directly. Now that the
+// replacement Adafruit MPU-6050 has arrived (see PRD.md Stage 5c), this
+// is 0x68 -- its AD0 pin defaults low, same as the original GY-521 units.
 
 // Command trajectory smoothing on the IMU side: a light low-pass on
 // roll()/pitch() to remove residual sample-to-sample jitter before it
@@ -74,7 +75,7 @@ static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
 static constexpr uint32_t kCalibrationSamples = 3000u;
 
 // --- IMU side ---
-static constexpr uint8_t kImuTargetAddr = 0x27u; // TEMP: LCD1602 stand-in, see header comment. Real MPU6050 = 0x68.
+static constexpr uint8_t kImuTargetAddr = 0x68u; // real Adafruit MPU-6050, AD0 default low -- see header comment
 static constexpr uint8_t kImuRegAddr = 0x3Bu;    // ACCEL_XOUT_H -- meaningless against the LCD, kept for protocol shape
 static constexpr uint32_t kImuReadLen = 14u;
 static constexpr uint32_t kImuMaxTicksPerRead = 50u; // abort+retry a read stuck > 50ms
@@ -85,6 +86,7 @@ volatile int g_imu_state_at_timeout = -1;
 volatile uint32_t g_sr1_at_timeout = 0xFFFFFFFFu;
 volatile uint32_t g_sr2_at_timeout = 0xFFFFFFFFu;
 volatile uint32_t g_timeout_count = 0;
+volatile int g_wake_result = -1;
 
 static void delay(uint32_t count) {
     while (count--) {
@@ -204,6 +206,50 @@ static void i2c1_init(void) {
     I2C1->CCR = 0x50u;
     I2C1->TRISE = 0x11u;
     I2C1->CR1 |= I2C_CR1_PE;
+}
+
+// One-shot blocking register write -- fine here since it only runs once
+// at boot, before the main loop starts, matching i2c_mpu6050_hello_main.c's
+// verified mpu6050_write_reg() sequence exactly (not the non-blocking
+// design the main loop's reads need). Returns 0 on success.
+static int mpu6050_write_reg_blocking(uint8_t reg, uint8_t value) {
+    uint32_t guard = 100000u;
+
+    I2C1->CR1 |= I2C_CR1_START;
+    while (!(I2C1->SR1 & I2C_SR1_SB)) {
+        if (--guard == 0) return 1;
+    }
+
+    I2C1->DR = (uint8_t)(kImuTargetAddr << 1);
+    guard = 100000u;
+    while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
+        if (I2C1->SR1 & I2C_SR1_AF) {
+            I2C1->SR1 &= ~I2C_SR1_AF;
+            I2C1->CR1 |= I2C_CR1_STOP;
+            return 2;
+        }
+        if (--guard == 0) return 2;
+    }
+    (void)I2C1->SR1;
+    (void)I2C1->SR2;
+
+    guard = 100000u;
+    while (!(I2C1->SR1 & I2C_SR1_TXE)) {
+        if (--guard == 0) return 3;
+    }
+    I2C1->DR = reg;
+    guard = 100000u;
+    while (!(I2C1->SR1 & I2C_SR1_BTF)) {
+        if (--guard == 0) return 3;
+    }
+
+    I2C1->DR = value;
+    guard = 100000u;
+    while (!(I2C1->SR1 & I2C_SR1_BTF)) {
+        if (--guard == 0) return 4;
+    }
+    I2C1->CR1 |= I2C_CR1_STOP;
+    return 0;
 }
 
 // Non-blocking multi-byte I2C1 read state machine. step() checks at most
@@ -399,6 +445,21 @@ int main(void) {
     tim2_init_1khz_trgo();
     i2c1_init();
     usart2_send_string("Stage 5b: combined EMG+IMU 1kHz loop, non-blocking I2C\r\n");
+
+    // Wake the sensor: PWR_MGMT_1 (0x6B) defaults to SLEEP=1 on power-up,
+    // where accel/gyro registers don't update -- without this, ImuReader
+    // reads complete "successfully" (real ACKs, real protocol) but return
+    // all-zero/stale data forever. CLKSEL=001 (PLL w/ X-gyro reference)
+    // per InvenSense's recommendation over the reset-default internal
+    // oscillator (RM-MPU-6000A-00), same as every other stage that reads
+    // real MPU6050 data.
+    g_wake_result = mpu6050_write_reg_blocking(0x6Bu, 0x01u);
+    if (g_wake_result != 0) {
+        usart2_send_string("MPU6050 wake write FAILED, code=");
+        usart2_send_int(g_wake_result);
+        usart2_send_string("\r\n");
+        blink_code(9);
+    }
 
     float threshold = kFallbackThreshold;
     if constexpr (kCalibrationEnabled) {

@@ -262,15 +262,31 @@ cmake --build build --target flash_phase3_control_loop
 
 把階段 5a 的 EMG 迴圈跟 `ComplementaryFilter` 姿態融合合併成同一個 1kHz 主迴圈——這是真正接近 Phase 3 最終韌體的形狀。核心是 `ImuReader`：把一次完整 14-byte I2C 讀取拆成 10 個顯式狀態，`step()` 每次只檢查一個硬體旗標就返回，不會阻塞 EMG 取樣。接線同時需要「MyoWare 2.0 接線」（EMG，`ENV → PA0`）跟「MPU6050/GY-521 接線」兩節（IMU，`SCL → PB6`、`SDA → PB7`）。
 
-**⚠️ 目前 `kImuTargetAddr` 設定的是 LCD1602(0x27),不是真的 MPU6050(0x68)**——兩顆 MPU6050 都還故障(見上方),先拿 LCD 當替代品驗證協定時序,PB6/PB7 這次要接 LCD1602,不是 MPU6050。等新模組到貨,把這個常數改回 `0x68` 即可,`ImuReader` 本身不用再改。LCD 讀出來的 `roll_x1000`/`pitch_x1000` 不是真實姿態,只是 PCF8574 目前輸入腳位電位換算出來的數字,拿來驗證的是**協定時序有沒有跑對**,不是感測器資料本身。
+**實測結果(2026-08-20/21，開發階段用 LCD1602 當替代品)**：第一版把 `imu_reader.step()` 綁在 `if (ADC1->SR & ADC_SR_EOC)` 裡,只跟著 EMG tick(1ms)呼叫一次,一秒只完成 47-48 次完整讀取——遠低於 100kHz 匯流排理論上限(約 500-650 次/秒)。原因是輪詢頻率被 tick 卡住,不是匯流排慢。把 `step()` 移到主迴圈最外層、跟 ADC EOC 判斷脫鉤,讓它利用兩次取樣之間的 CPU 閒置時間盡量多跑,改完後**躍升到 592-593 次/秒**,非常接近硬體上限。EMG tick 節奏全程沒受影響,證實不阻塞設計確實有效。
 
-**實測結果(2026-08-20/21)**：第一版把 `imu_reader.step()` 綁在 `if (ADC1->SR & ADC_SR_EOC)` 裡,只跟著 EMG tick(1ms)呼叫一次,一秒只完成 47-48 次完整讀取——遠低於 100kHz 匯流排理論上限(約 500-650 次/秒)。原因是輪詢頻率被 tick 卡住,不是匯流排慢。把 `step()` 移到主迴圈最外層、跟 ADC EOC 判斷脫鉤,讓它利用兩次取樣之間的 CPU 閒置時間盡量多跑,改完後**躍升到 592-593 次/秒**,非常接近硬體上限。EMG tick 節奏全程沒受影響,證實不阻塞設計確實有效。
-
-**下一步(等 MPU6050 到貨)**：把 `kImuTargetAddr` 改回 `0x68`;評估切到 I2C Fast Mode(400kHz,MPU6050 晶片本身支援,官方 product spec 查證過)看能不能把完成速度再往上推。
-
-**指令軌跡平滑化(2026-08-21)**：`roll_smoother`/`pitch_smoother`(`IirFilter`,單極指數移動平均,`kSmoothAlpha=0.5`)已經接上,套用在 `roll`/`pitch` 輸出。`kSmoothAlpha` 是暫定值,不是推導出來的截止頻率——現在 LCD 假資料很穩定沒有抖動,等真的接上 MPU6050、有真實雜訊可以看,再回頭校準。
+**指令軌跡平滑化(2026-08-21)**：`roll_smoother`/`pitch_smoother`(`IirFilter`,單極指數移動平均,`kSmoothAlpha=0.5`)已經接上,套用在 `roll`/`pitch` 輸出。`kSmoothAlpha` 是暫定值,不是推導出來的截止頻率。
 
 **`ImuReader` 逾時自我修復**：逾時後除了 `STOP`,也會比照 `i2c1_init()` 做一次完整 `SWRST` + 重新設定 `CR2`/`CCR`/`TRISE`,讓暫時性的匯流排 `BUSY` 卡死能自動恢復,不用每次都手動重插線、重新燒錄。診斷用全域變數 `g_timeout_count`/`g_imu_state_at_timeout`/`g_sr1_at_timeout`/`g_sr2_at_timeout` 可以用 SWD 讀出來確認有沒有在重試。
+
+## 真實 Adafruit MPU-6050 到貨,`kImuTargetAddr` 改回 `0x68`(2026-08-22)
+
+接腳(跟舊的 GY-521 clone 不一樣,已查證 Adafruit 官方文件,見下方接線表)：`Vin → STM32 3.3V`(板上穩壓器官方支援 3-5V 都能穩定轉換,不用像 GY-521 那樣改接 5V)、`GND`、`SCL → PB6`、`SDA → PB7`。`AD0` 不接時預設拉低,位址 `0x68`,跟程式碼原本設定一致。
+
+**接上完整迴圈後修好一個真實 bug**：這份韌體是先拿 LCD1602 開發的,從沒寫過喚醒感測器那一步(`PWR_MGMT_1`/`0x6B` 清 `SLEEP` 位元)——階段 4a、`complementary_filter_hello_main.cpp` 都有做,唯獨這個合併版本漏了。症狀：協定完全正常(`imu_completions` 一樣 591-593 次/秒),但 `roll`/`pitch` 永遠是 0。新增 `mpu6050_write_reg_blocking()`,開機時做一次(阻塞式沒關係,只跑一次,不影響主迴圈),比照階段 4a 已驗證的寫入序列喚醒感測器。
+
+**實測結果**：`roll_x1000`/`pitch_x1000` 靜止時穩定,手動傾斜/旋轉板子時即時、正確連續變化(觀察到 roll 1150–1705、pitch 381–1218 隨動作變動),`roll_smoothed`/`pitch_smoothed` 正確跟隨。`imu_completions` 維持 591-593 次/秒,**跟先前 LCD1602 替代測試量到的速度一致**——證實輪詢脫鉤的速度分析換成真實感測器後依然成立。本專案第一次完整驗證：真實 IMU 資料 → `ComplementaryFilter` 融合 → `IirFilter` 平滑,全部在真實硬體、真實動作下正確運作。
+
+**下一步**：評估切到 I2C Fast Mode(400kHz,MPU6050 晶片本身支援,官方 product spec 查證過)看能不能把完成速度再往上推。
+
+## MPU6050 接線(Adafruit,階段 5c)
+
+| Adafruit 接腳 | 接到 | 備註 |
+| --- | --- | --- |
+| `Vin` | STM32 **3.3V** | 板上穩壓器官方文件確認支援 3-5V 輸入都能穩定轉換,不像先前的 GY-521 clone 有壓差問題,不需要改接 5V。 |
+| `GND` | STM32 GND | 共地。 |
+| `SCL` | STM32 `PB6` | 跟現有 I2C1 設定一致。 |
+| `SDA` | STM32 `PB7` | 同上。 |
+| `3Vo`/`INT`/`AD0`/`FS`/`SCE`/`SDE`/`CLKIN` | 不接 | 這次用不到;`AD0` 不接時內部預設拉低,位址是 `0x68`。 |
 
 ## 已知問題
 
