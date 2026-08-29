@@ -13,6 +13,7 @@ the same operation flashing/reading will need to do.
 Usage:
     python3 tools/check_hardware_ready.py
     python3 tools/check_hardware_ready.py --i2c-scan
+    python3 tools/check_hardware_ready.py --live-check
 
 --i2c-scan additionally flashes firmware/src/i2c_bus_scan_main.c (a
 permanent diagnostic target, not one of the pipeline stages) and reads
@@ -27,6 +28,22 @@ flag exists so that process doesn't have to be reinvented by hand next
 time an I2C device goes quiet: it flashes the scanner, waits for it to
 finish, and reports which addresses (if any) ACKed, plus whether the bus
 was already stuck BUSY before the scan even started.
+
+--live-check flashes the REAL Stage 6 firmware (phase3_control_loop, not
+the scanner) and checks the actual thing the MuJoCo bridge depends on:
+both MPU6050 wake-up writes succeeding (g_wake_result_shoulder/elbow via
+`mdw`), and a few live seconds of real UART output actually containing
+non-default, changing shoulder_pitch/shoulder_roll/elbow values -- not
+just "the address ACKed" (--i2c-scan) or "the port opens" (the basic
+checks), which both passed multiple times during Stage 6 bring-up while
+the arm was still completely frozen in the MuJoCo viewer, either because
+the I2C bus was stuck in a way that only shows up once the real control
+loop is running, or because of an unrelated bug (a zero-offset/clamp
+mismatch between the real sensors' absolute mounting angle and the
+simulated joint ranges) that no I2C-level check could ever catch. This
+flag automates the exact multi-step manual sequence (reflash, `mdw` the
+wake results, capture and parse raw serial lines) that kept getting
+re-typed by hand during that debugging session.
 """
 import argparse
 import glob
@@ -40,6 +57,35 @@ FIRMWARE_DIR = REPO_ROOT / "firmware"
 BUILD_DIR = FIRMWARE_DIR / "build"
 OPENOCD_CFG = FIRMWARE_DIR / "openocd.cfg"
 SCAN_TARGET = "i2c_bus_scan"
+LIVE_TARGET = "phase3_control_loop"
+
+# Same pattern tools/mujoco_bridge/run_demo_live.py parses -- kept in sync
+# by hand since one lives in Python tooling and the other's authoritative
+# copy is the firmware's own usart2 print statements; a format drift here
+# would show up as "0 valid lines" below, not a silent false-pass.
+LIVE_LINE_RE = re.compile(
+    r"tick=(?P<tick>\d+) grip=(?P<grip>[-\d.eE+]+) gripping=(?P<gripping>\d) "
+    r"shoulder_pitch=(?P<shoulder_pitch>[-\d.eE+]+) shoulder_roll=(?P<shoulder_roll>[-\d.eE+]+) "
+    r"elbow=(?P<elbow>[-\d.eE+]+)"
+)
+
+# `elbow` above is NOT a raw per-IMU reading -- it's shoulder_pitch minus
+# elbow_pitch, clamped to >=0 (see phase3_control_loop_main.cpp's sign-
+# verification comment), so a real, live elbow IMU can still make `elbow`
+# read frozen at exactly 0.0 for an entire capture window whenever the arm
+# happens to sit in the pose where that difference is negative -- confirmed
+# 2026-08-23, twice, on hardware that diag_shoulder/elbow_completions proved
+# was completely healthy both times. This diag line's completions/nacks/
+# timeouts are a real per-IMU I2C-level signal, not a derived/clamped value,
+# so they're what --live-check actually uses to judge shoulder/elbow health
+# below; the `elbow` field itself is only still checked for gross staleness
+# (frozen means the port's fully wedged, not that this specific IMU is bad).
+DIAG_LINE_RE = re.compile(
+    r"diag shoulder_completions=(?P<shoulder_completions>\d+) "
+    r"elbow_completions=(?P<elbow_completions>\d+) "
+    r"shoulder_nacks=(?P<shoulder_nacks>\d+) shoulder_timeouts=(?P<shoulder_timeouts>\d+) "
+    r"elbow_nacks=(?P<elbow_nacks>\d+) elbow_timeouts=(?P<elbow_timeouts>\d+)"
+)
 
 
 def check_usb_device(vendor_substr: str) -> bool:
@@ -63,7 +109,13 @@ def check_serial_port():
     except ImportError:
         return False, port, "pyserial not installed (pip3 install pyserial)"
     try:
-        ser = serial.Serial(port, 9600, timeout=1)
+        # 115200 matches phase3_control_loop_main.cpp's Stage 6 USART2 baud
+        # (bumped from 9600 to sustain 100Hz of the dual-IMU output line --
+        # see that file's usart2_init() comment). Opening at the "wrong"
+        # baud wouldn't actually fail this check either way (baud is a
+        # local config, not negotiated with the device), but keep it
+        # matching the firmware currently being brought up.
+        ser = serial.Serial(port, 115200, timeout=1)
         ser.close()
         return True, port, None
     except Exception as e:
@@ -211,11 +263,179 @@ def run_i2c_scan() -> bool:
     return bool(found) and busy_before == 0
 
 
+def run_live_check(port: str) -> bool:
+    print(f"\n--- Live Stage 6 check (flashes firmware/src/{LIVE_TARGET}_main.cpp) ---")
+    if not BUILD_DIR.exists():
+        print(f"[FAIL] {BUILD_DIR} does not exist -- run cmake configure first")
+        return False
+
+    build = subprocess.run(
+        ["cmake", "--build", str(BUILD_DIR), "--target", LIVE_TARGET],
+        capture_output=True, text=True, timeout=120,
+    )
+    if build.returncode != 0:
+        print("[FAIL] build failed:\n" + build.stdout[-2000:] + build.stderr[-2000:])
+        return False
+
+    binary = BUILD_DIR / LIVE_TARGET
+    addrs = _nm_addresses(binary)
+    required = ["g_wake_result_shoulder", "g_wake_result_elbow"]
+    missing = [n for n in required if n not in addrs]
+    if missing:
+        print(f"[FAIL] symbols missing from binary (rebuild stale?): {missing}")
+        return False
+
+    flash = subprocess.run(
+        ["cmake", "--build", str(BUILD_DIR), "--target", f"flash_{LIVE_TARGET}"],
+        capture_output=True, text=True, timeout=60,
+    )
+    flash_out = flash.stdout + flash.stderr
+    if "** Programming Finished **" not in flash_out or "** Verified OK **" not in flash_out:
+        print("[FAIL] flash failed:\n" + flash_out[-2000:])
+        return False
+    print(f"[OK  ] flashed {LIVE_TARGET}")
+
+    import time
+    time.sleep(1.0)  # let both wake-up writes (each blocking, at boot) complete
+
+    wake_shoulder = _mdw_read(addrs["g_wake_result_shoulder"])[0]
+    wake_elbow = _mdw_read(addrs["g_wake_result_elbow"])[0]
+    # Both are `int`, so a nonzero mdw word IS the failure code already
+    # (no BUSY-style raw-vs-normalized bit-mask gotcha here, unlike
+    # g_bus_busy_before_scan above).
+    wake_ok = wake_shoulder == 0 and wake_elbow == 0
+    if wake_ok:
+        print("[OK  ] both MPU6050 wake-up writes succeeded (g_wake_result_shoulder/elbow == 0)")
+    else:
+        print(
+            f"[FAIL] wake-up write failed -- g_wake_result_shoulder={wake_shoulder} "
+            f"g_wake_result_elbow={wake_elbow} (0 == success; see "
+            "mpu6050_write_reg_blocking()'s return codes in phase3_control_loop_main.cpp "
+            "for what each nonzero value means). This means the I2C bus was already "
+            "stuck at boot -- check wiring before looking at anything downstream."
+        )
+
+    print(f"capturing ~3s of live UART data on {port} @ 115200 baud...")
+    try:
+        import serial
+    except ImportError:
+        print("[FAIL] pyserial not installed (pip3 install pyserial) -- can't capture live data")
+        return False
+
+    samples = []
+    diag_samples = []
+    try:
+        ser = serial.Serial(port, 115200, timeout=1)
+        buf = b""
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            chunk = ser.read(256)
+            if not chunk:
+                continue
+            buf += chunk
+            while b"\r\n" in buf:
+                raw, buf = buf.split(b"\r\n", 1)
+                line = raw.decode("utf-8", errors="ignore")
+                match = LIVE_LINE_RE.search(line)
+                if match:
+                    samples.append({k: float(v) if k != "tick" and k != "gripping" else int(v)
+                                     for k, v in match.groupdict().items()})
+                    continue
+                diag_match = DIAG_LINE_RE.search(line)
+                if diag_match:
+                    diag_samples.append({k: int(v) for k, v in diag_match.groupdict().items()})
+        ser.close()
+    except Exception as e:
+        print(f"[FAIL] could not read {port}: {e}")
+        return False
+
+    if not samples:
+        print(
+            "[FAIL] 0 valid lines parsed in 3s -- either nothing is being transmitted "
+            "(firmware stuck, e.g. retrying a wedged I2C bus after boot) or the line "
+            "format drifted from LIVE_LINE_RE above. Try `python3 -m serial.tools.miniterm "
+            f"{port} 115200` to see the raw output directly."
+        )
+        return False
+    print(f"[OK  ] {len(samples)} lines parsed")
+
+    ticks = [s["tick"] for s in samples]
+    tick_alive = ticks[-1] > ticks[0] if len(ticks) > 1 else False
+    print(f"[{'OK  ' if tick_alive else 'FAIL'}] tick counter advancing "
+          f"({ticks[0]} -> {ticks[-1]})" if ticks else "[FAIL] no tick values")
+
+    # shoulder_pitch/shoulder_roll are raw ComplementaryFilter output (not
+    # derived/clamped like `elbow`, see DIAG_LINE_RE's comment above), so a
+    # stuck/never-initialized filter reading exactly 0.0 with zero variance
+    # forever is still a meaningful, real signal here -- that was the exact
+    # symptom that cost the most debugging time during Stage 6 bring-up
+    # (data WAS flowing at 100Hz, tick WAS advancing, but shoulder_pitch/
+    # roll were frozen at precisely 0.000000, meaning the I2C reads behind
+    # them were silently never completing even once since boot).
+    data_ok = True
+    for field in ("shoulder_pitch", "shoulder_roll"):
+        values = [s[field] for s in samples]
+        spread = max(values) - min(values)
+        stuck = spread < 1e-6
+        if stuck:
+            data_ok = False
+        print(f"[{'FAIL' if stuck else 'OK  '}] {field}: "
+              f"{'frozen at ' + str(values[0]) if stuck else f'varying (spread={spread:.4f})'}")
+
+    # Per-IMU health via the diag line's completions/nacks/timeouts, not
+    # `elbow`'s spread -- `elbow` is shoulder_pitch minus elbow_pitch,
+    # clamped to >=0, so a perfectly healthy elbow IMU can still make it
+    # read frozen at 0.0 for an entire 3s window whenever the arm happens to
+    # sit in the pose where that difference goes negative. Confirmed
+    # 2026-08-23, twice, against hardware these completions counters proved
+    # was completely healthy both times -- see run_demo_live.py's
+    # imu_liveness() for the same reasoning applied there.
+    if not diag_samples:
+        print(
+            "[FAIL] no diag line (shoulder/elbow_completions) seen in 3s -- the firmware "
+            "emits one about once a second, so this capture window should have caught one; "
+            "re-run, or check for a LIVE_LINE_RE/DIAG_LINE_RE format drift."
+        )
+        data_ok = False
+    else:
+        last_diag = diag_samples[-1]
+        for name, addr, completions_key, nacks_key, timeouts_key in [
+            ("shoulder IMU (0x68)", "shoulder", "shoulder_completions", "shoulder_nacks", "shoulder_timeouts"),
+            ("elbow IMU (0x69)", "elbow", "elbow_completions", "elbow_nacks", "elbow_timeouts"),
+        ]:
+            completions = last_diag[completions_key]
+            imu_ok = completions > 0
+            if not imu_ok:
+                data_ok = False
+                nacks, timeouts = last_diag[nacks_key], last_diag[timeouts_key]
+                cause = (f"timing out (bus wedged, timeouts={timeouts})" if timeouts > 0
+                         else f"NACKing (device not answering, nacks={nacks})" if nacks > 0
+                         else "not completing (cause unclear from this window)")
+                print(f"[FAIL] {name}: 0 completions in the last ~1s window -- {cause}")
+            else:
+                print(f"[OK  ] {name}: {completions} completions in the last ~1s window")
+
+    if not data_ok:
+        print(
+            "\nA frozen shoulder_pitch/roll field, or an IMU showing 0 completions above, "
+            "means that IMU's reads have never completed successfully since boot, even "
+            "though the port is open and other fields are updating -- re-check that "
+            "specific sensor's wiring (see PRD.md Stage 6), not the STM32 side, which the "
+            "above wake/tick checks already confirmed is healthy."
+        )
+
+    return wake_ok and tick_alive and data_ok
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--i2c-scan", action="store_true",
         help="also flash the I2C1 bus scanner and report which addresses ACK",
+    )
+    parser.add_argument(
+        "--live-check", action="store_true",
+        help="flash the real Stage 6 firmware and verify live shoulder/roll/elbow data actually changes",
     )
     args = parser.parse_args()
 
@@ -229,7 +449,16 @@ def main() -> None:
         else:
             i2c_ok = run_i2c_scan()
 
-    if not (basic_ok and i2c_ok):
+    live_ok = True
+    if args.live_check:
+        _, port, _ = check_serial_port()
+        if not stlink_ok or not port:
+            print("\n[SKIP] live check needs both a working ST-Link and USB-TTL port -- fix the above first")
+            live_ok = False
+        else:
+            live_ok = run_live_check(port)
+
+    if not (basic_ok and i2c_ok and live_ok):
         sys.exit(1)
 
     print("\nAll checks passed -- safe to flash/read.")
