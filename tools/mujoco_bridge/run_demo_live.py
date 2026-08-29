@@ -361,11 +361,37 @@ def main():
     # the first live reading as a zero reference and subtract it from every
     # subsequent one, so it's the CHANGE from wherever the arm happened to
     # be at startup that drives the joints, not the raw absolute angle.
-    print("Calibrating zero pose -- hold the arm still for a moment...")
+    print("Calibrating zero pose -- get the arm down at your side, elbow "
+          "straight, now (2s to get in position, then ~2s of averaging)...")
     while not latest.is_ready():
         time.sleep(0.05)
-    time.sleep(0.3)  # let a couple more readings settle in before taking the reference
-    _, zero_shoulder_pitch, zero_shoulder_roll, zero_elbow = latest.snapshot()  # grip needs no zero offset
+    # A fixed 0.3s settle delay (the original approach) silently locks in
+    # whatever pose the arm happened to be in at that instant -- if it's
+    # still mid-motion (e.g. the person hasn't finished getting into
+    # position over a chat-paced back-and-forth), the "zero" reference is
+    # wrong, and every subsequent reading gets offset by that error. Most
+    # visibly this can pin the elbow at its clamped range boundary (looks
+    # frozen) if the miscaptured zero sits above the real range the person
+    # then moves through.
+    #
+    # First fix attempt required the reading to stop changing (rolling-
+    # window spread under a threshold) before locking in -- that never
+    # converged: measured directly (raw_capture2.py against real hardware,
+    # 2026-08-29), an arm someone is actually trying to hold still still
+    # drifts by ~0.2-0.27 rad over several seconds (hand tremor, not sensor
+    # noise), an order of magnitude past any threshold tight enough to
+    # reject "still getting into position." Averaging over a fixed window
+    # handles that tremor without requiring the impossible condition that
+    # it stop entirely.
+    time.sleep(2.0)  # time to get in position, not a stability guarantee
+    window = []
+    window_deadline = time.monotonic() + 2.0
+    while time.monotonic() < window_deadline:
+        window.append(latest.snapshot()[1:])  # (shoulder_pitch, shoulder_roll, elbow)
+        time.sleep(0.05)
+    zero_shoulder_pitch = sum(v[0] for v in window) / len(window)
+    zero_shoulder_roll = sum(v[1] for v in window) / len(window)
+    zero_elbow = sum(v[2] for v in window) / len(window)
     print(f"Zero pose captured: shoulder_pitch={zero_shoulder_pitch:.3f} "
           f"shoulder_roll={zero_shoulder_roll:.3f} elbow={zero_elbow:.3f}")
 
