@@ -240,6 +240,31 @@ No hardware is needed: the engine, the tests and the simulation all run on a PC.
     - Shaking the sensor to look at jitter loosened the wiring: roll and pitch stuck at 0 with reads still completing, and the bus later hung at 100 kHz too. Re-seating the wires fixed both.
     - **Decisive test:** with the wiring working at 100 kHz and untouched, only switching `CCR`/`TRISE` back to 400 kHz reproduced the hang at once. The breadboard's capacitance likely pushes rise times past fast mode's 300 ns. **The firmware stays at 100 kHz;** the 400 kHz constants are kept for soldered wiring.
 
+  * **Stage 6: live hardware drives MuJoCo; second MPU6050 and faster USART2. Code done, waiting for wiring (2026-08-22).** The CSV-replay bridge only checks the model and the mapping; the goal is the real STM32, MyoWare and two MPU6050s decoding live and driving MuJoCo.
+    - **Two IMUs on one I2C1 bus:** upper arm `0x68` (`AD0` open), forearm `0x69` (`AD0` to 3.3 V). `ImuReader` and `mpu6050_write_reg_blocking()` take the address as a parameter; `shoulder_reader(0x68u)` and `elbow_reader(0x69u)` take turns (`active_is_shoulder`), so only one transfer runs at a time.
+    - **Expected rate:** about 290–295 reads/s per sensor, half of Stage 5c's single-sensor rate; `shoulder_completions`/`elbow_completions` count them.
+    - **USART2 at 115200 baud:** the new line (~95 bytes, matching `LINE_RE` in `tools/mujoco_bridge/run_demo.py`) needs more than 9600 baud. Nothing configures `RCC->CFGR`/`RCC->PLLCFGR`, so the clock is the 16 MHz HSI; RM0368 19.3.4 gives `USARTDIV=8.6875`, `BRR=0x8B` (115,108 baud, 0.08 % error). The line is sent every 10 ticks (100 Hz). `usart2_send_float()` prints decimals without `printf`.
+    - **Fusion and elbow angle as in the CSV prototype:** two `ComplementaryFilter` instances, each initialized from its first reading; `elbow = max(0, elbow_filter.pitch() - shoulder_filter.pitch())`. The unverified `IirFilter` smoothing is removed, so the firmware matches the tested host prototype.
+    - **`tools/mujoco_bridge/run_demo_live.py`:** reads USART2 with `pyserial` and reuses `run_demo.py`'s `LatestSample`, `LINE_RE`, actuator mapping and viewer loop; a separate script, so the CSV version stays untouched. Defaults to 115200 baud (`tools/watch_myoware_uart.py` uses 9600 for the earlier firmware). `pyserial` is in `requirements.txt`; `tools/check_hardware_ready.py` now opens the port at 115200.
+    - **Verification plan, SWD first:** builds cleanly (`text=4104 data=536 bss=316`). Once the second MPU6050 is wired (`AD0`→3.3 V): ① `check_hardware_ready.py --i2c-scan` sees `0x68` and `0x69`; ② `g_wake_result_shoulder`/`g_wake_result_elbow` read over SWD; ③ `shoulder_completions`/`elbow_completions` near ~290/s; ④ the serial port opens; ⑤ raw lines in `miniterm` match the format; ⑥ moving each sensor moves the right joint in MuJoCo.
+
+  * **Stage 6 on the hardware (2026-08-23):** dual IMU + MyoWare with `run_demo_live.py`. Several real hardware problems, each traced over SWD and the diagnostic counters:
+
+    - **Unpowering IMU#2 also stopped IMU#1:** with only `VIN`/`GND` removed, an unpowered MPU6050 can hold `SDA` low and hang the shared bus. Per-reader `nack_count()` (this device stopped answering) and `timeout_count()` (the bus hung) now tell the two cases apart.
+    - **Fix: `i2c1_bus_recovery()`, the bus clear of NXP UM10204 §3.1.16:** take `PB6`/`PB7` as GPIO, clock `SCL` up to 9 times until the slave releases `SDA`, send STOP, hand the pins back and `SWRST`. `g_bus_recovery_attempts`/`g_bus_recovery_freed` count it.
+    - **Reads complete but the angles stay exactly `0.0`:** a sensor that lost power comes back with `SLEEP` set; it still answers, but its data registers never update. The boot-time wake-up does not cover a sensor that resets later.
+    - **Fix:** any NACK or timeout marks the reader `needs_rewake_`, and its next completed read first re-sends the wake-up (`consume_needs_rewake()`). The trigger is the failure itself, not the look of the data, so recovery from a NACK and from a timeout are both covered.
+    - **Known, deferred: power-on race.** The STM32 can try to wake a sensor before it has finished powering up, and then halts in `blink_code()`. Workaround: reflash with `check_hardware_ready.py --live-check`; the proposed fix (a short delay before the wake-up) is deferred.
+
+  * **EMG stuck at a fixed value: a loose contact at the STM32 (2026-08-23).** Ruled out in turn: electrode placement, the MyoWare supply, I2C noise and the firmware (the earlier `adc_hello_main.c` showed the same). The MyoWare's own LED followed every clench, and a meter on the `ENV`→`PA0` wire responded, but `PA0` did not: the pin's breadboard contact had failed. Re-seated, the signal is clean (relaxed ~2000–2150, clenched ~3600–3700).
+    - **Gain had drifted:** the relaxed level is far above the ~450 of 2026-08-18, so the MyoWare's gain pot had moved. The old `kFallbackThreshold=2037.0f` now sits inside the relaxed range; it is raised to `2800.0f`.
+
+  * **Diagnostic tools no longer guess at disconnections (2026-08-23 → 25):**
+    - **`tools/check_hardware_ready.py --live-check`** judged the forearm IMU by whether `elbow` changed, but `elbow` is a derived value clamped at 0 and can stay 0 in some poses. It now reads the firmware's `diag` line (`shoulder_completions`, `elbow_completions`, `nacks`, `timeouts`).
+    - **`tools/mujoco_bridge/run_demo_live.py`** uses the same `diag` logic instead of watching values change. New: `--log-file`, a per-IMU retry count while offline (`imu_retry_attempts()`), and a multi-line `[SENSORS]` block.
+
+  * **Hardware on hand (2026-08-29): five working MPU6050s** — three GY-521 and two Adafruit (`0x68` and `0x69`). A GY-521 drops into the upper-arm position (`0x68`) with no firmware change; the Adafruit boards stay the main ones (built-in pull-ups, better track record).
+
 * **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
   * Bring in the **MuJoCo** physics simulator.
   * A bridge that maps the engine's output to a simulated hand (for example the Shadow Hand).

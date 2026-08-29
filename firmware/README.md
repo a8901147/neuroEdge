@@ -288,6 +288,26 @@ Pins (see the table below): `Vin → STM32 3.3V` (its regulator accepts 3–5 V)
 | `SDA` | STM32 `PB7` | I2C1. |
 | `3Vo`/`INT`/`AD0`/`FS`/`SCE`/`SDE`/`CLKIN` | not connected | With `AD0` open the address is `0x68`. |
 
+## Stage 6: a second MPU6050 (forearm) on the same I2C1 bus (2026-08-22)
+
+Phase 3 uses two IMUs, upper arm and forearm (PRD.md §3). Both share I2C1 (`PB6`/`PB7`) at different addresses; I2C2 is not an option because its pins clash with the debug port (Stage 4b).
+
+**The forearm sensor is wired like the upper-arm one, except for one wire:**
+
+| Adafruit pin | To | Notes |
+| --- | --- | --- |
+| `Vin` | STM32 **3.3V** | As the first sensor. |
+| `GND` | STM32 GND | Common ground. |
+| `SCL` | STM32 `PB6` | In parallel with the first sensor. |
+| `SDA` | STM32 `PB7` | In parallel. |
+| `AD0` | STM32 **3.3V** | **The only difference:** sets the address to `0x69` (`AD0` is bit 0 of the 7-bit address). The first sensor's `AD0` stays open (`0x68`). |
+
+**Firmware:** `ImuReader` takes its address as a constructor argument; `main()` creates `shoulder_reader(0x68u)` and `elbow_reader(0x69u)`, which take turns on the shared bus. Each sensor is expected to get about half of Stage 5c's 591–593 reads/s (~290/s); `shoulder_completions`/`elbow_completions` measure it.
+
+**USART2 at 115200 baud:** the new line (`tick=<n> grip=<f> gripping=<0|1> shoulder_pitch=<f> shoulder_roll=<f> elbow=<f>`, ~95 bytes) needs more than 9600 baud. `BRR=0x008B` from RM0368 19.3.4 for the 16 MHz HSI (see `usart2_init()`). One line every 10 EMG ticks (100 Hz).
+
+**Next (once wired):** `python3 tools/check_hardware_ready.py --i2c-scan` for both addresses, then `g_wake_result_shoulder`/`g_wake_result_elbow` over SWD, then the Python/MuJoCo side (PRD.md, Stage 6).
+
 ## Known issues
 
 - **The WeAct HID flashing tool does not work on Apple Silicon** (`hid_enumerate()` returns empty device paths). Flash over ST-Link with OpenOCD instead.
