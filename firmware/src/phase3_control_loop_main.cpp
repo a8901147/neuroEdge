@@ -762,6 +762,15 @@ int main(void) {
 
     float sp = 0.0f; // last EMG setpoint, for the periodic report below (updated only on EOC)
 
+    // Raw, pre-remap ELBOW accelerometer axes -- printed alongside the
+    // computed shoulder_pitch/shoulder_roll/elbow so a single UART line
+    // carries both, letting a combined raw+simulated log correlate the two
+    // directly (see tools/mujoco_bridge's combined_calibrate.py-style
+    // scripts) instead of separate capture runs.
+    float elbow_raw_ax = 0.0f;
+    float elbow_raw_ay = 0.0f;
+    float elbow_raw_az = 0.0f;
+
     while (1) {
         // --- IMU: advance whichever reader is currently active every pass
         // of this loop, not just once per EMG tick -- same throughput
@@ -780,11 +789,45 @@ int main(void) {
         const bool completed = active_reader.step(tick_count);
         if (completed) {
             const uint8_t *b = active_reader.buf();
-            const float ax = (float)be16(&b[0]) / 16384.0f;
-            const float ay = (float)be16(&b[2]) / 16384.0f;
-            const float az = (float)be16(&b[4]) / 16384.0f;
-            const float gx = (float)be16(&b[8]) / 131.0f * (3.14159265f / 180.0f);
-            const float gy = (float)be16(&b[10]) / 131.0f * (3.14159265f / 180.0f);
+            const float raw_ax = (float)be16(&b[0]) / 16384.0f;
+            const float raw_ay = (float)be16(&b[2]) / 16384.0f;
+            const float raw_az = (float)be16(&b[4]) / 16384.0f;
+            const float raw_gx = (float)be16(&b[8]) / 131.0f * (3.14159265f / 180.0f);
+            // raw_gy (rotation about the axis that now points up the limb) is
+            // yaw-like in the new mount -- unmeasured/unneeded, same as the
+            // previously-untracked gyro-Z was before this remap.
+            const float raw_gz = (float)be16(&b[12]) / 131.0f * (3.14159265f / 180.0f);
+
+            // Axis remap for the flat-against-skin mount (armpit/pulse-point
+            // placement, pin-header edge facing forward) -- corrected
+            // 2026-08-29 from a first, theory-only guess that didn't hold up
+            // live (front-back motion showed up on roll, not pitch).
+            // Re-derived from direct measurement of raw_ax/ay/az (see the
+            // now-removed temporary debug fields, same commit) instead of
+            // re-guessing the mount geometry: at rest raw_ay ~= -1g
+            // (confirms it's the gravity/vertical reference); front-back
+            // swing moved raw_ax by ~1.0 while raw_az stayed under 0.3;
+            // left-right swing moved raw_az by ~0.9 while raw_ax moved
+            // about as much as it did for front-back (this mount doesn't
+            // isolate raw_ax perfectly -- it responds to both -- but raw_az
+            // is the clean roll indicator, so raw_ax is the best remaining
+            // choice for pitch by elimination). Gyro channels follow the
+            // same per-slot raw axis as their paired accel component (same
+            // reasoning as before, just swapped along with ax/ay). Sign of
+            // ay/gy fixes which direction reads as positive roll, sign of
+            // ax/gy fixes positive pitch -- flip accel+its paired gyro
+            // together if a direction ever comes out backwards; it doesn't
+            // affect decoupling. ax negated 2026-08-29: live MuJoCo check
+            // showed raising the arm forward decreased shoulder_pitch,
+            // which the rig's joint convention reads as lowering the arm
+            // (rh_shoulder_pitch axis "0 1 0": positive angle rotates the
+            // rest-pose +X reach towards -Z, i.e. down) -- confirmed via a
+            // headless state check, not just eyeballing the viewer.
+            const float ax = -raw_ax;
+            const float ay = raw_az;
+            const float az = -raw_ay;
+            const float gx = raw_gx;
+            const float gy = -raw_gz;
 
             if (active_is_shoulder) {
                 ++shoulder_completions;
@@ -800,6 +843,9 @@ int main(void) {
                 last_shoulder_completion_tick = tick_count;
                 shoulder_filter.update(gx, gy, ax, ay, az, dt); // real elapsed dt, not the fixed constructor value
             } else {
+                elbow_raw_ax = raw_ax;
+                elbow_raw_ay = raw_ay;
+                elbow_raw_az = raw_az;
                 ++elbow_completions;
                 if (active_reader.consume_needs_rewake()) {
                     ++elbow_asleep_rewakes;
@@ -892,6 +938,12 @@ int main(void) {
                 usart2_send_uint(emg_window_min);
                 usart2_send_string(" emg_max=");
                 usart2_send_uint(emg_window_max);
+                usart2_send_string(" elbow_raw_ax=");
+                usart2_send_float(elbow_raw_ax);
+                usart2_send_string(" elbow_raw_ay=");
+                usart2_send_float(elbow_raw_ay);
+                usart2_send_string(" elbow_raw_az=");
+                usart2_send_float(elbow_raw_az);
                 usart2_send_string("\r\n");
 
                 if (tick_count % 1000u == 0u) {

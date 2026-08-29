@@ -131,6 +131,18 @@
     <light pos="0.3 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" pos="0 0 -0.1" size="0 0 0.05" type="plane" material="groundplane"/>
 
+    <!-- Purely a visual orientation reference for the viewer -- no joints, no
+         inertial/physics, doesn't touch the arm's kinematics. Added because
+         with just the bare arm+hand it's impossible to tell which way is
+         "front" on screen. Front of the torso/head faces +X, matching the
+         direction the shoulder capsule already points at rest (see the
+         "reach pose" note below) -- the small red dot marks that face. -->
+    <body name="torso_reference" pos="-0.40 0 0.33">
+      <geom type="box" size="0.10 0.08 0.22" rgba="0.55 0.55 0.6 1" contype="0" conaffinity="0"/>
+      <geom name="head_reference" type="sphere" size="0.08" pos="0 0 0.30" rgba="0.55 0.55 0.6 1" contype="0" conaffinity="0"/>
+      <geom name="face_front_marker" type="sphere" size="0.02" pos="0.075 0 0.30" rgba="0.85 0.2 0.2 1" contype="0" conaffinity="0"/>
+    </body>
+
     <!-- New shoulder+elbow chain. Starting-guess numeric values (pos/range/
          damping/armature/kp/forcerange) are approximate -- everything from
          rh_forearm downward is a hard constraint copied unchanged from
@@ -139,7 +151,29 @@
          parallel to that (X) would be a geometric no-op at every joint value
          (rotating a vector about an axis parallel to itself never moves it) --
          found and fixed during the first build of this file. -->
-    <body name="rh_shoulder_pitch_body" pos="-0.25 0 0.55">
+    <!-- quat: +90deg about Y (w,x,y,z = cos45,0,sin45,0). Without it, qpos=0
+         (both shoulder joints and elbow at rest) points the whole chain
+         along local +X -- horizontal, arm reaching straight out -- which is
+         what the capsule/forearm geometry below was authored assuming.
+         Rotating this body by +90 about Y sends that same +X rest direction
+         to -Z (straight down) instead, so qpos=0 now matches a real arm
+         hanging naturally at the side, matching the "hold still, arm down"
+         pose real_capture/run_demo_live.py's zero-pose calibration asks for
+         -- added 2026-08-29 because the mismatch (sensor calibrated against
+         a hanging arm, rig's own rest pose reaching forward) made the sim
+         hard to read even when the underlying angle math was already
+         correct. This rotation is chosen to leave both joint axes' real-
+         world meaning unchanged: shoulder_pitch's axis "0 1 0" is Y, and
+         rotating about Y doesn't move the Y axis itself, so pitch still
+         drives the same up/down swing it did before. shoulder_roll's axis
+         "0 0 1" (defined one body down, inherited through this same fixed
+         rotation) becomes world X after this rotation -- verified in sim,
+         not just derived by hand -- which changes its motion plane from a
+         horizontal sweep to true vertical abduction (swinging out from a
+         hanging arm), arguably more anatomically correct for this rig's
+         actual use (live sensor tracking) than the reach-pose the Phase 2
+         CSV-replay grasp demo was originally tuned around. -->
+    <body name="rh_shoulder_pitch_body" pos="-0.25 0 0.55" quat="0.7071068 0 0.7071068 0">
       <inertial mass="0.05" pos="0 0 0" diaginertia="1e-04 1e-04 1e-04"/>
       <joint name="rh_shoulder_pitch" axis="0 1 0" range="-1.2 1.2" damping="8" armature="0.05"/>
       <body name="rh_shoulder_roll_body">
