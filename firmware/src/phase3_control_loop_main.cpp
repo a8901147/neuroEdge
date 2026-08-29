@@ -19,47 +19,28 @@
 // exact period Stage 5a's kDt used) -- not a guess, and not the same
 // value every call, since reads don't complete on a fixed schedule.
 //
-// kImuTargetAddr: originally validated against the LCD1602/PCF8574
-// backpack's address (0x27) while both original MPU6050/GY-521 units
-// were dead (PRD.md Stage 4b) -- the LCD ACKs address+W, accepts any
-// byte as if it were a register address (PCF8574 doesn't have registers,
-// it just latches GPIO state), and ACKs address+R, returning whatever's
-// on its input pins. Not real sensor data, but real I2C bus timing that
-// exercises the exact same START/ADDR/TXE/BTF/RXNE/STOP sequence,
-// including the multi-byte-read BTF tail timing that was the actual bug
-// in Stage 4a's original blocking implementation, which is what gave
-// confidence this state machine's protocol logic was correct before a
-// working MPU6050 was available to test against directly. Now that the
-// replacement Adafruit MPU-6050 has arrived (see PRD.md Stage 5c), this
-// is 0x68 -- its AD0 pin defaults low, same as the original GY-521 units.
-
-// Command trajectory smoothing on the IMU side: a light low-pass on
-// roll()/pitch() to remove residual sample-to-sample jitter before it
-// reaches an actuator setpoint -- distinct from ComplementaryFilter's own
-// smoothing, which turns a noisy *measurement* into a believable angle,
-// not a noisy *already-fused* angle into a smoother command (see
-// include/edgeneuro/control/slew_rate_limiter.hpp's header comment for
-// the same distinction on the EMG side). Reuses the project's existing
-// IirFilter rather than a new component, per PRD.md Stage 5b's control-
-// architecture note.
-//
-// Configured as a single-pole exponential moving average expressed as
-// IirFilter's biquad (b0=kSmoothAlpha, a1=kSmoothAlpha-1, everything else
-// 0): y[n] = alpha*x[n] + (1-alpha)*y[n-1]. kSmoothAlpha=0.5 is a
-// starting placeholder, not a derived cutoff frequency -- IMU reads
-// complete irregularly (see ImuReader below) so the real sample rate
-// isn't fixed yet, making a proper frequency-domain design premature.
-// Retune once real MPU6050 jitter is available to look at (LCD1602's
-// stand-in readings are constant, not jittery, so there's nothing to
-// tune against yet -- see PRD.md Stage 5b).
-static constexpr float kSmoothAlpha = 0.5f;
+// ImuReader's target address: originally validated against the
+// LCD1602/PCF8574 backpack's address (0x27) while both original
+// MPU6050/GY-521 units were dead (PRD.md Stage 4b) -- the LCD ACKs
+// address+W, accepts any byte as if it were a register address (PCF8574
+// doesn't have registers, it just latches GPIO state), and ACKs address+R,
+// returning whatever's on its input pins. Not real sensor data, but real
+// I2C bus timing that exercises the exact same START/ADDR/TXE/BTF/RXNE/STOP
+// sequence, including the multi-byte-read BTF tail timing that was the
+// actual bug in Stage 4a's original blocking implementation, which is what
+// gave confidence this state machine's protocol logic was correct before a
+// working MPU6050 was available to test against directly. Stage 5c
+// replaced it with one real Adafruit MPU-6050 at 0x68 (AD0 low). Stage 6
+// (this version) adds a second real unit at 0x69 (AD0 tied to 3.3V) on the
+// same bus -- ImuReader now takes its target address as a constructor
+// argument instead of a single hard-coded global, since one instance per
+// address is needed.
 
 #include <cstdint>
 
 #include "edgeneuro/control/grip_state_machine.hpp"
 #include "edgeneuro/control/slew_rate_limiter.hpp"
 #include "edgeneuro/control/threshold_calibrator.hpp"
-#include "edgeneuro/filters/iir_filter.hpp"
 #include "edgeneuro/fusion/complementary_filter.hpp"
 #include "stm32f4xx.h"
 
@@ -67,7 +48,16 @@ static constexpr float kSmoothAlpha = 0.5f;
 
 // --- EMG side (unchanged constants from Stage 5a) ---
 static constexpr bool kCalibrationEnabled = false;
-static constexpr float kFallbackThreshold = 2037.0f;
+// Recalibrated 2026-08-23: the old 2037 was set against a baseline of ~450
+// (Stage 5a, 2026-08-18). The MyoWare's onboard gain trim pot has since
+// drifted/been bumped -- confirmed via adc_hello_main.c raw ADC readings
+// that baseline is now ~2000-2150 relaxed vs. ~3600+ contracted (same real
+// signal, just a different gain setting), so the old threshold sat inside
+// the relaxed range and risked false-triggering "gripping" at rest. 2800
+// sits with margin above the new relaxed baseline and below sustained
+// contraction. Re-verify (same raw-ADC-value method, not guessed) if the
+// gain pot gets touched again.
+static constexpr float kFallbackThreshold = 2800.0f;
 static constexpr float kOnDuration = 0.15f;
 static constexpr float kOffDuration = 0.15f;
 static constexpr float kSlewRate = 5.0f;
@@ -75,7 +65,13 @@ static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
 static constexpr uint32_t kCalibrationSamples = 3000u;
 
 // --- IMU side ---
-static constexpr uint8_t kImuTargetAddr = 0x68u; // real Adafruit MPU-6050, AD0 default low -- see header comment
+// Stage 6: two real MPU6050 units share one I2C1 bus, distinguished by
+// address -- the upper-arm unit keeps AD0 low (default, 0x68, same unit
+// validated in Stage 5c); the forearm unit's AD0 is tied to 3.3V, giving
+// 0x69 (MPU6050 datasheet: AD0 is bit 0 of the 7-bit address). Both units
+// are the same sensor, so kImuRegAddr (ACCEL_XOUT_H) is shared.
+static constexpr uint8_t kShoulderImuAddr = 0x68u; // upper-arm MPU6050, AD0 low
+static constexpr uint8_t kElbowImuAddr = 0x69u;    // forearm MPU6050, AD0 tied to 3.3V
 static constexpr uint8_t kImuRegAddr = 0x3Bu;    // ACCEL_XOUT_H -- meaningless against the LCD, kept for protocol shape
 static constexpr uint32_t kImuReadLen = 14u;
 static constexpr uint32_t kImuMaxTicksPerRead = 50u; // abort+retry a read stuck > 50ms
@@ -109,7 +105,13 @@ volatile int g_imu_state_at_timeout = -1;
 volatile uint32_t g_sr1_at_timeout = 0xFFFFFFFFu;
 volatile uint32_t g_sr2_at_timeout = 0xFFFFFFFFu;
 volatile uint32_t g_timeout_count = 0;
-volatile int g_wake_result = -1;
+// Stage 6: one wake-write result and one completion counter per IMU,
+// replacing the single-IMU g_wake_result/imu_completions -- needed to
+// confirm both addresses actually ACK independently (see PRD.md Stage 6
+// verification notes) rather than assuming a single passing check covers
+// both physical units.
+volatile int g_wake_result_shoulder = -1;
+volatile int g_wake_result_elbow = -1;
 
 static void delay(uint32_t count) {
     while (count--) {
@@ -128,7 +130,17 @@ static void usart2_init(void) {
     GPIOA->AFR[0] &= ~((0xFu << (4u * 2u)) | (0xFu << (4u * 3u)));
     GPIOA->AFR[0] |= (7u << (4u * 2u)) | (7u << (4u * 3u));
 
-    USART2->BRR = 0x0683u;
+    // Stage 6: 115200 baud (was 9600) -- the new dual-IMU output line is
+    // ~95 bytes; at 9600 baud (~960 B/s at 8N1) that caps out around
+    // 10 lines/sec, too choppy for smooth arm tracking. PCLK1 is HSI
+    // 16MHz, unconfigured (no file in this project touches RCC->CFGR/
+    // RCC->PLLCFGR -- confirmed by grep, not assumed), same clock the
+    // original 9600-baud BRR was derived against. RM0368 19.3.4 Eq. 1
+    // (Baud = fCK / (16 * USARTDIV), OVER8=0): USARTDIV = 16,000,000 /
+    // (16*115200) = 8.6875 -> Mantissa=8 (0x8), Fraction=round(0.6875*16)
+    // =11 (0xB) -> BRR=(0x8<<4)|0xB=0x8B. Actual baud ~=115,108 (0.08%
+    // error, well inside UART tolerance).
+    USART2->BRR = 0x008Bu;
     USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
 }
 
@@ -175,8 +187,37 @@ static void usart2_send_int(int32_t value) {
     }
 }
 
-static void usart2_send_float_x1000(float value) {
-    usart2_send_int((int32_t)(value * 1000.0f));
+// Stage 6: real decimal-point printing (e.g. "-0.123456"), replacing the
+// prior x1000-scaled-integer helper this file used through Stage 5c --
+// needed to match tools/mujoco_bridge/run_demo.py's LINE_RE regex, which is
+// shared verbatim with the CSV-replay prototype (src/mujoco_bridge_demo.cpp)
+// so both can drive the same Python parsing code. No <cstdio>/printf float
+// support assumed available in this freestanding build -- built from the
+// same hand-rolled digit-string style
+// as usart2_send_uint/usart2_send_int above. `decimals` defaults to 6 to
+// match the CSV prototype's own printed float precision; roll/pitch/elbow
+// are radian-range (|value| < ~4), so `scaled` stays well inside uint32_t.
+static void usart2_send_float(float value, uint32_t decimals = 6u) {
+    if (value < 0.0f) {
+        usart2_send_byte('-');
+        value = -value;
+    }
+    uint32_t scale = 1u;
+    for (uint32_t i = 0; i < decimals; ++i) {
+        scale *= 10u;
+    }
+    const uint32_t scaled = (uint32_t)(value * (float)scale + 0.5f);
+    usart2_send_uint(scaled / scale);
+    usart2_send_byte('.');
+    const uint32_t frac = scaled % scale;
+    uint32_t pad = scale / 10u;
+    while (pad > 0u && frac < pad) {
+        usart2_send_byte('0');
+        pad /= 10u;
+    }
+    if (frac > 0u) {
+        usart2_send_uint(frac);
+    }
 }
 
 // --- EMG: ADC1 channel 0 (PA0) via TIM2 TRGO, verified Stage 3c/3d ---
@@ -209,33 +250,18 @@ static void adc1_init_timer_triggered(void) {
 // helpers kept only for init/SWRST -- the read itself is non-blocking,
 // see ImuReader below. ---
 
-static void i2c1_init(void) {
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
-    RCC->APB1ENR |= RCC_APB1ENR_I2C1EN;
-
-    GPIOB->MODER &= ~((3u << (6u * 2u)) | (3u << (7u * 2u)));
-    GPIOB->MODER |= (2u << (6u * 2u)) | (2u << (7u * 2u));
-    GPIOB->OTYPER |= (1u << 6u) | (1u << 7u);
-    GPIOB->PUPDR &= ~((3u << (6u * 2u)) | (3u << (7u * 2u)));
-    GPIOB->PUPDR |= (1u << (6u * 2u)) | (1u << (7u * 2u));
-    GPIOB->AFR[0] &= ~((0xFu << (4u * 6u)) | (0xFu << (4u * 7u)));
-    GPIOB->AFR[0] |= (4u << (4u * 6u)) | (4u << (4u * 7u));
-
-    I2C1->CR1 |= I2C_CR1_SWRST;
-    I2C1->CR1 &= ~I2C_CR1_SWRST;
-
-    I2C1->CR1 &= ~I2C_CR1_PE;
-    I2C1->CR2 = 16u;
-    I2C1->CCR = kI2cCcr100k;
-    I2C1->TRISE = kI2cTrise100k;
-    I2C1->CR1 |= I2C_CR1_PE;
-}
-
-// One-shot blocking register write -- fine here since it only runs once
-// at boot, before the main loop starts, matching i2c_mpu6050_hello_main.c's
-// verified mpu6050_write_reg() sequence exactly (not the non-blocking
-// design the main loop's reads need). Returns 0 on success.
-static int mpu6050_write_reg_blocking(uint8_t reg, uint8_t value) {
+// Blocking register write. Originally a genuinely one-shot boot call (see
+// main()'s wake-up comment); also called from i2c1_bus_recovery() below as
+// of 2026-08-23, since a device that lost power mid-run (not just a stuck
+// bus) comes back up freshly power-on-reset -- PWR_MGMT_1 defaults to
+// SLEEP=1, so its accel/gyro registers stop updating even though I2C reads
+// keep completing normally (real ACKs, real protocol, stale data forever).
+// Bus recovery alone can't tell "stuck bus" apart from "device power-
+// cycled", so it re-sends this wake write defensively every time; harmless
+// on an already-awake device (idempotent). Still bounded/rare enough to
+// stay blocking rather than folding into ImuReader's non-blocking design.
+// Returns 0 on success.
+static int mpu6050_write_reg_blocking(uint8_t addr7, uint8_t reg, uint8_t value) {
     uint32_t guard = 100000u;
 
     I2C1->CR1 |= I2C_CR1_START;
@@ -243,7 +269,7 @@ static int mpu6050_write_reg_blocking(uint8_t reg, uint8_t value) {
         if (--guard == 0) return 1;
     }
 
-    I2C1->DR = (uint8_t)(kImuTargetAddr << 1);
+    I2C1->DR = (uint8_t)(addr7 << 1);
     guard = 100000u;
     while (!(I2C1->SR1 & I2C_SR1_ADDR)) {
         if (I2C1->SR1 & I2C_SR1_AF) {
@@ -275,6 +301,109 @@ static int mpu6050_write_reg_blocking(uint8_t reg, uint8_t value) {
     return 0;
 }
 
+// Shared by i2c1_init() (fresh boot) and i2c1_bus_recovery() below (after a
+// wedged bus is cleared) -- factored out since both need the exact same
+// SWRST + reconfigure sequence, previously duplicated inline in both places
+// plus a third time in ImuReader::step()'s timeout branch.
+static void i2c1_swrst_recover(void) {
+    I2C1->CR1 |= I2C_CR1_SWRST;
+    I2C1->CR1 &= ~I2C_CR1_SWRST;
+
+    I2C1->CR1 &= ~I2C_CR1_PE;
+    I2C1->CR2 = 16u;
+    I2C1->CCR = kI2cCcr100k;
+    I2C1->TRISE = kI2cTrise100k;
+    I2C1->CR1 |= I2C_CR1_PE;
+}
+
+static void i2c1_init(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+    RCC->APB1ENR |= RCC_APB1ENR_I2C1EN;
+
+    GPIOB->MODER &= ~((3u << (6u * 2u)) | (3u << (7u * 2u)));
+    GPIOB->MODER |= (2u << (6u * 2u)) | (2u << (7u * 2u));
+    GPIOB->OTYPER |= (1u << 6u) | (1u << 7u);
+    GPIOB->PUPDR &= ~((3u << (6u * 2u)) | (3u << (7u * 2u)));
+    GPIOB->PUPDR |= (1u << (6u * 2u)) | (1u << (7u * 2u));
+    GPIOB->AFR[0] &= ~((0xFu << (4u * 6u)) | (0xFu << (4u * 7u)));
+    GPIOB->AFR[0] |= (4u << (4u * 6u)) | (4u << (4u * 7u));
+
+    i2c1_swrst_recover();
+}
+
+// PB6=SCL, PB7=SDA -- MODER-only helper: OTYPER (open-drain) and PUPDR
+// (pull-up), both set once by i2c1_init() above, apply regardless of MODER,
+// so handing a pin between the I2C1 peripheral (AF, mode 10) and plain
+// bit-banged GPIO (general-purpose output, mode 01) only needs this.
+static void gpiob_pin_set_mode(uint32_t pin, uint32_t mode) {
+    GPIOB->MODER &= ~(3u << (pin * 2u));
+    GPIOB->MODER |= (mode << (pin * 2u));
+}
+
+volatile uint32_t g_bus_recovery_attempts = 0;
+volatile uint32_t g_bus_recovery_freed = 0;
+
+// I2C-bus specification (NXP UM10204) sec 3.1.16, "Bus clear": if a slave
+// is stuck holding SDA low, a master-side SWRST alone can't fix it -- SWRST
+// only resets *our* I2C1 peripheral, not the external chip physically
+// holding the line low. The documented fix is for the master to take SCL
+// over as a manual GPIO and clock it up to 9 times (enough to walk a slave
+// stuck anywhere in a byte+ACK through releasing SDA), then issue a STOP.
+// Confirmed necessary 2026-08-23: unplugging only VIN/GND (not SDA/SCL)
+// from one MPU6050 left it powered-off with its I2C pins still wired to the
+// live, pulled-up bus -- if that happens mid-transaction, the now-unpowered
+// output stage can freeze holding SDA low, wedging the shared bus for both
+// readers and re-timing-out forever instead of self-healing via plain
+// SWRST (see the plain-SWRST comment removed from this function's call site
+// in ImuReader::step()).
+static bool i2c1_bus_recovery(void) {
+    g_bus_recovery_attempts = g_bus_recovery_attempts + 1;
+
+    I2C1->CR1 &= ~I2C_CR1_PE; // release peripheral control of the pins
+    gpiob_pin_set_mode(6u, 1u); // SCL -> general-purpose output
+    gpiob_pin_set_mode(7u, 1u); // SDA -> general-purpose output
+
+    GPIOB->ODR |= (1u << 7u); // let SDA float high (open-drain + pull-up)
+    GPIOB->ODR |= (1u << 6u); // SCL high
+    delay(2000u);
+
+    bool freed = (GPIOB->IDR & (1u << 7u)) != 0u;
+    for (int i = 0; i < 9 && !freed; ++i) {
+        GPIOB->ODR &= ~(1u << 6u); // SCL low
+        delay(2000u);
+        GPIOB->ODR |= (1u << 6u); // SCL high -- clock edge for a stuck slave
+        delay(2000u);
+        freed = (GPIOB->IDR & (1u << 7u)) != 0u;
+    }
+    if (freed) {
+        g_bus_recovery_freed = g_bus_recovery_freed + 1;
+    }
+
+    // STOP condition: SDA low->high while SCL high, so any slave watching
+    // sees a clean bus-idle handoff rather than an ambiguous mid-clock stop.
+    GPIOB->ODR &= ~(1u << 7u);
+    delay(2000u);
+    GPIOB->ODR |= (1u << 6u);
+    delay(2000u);
+    GPIOB->ODR |= (1u << 7u);
+    delay(2000u);
+
+    gpiob_pin_set_mode(6u, 2u); // SCL back to AF (I2C1)
+    gpiob_pin_set_mode(7u, 2u); // SDA back to AF (I2C1)
+    i2c1_swrst_recover();
+
+    // Re-wake both sensors defensively (see this function's docstring):
+    // covers the case where the wedge was actually a device power-cycling,
+    // which resets it to SLEEP=1 and would otherwise leave it reporting
+    // "online" (real ACKs, completions counting up) with permanently frozen
+    // accel/gyro data -- the exact symptom of reads succeeding but the
+    // MuJoCo view never moving after a recovery.
+    mpu6050_write_reg_blocking(kShoulderImuAddr, 0x6Bu, 0x01u);
+    mpu6050_write_reg_blocking(kElbowImuAddr, 0x6Bu, 0x01u);
+
+    return freed;
+}
+
 // Non-blocking multi-byte I2C1 read state machine. step() checks at most
 // one hardware flag and returns immediately regardless of outcome -- call
 // it once per EMG tick. Mirrors i2c_mpu6050_hello_main.c's verified
@@ -295,6 +424,11 @@ enum class ImuReadState : uint8_t {
 
 class ImuReader {
 public:
+    // Stage 6: target address is a constructor argument (was a single
+    // hard-coded kImuTargetAddr global) so one instance can be created per
+    // physical MPU6050 sharing this I2C1 bus.
+    explicit ImuReader(uint8_t addr7) : addr7_(addr7) {}
+
     // start_tick: the caller's EMG-tick counter at the moment this read
     // began -- used only for the timeout below. step() itself is called
     // far more often than once per EMG tick (see main()'s loop, which
@@ -313,6 +447,32 @@ public:
     bool is_idle() const { return state_ == ImuReadState::Idle; }
     const uint8_t *buf() const { return buf_; }
     int state_as_int() const { return (int)state_; } // diagnostics only
+    // Per-instance, unlike g_timeout_count/etc below which are shared across
+    // both readers -- needed to tell "this specific device's address stopped
+    // ACKing" (nack_count_) apart from "the whole I2C1 peripheral wedged"
+    // (timeout_count_, since a wedged bus stalls whichever reader happens to
+    // be active when it happens, not necessarily the one whose device is
+    // actually the problem).
+    uint32_t nack_count() const { return nack_count_; }
+    uint32_t timeout_count() const { return timeout_count_; }
+    void reset_counts() { nack_count_ = 0; timeout_count_ = 0; }
+
+    // Design principle (2026-08-25): don't infer "is this device actually
+    // awake" from a symptom (e.g. a suspicious-looking reading) -- track it
+    // as an explicit fact instead. Any time THIS reader's own address fails
+    // to ACK, that's unambiguous: this specific device stopped responding,
+    // for whatever reason (power blip, physical disconnect, ...), and on a
+    // real MPU6050 that can include a silent power-on-reset back to
+    // SLEEP=1. So the next time it completes a read, the caller must
+    // unconditionally re-send the wake-up write before trusting the data --
+    // not just when the data happens to look wrong. consume_needs_rewake()
+    // is check-and-clear so this fires exactly once per failure, not on
+    // every completion forever after.
+    bool consume_needs_rewake() {
+        bool v = needs_rewake_;
+        needs_rewake_ = false;
+        return v;
+    }
 
     // current_tick: the caller's current EMG-tick counter, for the same
     // timeout reason as begin() above.
@@ -327,21 +487,19 @@ public:
             g_sr1_at_timeout = I2C1->SR1;
             g_sr2_at_timeout = I2C1->SR2;
             g_timeout_count = g_timeout_count + 1;
-            // A plain STOP isn't enough to recover a genuinely wedged
-            // peripheral state (BUSY latched from an interrupted prior
-            // transaction, not just bus contention) -- confirmed the hard
-            // way in Stage 4a/4b, where only SWRST reliably cleared it.
-            // Doing the same full reset+reconfigure here means a
-            // transient stuck-bus condition self-recovers on the next
+            ++timeout_count_;
+            needs_rewake_ = true;
+            // A plain SWRST isn't enough to recover a slave that's
+            // physically holding SDA low (e.g. it lost power mid-
+            // transaction while still wired to the bus, see
+            // i2c1_bus_recovery()'s docstring) -- SWRST only resets our own
+            // I2C1 peripheral, not the external chip. i2c1_bus_recovery()
+            // does the documented I2C bus-clear (manual SCL clock-out) and
+            // then performs the same SWRST+reconfigure this used to do
+            // inline, so a genuinely wedged bus self-recovers on the next
             // begin() instead of requiring a manual reflash.
             I2C1->CR1 |= I2C_CR1_STOP;
-            I2C1->CR1 |= I2C_CR1_SWRST;
-            I2C1->CR1 &= ~I2C_CR1_SWRST;
-            I2C1->CR1 &= ~I2C_CR1_PE;
-            I2C1->CR2 = 16u;
-            I2C1->CCR = kI2cCcr100k;
-            I2C1->TRISE = kI2cTrise100k;
-            I2C1->CR1 |= I2C_CR1_PE;
+            i2c1_bus_recovery();
             state_ = ImuReadState::Idle;
             return false;
         }
@@ -352,7 +510,7 @@ public:
 
         case ImuReadState::WaitStart1:
             if (I2C1->SR1 & I2C_SR1_SB) {
-                I2C1->DR = (uint8_t)(kImuTargetAddr << 1); // address + W
+                I2C1->DR = (uint8_t)(addr7_ << 1); // address + W
                 state_ = ImuReadState::WaitAddr1;
             }
             return false;
@@ -366,6 +524,8 @@ public:
                 I2C1->SR1 &= ~I2C_SR1_AF;
                 I2C1->CR1 |= I2C_CR1_STOP;
                 state_ = ImuReadState::Idle;
+                ++nack_count_;
+                needs_rewake_ = true;
             }
             return false;
 
@@ -386,7 +546,7 @@ public:
 
         case ImuReadState::WaitStart2:
             if (I2C1->SR1 & I2C_SR1_SB) {
-                I2C1->DR = (uint8_t)((kImuTargetAddr << 1) | 1u); // address + R
+                I2C1->DR = (uint8_t)((addr7_ << 1) | 1u); // address + R
                 state_ = ImuReadState::WaitAddr2;
             }
             return false;
@@ -401,6 +561,8 @@ public:
                 I2C1->SR1 &= ~I2C_SR1_AF;
                 I2C1->CR1 |= I2C_CR1_STOP;
                 state_ = ImuReadState::Idle;
+                ++nack_count_;
+                needs_rewake_ = true;
             }
             return false;
 
@@ -435,10 +597,14 @@ public:
     }
 
 private:
+    uint8_t addr7_;
     ImuReadState state_{ImuReadState::Idle};
     uint32_t start_tick_{0};
     uint32_t byte_index_{0};
     uint8_t buf_[kImuReadLen]{};
+    uint32_t nack_count_{0};
+    uint32_t timeout_count_{0};
+    bool needs_rewake_{false};
 };
 
 static int16_t be16(const uint8_t *p) {
@@ -469,19 +635,28 @@ int main(void) {
     i2c1_init();
     usart2_send_string("Stage 5b: combined EMG+IMU 1kHz loop, non-blocking I2C\r\n");
 
-    // Wake the sensor: PWR_MGMT_1 (0x6B) defaults to SLEEP=1 on power-up,
+    // Wake both sensors: PWR_MGMT_1 (0x6B) defaults to SLEEP=1 on power-up,
     // where accel/gyro registers don't update -- without this, ImuReader
     // reads complete "successfully" (real ACKs, real protocol) but return
     // all-zero/stale data forever. CLKSEL=001 (PLL w/ X-gyro reference)
     // per InvenSense's recommendation over the reset-default internal
     // oscillator (RM-MPU-6000A-00), same as every other stage that reads
-    // real MPU6050 data.
-    g_wake_result = mpu6050_write_reg_blocking(0x6Bu, 0x01u);
-    if (g_wake_result != 0) {
-        usart2_send_string("MPU6050 wake write FAILED, code=");
-        usart2_send_int(g_wake_result);
+    // real MPU6050 data. Stage 6: two independent wake writes, one per
+    // address -- each device has its own PWR_MGMT_1 register, so waking
+    // one has no effect on the other.
+    g_wake_result_shoulder = mpu6050_write_reg_blocking(kShoulderImuAddr, 0x6Bu, 0x01u);
+    if (g_wake_result_shoulder != 0) {
+        usart2_send_string("shoulder MPU6050 (0x68) wake write FAILED, code=");
+        usart2_send_int(g_wake_result_shoulder);
         usart2_send_string("\r\n");
         blink_code(9);
+    }
+    g_wake_result_elbow = mpu6050_write_reg_blocking(kElbowImuAddr, 0x6Bu, 0x01u);
+    if (g_wake_result_elbow != 0) {
+        usart2_send_string("elbow MPU6050 (0x69) wake write FAILED, code=");
+        usart2_send_int(g_wake_result_elbow);
+        usart2_send_string("\r\n");
+        blink_code(10);
     }
 
     float threshold = kFallbackThreshold;
@@ -521,48 +696,135 @@ int main(void) {
 
     edgeneuro::GripStateMachine<float> grip(threshold, kOnDuration, kOffDuration);
     edgeneuro::SlewRateLimiter<float> setpoint(kSlewRate);
-    edgeneuro::ComplementaryFilter<float> filter(0.98f, kDtPerTick);
-    ImuReader imu_reader;
-    // Trajectory smoothing (see header comment for kSmoothAlpha): y[n] =
-    // alpha*x[n] + (1-alpha)*y[n-1], expressed as IirFilter's biquad.
-    edgeneuro::IirFilter<float> roll_smoother(kSmoothAlpha, 0.0f, 0.0f, kSmoothAlpha - 1.0f, 0.0f);
-    edgeneuro::IirFilter<float> pitch_smoother(kSmoothAlpha, 0.0f, 0.0f, kSmoothAlpha - 1.0f, 0.0f);
+    // Two independent filters, one per IMU -- ComplementaryFilter has no
+    // static/global state (verified when this was first ported to the
+    // Host-side src/mujoco_bridge_demo.cpp prototype), so two instances
+    // don't cross-talk. No post-fusion IirFilter smoothing here (Stage 5b
+    // had one, alpha=0.5, but PRD.md's own notes flag it as never actually
+    // validated against real jitter) -- this matches the already-tested
+    // Host-side prototype exactly, which also streams filter.roll()/
+    // pitch() directly, so firmware and the Python-side math stay in
+    // lockstep rather than diverging by an extra, unvalidated smoothing
+    // stage.
+    edgeneuro::ComplementaryFilter<float> shoulder_filter(0.98f, kDtPerTick);
+    edgeneuro::ComplementaryFilter<float> elbow_filter(0.98f, kDtPerTick);
+    bool shoulder_filter_initialized = false;
+    bool elbow_filter_initialized = false;
+
+    // Stage 6: two MPU6050s share I2C1, so their reads cannot run
+    // concurrently -- only one ImuReader may have a transaction in flight
+    // at a time. `active_is_shoulder` tracks which one.
+    //
+    // CORRECTNESS BUG (found 2026-08-23, fixed here): the first version of
+    // this only flipped `active_is_shoulder` on a *successful* completion,
+    // reasoning that a timeout should keep retrying the same device rather
+    // than silently skipping it. That reasoning breaks badly the moment one
+    // physical IMU actually goes away (unplugged, or the classic stuck-SDA
+    // breadboard failure this project keeps hitting): the active reader
+    // NACKs or times out, goes back to Idle, and `begin()`s again on the
+    // very next pass -- on the SAME dead device, forever. The other,
+    // perfectly healthy IMU never gets a turn again, so BOTH
+    // ComplementaryFilters freeze (not just the broken one's), which is
+    // exactly the confusing symptom that cost real debugging time: unplug
+    // one sensor mid-run and *both* shoulder_pitch/roll and elbow go
+    // static, with no crash and no obviously-missing data to point at the
+    // real cause. Fixed below by switching turns whenever the active
+    // reader goes idle for ANY reason -- success, NACK abort, or timeout
+    // recovery -- not just success. A single failing IMU can still never
+    // fully stall the other one this way; ImuReader's own retry/SWRST
+    // recovery (unchanged) still gives a struggling-but-not-dead device a
+    // fair chance to recover on its next turn.
+    ImuReader shoulder_reader(kShoulderImuAddr);
+    ImuReader elbow_reader(kElbowImuAddr);
+    bool active_is_shoulder = true;
 
     uint32_t tick_count = 0;
-    uint32_t imu_completions = 0;
-    uint32_t last_imu_completion_tick = 0;
+    uint32_t shoulder_completions = 0;
+    uint32_t elbow_completions = 0;
+    uint32_t last_shoulder_completion_tick = 0;
+    uint32_t last_elbow_completion_tick = 0;
     uint32_t emg_window_min = 0xFFFu;
     uint32_t emg_window_max = 0u;
+    // Cumulative since boot -- counts times ImuReader::consume_needs_rewake()
+    // fired true, meaning that reader's device had just failed to ACK at
+    // some point and this is the first completion since. A device that
+    // power-cycles mid-run (not just a wedged bus) comes back up freshly
+    // power-on-reset with PWR_MGMT_1 back to its SLEEP=1 default -- I2C
+    // reads keep completing cleanly (nacks=0, timeouts=0 once it's back),
+    // but the accel/gyro registers were never written since reset, so
+    // decoded readings sit at exactly (0,0,0) forever otherwise. Rather
+    // than detect that symptom after the fact, needs_rewake_ makes "device
+    // just recovered from a failure" the trigger, unconditionally, so any
+    // future failure mode gets the same treatment without needing its own
+    // special case.
+    uint32_t shoulder_asleep_rewakes = 0;
+    uint32_t elbow_asleep_rewakes = 0;
 
     float sp = 0.0f; // last EMG setpoint, for the periodic report below (updated only on EOC)
-    float roll_smoothed = 0.0f;
-    float pitch_smoothed = 0.0f;
 
     while (1) {
-        // --- IMU: advance the non-blocking read every pass of this loop,
-        // not just once per EMG tick -- the CPU is otherwise idle between
-        // ADC conversions (up to ~1ms at 16MHz = thousands of spare
-        // cycles), and polling I2C only once per tick was the actual
-        // bottleneck limiting completions to ~48/s against a bus that can
-        // do ~500-650/s (see PRD.md Stage 5b). Decoupling this from the
-        // EOC gate lets I2C progress as fast as the hardware allows.
-        if (imu_reader.is_idle()) {
-            imu_reader.begin(tick_count);
+        // --- IMU: advance whichever reader is currently active every pass
+        // of this loop, not just once per EMG tick -- same throughput
+        // rationale as Stage 5b (the CPU is otherwise idle between ADC
+        // conversions). With two devices sharing one bus, expect roughly
+        // half Stage 5c's single-IMU rate per device (~591-593/s measured
+        // there -> ~290-295/s each here), since each transaction takes the
+        // same bus time regardless of address -- re-measure via
+        // shoulder_completions/elbow_completions below once wired, rather
+        // than assuming.
+        ImuReader &active_reader = active_is_shoulder ? shoulder_reader : elbow_reader;
+        const bool was_idle_before_this_pass = active_reader.is_idle();
+        if (was_idle_before_this_pass) {
+            active_reader.begin(tick_count);
         }
-        if (imu_reader.step(tick_count)) {
-            ++imu_completions;
-            const uint8_t *b = imu_reader.buf();
+        const bool completed = active_reader.step(tick_count);
+        if (completed) {
+            const uint8_t *b = active_reader.buf();
             const float ax = (float)be16(&b[0]) / 16384.0f;
             const float ay = (float)be16(&b[2]) / 16384.0f;
             const float az = (float)be16(&b[4]) / 16384.0f;
             const float gx = (float)be16(&b[8]) / 131.0f * (3.14159265f / 180.0f);
             const float gy = (float)be16(&b[10]) / 131.0f * (3.14159265f / 180.0f);
 
-            const float dt = (float)(tick_count - last_imu_completion_tick) * kDtPerTick;
-            last_imu_completion_tick = tick_count;
-            filter.update(gx, gy, ax, ay, az, dt); // real elapsed dt, not the fixed constructor value
-            roll_smoothed = roll_smoother.process(filter.roll());
-            pitch_smoothed = pitch_smoother.process(filter.pitch());
+            if (active_is_shoulder) {
+                ++shoulder_completions;
+                if (active_reader.consume_needs_rewake()) {
+                    ++shoulder_asleep_rewakes;
+                    mpu6050_write_reg_blocking(kShoulderImuAddr, 0x6Bu, 0x01u);
+                }
+                if (!shoulder_filter_initialized) {
+                    shoulder_filter.initialize(ax, ay, az); // skip the cold-start convergence transient
+                    shoulder_filter_initialized = true;
+                }
+                const float dt = (float)(tick_count - last_shoulder_completion_tick) * kDtPerTick;
+                last_shoulder_completion_tick = tick_count;
+                shoulder_filter.update(gx, gy, ax, ay, az, dt); // real elapsed dt, not the fixed constructor value
+            } else {
+                ++elbow_completions;
+                if (active_reader.consume_needs_rewake()) {
+                    ++elbow_asleep_rewakes;
+                    mpu6050_write_reg_blocking(kElbowImuAddr, 0x6Bu, 0x01u);
+                }
+                if (!elbow_filter_initialized) {
+                    elbow_filter.initialize(ax, ay, az);
+                    elbow_filter_initialized = true;
+                }
+                const float dt = (float)(tick_count - last_elbow_completion_tick) * kDtPerTick;
+                last_elbow_completion_tick = tick_count;
+                elbow_filter.update(gx, gy, ax, ay, az, dt);
+            }
+        }
+        // Switch turns on a successful completion, OR when the reader that
+        // was already busy at the top of this pass has now gone back to
+        // idle without completing (NACK abort / timeout+SWRST recovery) --
+        // see the bug writeup above shoulder_reader's declaration for why
+        // this can't be success-only. Deliberately NOT triggered by the
+        // was_idle_before_this_pass+begin() case in the same pass (a fresh
+        // begin() is never idle again this same call), so a device that
+        // starts a transaction this pass still gets to run it to
+        // completion/failure before losing its turn.
+        if (completed || (!was_idle_before_this_pass && active_reader.is_idle())) {
+            active_is_shoulder = !active_is_shoulder;
         }
 
         if (ADC1->SR & ADC_SR_EOC) {
@@ -579,34 +841,109 @@ int main(void) {
                 usart2_send_string(grip.is_gripping() ? "EDGE -> Gripping\r\n" : "EDGE -> Released\r\n");
             }
 
-            if (tick_count % 1000u == 0u) {
+            // Stage 6: 100Hz (every 10 ticks), not 1kHz or the old 1Hz --
+            // at 115200 baud a ~95-byte line supports up to ~120 lines/sec
+            // (see usart2_init()'s BRR comment); 100Hz is comfortably
+            // inside that budget and far more than MuJoCo's own
+            // launch_passive loop needs, since it paces itself
+            // independently to model.opt.timestep on the Python side.
+            // Format matches tools/mujoco_bridge/run_demo.py's LINE_RE
+            // exactly (shared with src/mujoco_bridge_demo.cpp's CSV-replay
+            // prototype), so the same Python parsing code works unchanged
+            // against either source.
+            if (tick_count % 10u == 0u) {
+                // Sign verified against real hardware (2026-08-23): the CSV
+                // prototype's generator assumed elbow_filter.pitch() -
+                // shoulder_filter.pitch() >= 0 (an arbitrary construction
+                // choice, not a physical law), but real hardware showed the
+                // opposite sign for this particular pair of IMUs' actual
+                // mounting orientation -- moving the forearm sensor while
+                // watching the raw (unclamped) difference confirmed
+                // shoulder_filter.pitch() - elbow_filter.pitch() is the
+                // sign that increases with real elbow flexion for this
+                // mounting. If the sensors are ever remounted, re-verify
+                // this the same way (print the raw signed difference and
+                // physically move the forearm) rather than assuming.
+                const float elbow_bend_raw = shoulder_filter.pitch() - elbow_filter.pitch();
+                const float elbow_bend = elbow_bend_raw > 0.0f ? elbow_bend_raw : 0.0f;
+
                 usart2_send_string("tick=");
                 usart2_send_uint(tick_count);
+                usart2_send_string(" grip=");
+                usart2_send_float(sp);
+                usart2_send_string(" gripping=");
+                usart2_send_uint(grip.is_gripping() ? 1u : 0u);
+                usart2_send_string(" shoulder_pitch=");
+                usart2_send_float(shoulder_filter.pitch());
+                usart2_send_string(" shoulder_roll=");
+                usart2_send_float(shoulder_filter.roll());
+                usart2_send_string(" elbow=");
+                usart2_send_float(elbow_bend);
+                // Temporary debug fields (2026-08-23): raw 12-bit ADC
+                // min/max over the last ~10ms window, before any threshold
+                // comparison. `grip`/`gripping` above are GripStateMachine's
+                // OUTPUT (only moves once the raw signal clears
+                // kFallbackThreshold=2037 for on_duration seconds), so they
+                // can't distinguish "no real EMG signal reaching the ADC at
+                // all" from "signal present but too weak to cross the
+                // threshold" -- added to check which one this is. Remove
+                // once confirmed one way or the other.
                 usart2_send_string(" emg_min=");
                 usart2_send_uint(emg_window_min);
                 usart2_send_string(" emg_max=");
                 usart2_send_uint(emg_window_max);
-                usart2_send_string(" gripping=");
-                usart2_send_uint(grip.is_gripping() ? 1u : 0u);
-                usart2_send_string(" setpoint_x1000=");
-                usart2_send_float_x1000(sp);
-                usart2_send_string(" imu_completions=");
-                usart2_send_uint(imu_completions);
-                usart2_send_string(" imu_state=");
-                usart2_send_uint((uint32_t)imu_reader.state_as_int());
-                usart2_send_string(" roll_x1000=");
-                usart2_send_float_x1000(filter.roll());
-                usart2_send_string(" pitch_x1000=");
-                usart2_send_float_x1000(filter.pitch());
-                usart2_send_string(" roll_smoothed_x1000=");
-                usart2_send_float_x1000(roll_smoothed);
-                usart2_send_string(" pitch_smoothed_x1000=");
-                usart2_send_float_x1000(pitch_smoothed);
                 usart2_send_string("\r\n");
-                GPIOC->ODR ^= (1u << LED_PIN);
+
+                if (tick_count % 1000u == 0u) {
+                    // Slower diagnostic-only line, same cadence Stage 5b
+                    // used -- per-IMU completion counts for the
+                    // verification checks in PRD.md's Stage 6 section
+                    // (confirms the alternator is actually alternating,
+                    // not stuck on one device). nack/timeout counts added
+                    // 2026-08-23 to tell apart "this device's address
+                    // stopped ACKing" (nacks, per-reader -- a real per-
+                    // device signal) from "the whole I2C1 peripheral wedged
+                    // BUSY" (timeouts -- can hit whichever reader happens to
+                    // be active regardless of which device is actually at
+                    // fault): unplugging IMU#2 was observed to also knock
+                    // IMU#1 offline, which these numbers should distinguish
+                    // between a real per-device electrical problem and a
+                    // shared-bus glitch.
+                    usart2_send_string("diag shoulder_completions=");
+                    usart2_send_uint(shoulder_completions);
+                    usart2_send_string(" elbow_completions=");
+                    usart2_send_uint(elbow_completions);
+                    usart2_send_string(" shoulder_nacks=");
+                    usart2_send_uint(shoulder_reader.nack_count());
+                    usart2_send_string(" shoulder_timeouts=");
+                    usart2_send_uint(shoulder_reader.timeout_count());
+                    usart2_send_string(" elbow_nacks=");
+                    usart2_send_uint(elbow_reader.nack_count());
+                    usart2_send_string(" elbow_timeouts=");
+                    usart2_send_uint(elbow_reader.timeout_count());
+                    usart2_send_string(" active_reader_state=");
+                    usart2_send_uint((uint32_t)active_reader.state_as_int());
+                    // Cumulative since boot, unlike the per-window counters
+                    // above -- these fire rarely enough that "since boot"
+                    // is more useful than resetting every window.
+                    usart2_send_string(" bus_recovery_attempts=");
+                    usart2_send_uint(g_bus_recovery_attempts);
+                    usart2_send_string(" bus_recovery_freed=");
+                    usart2_send_uint(g_bus_recovery_freed);
+                    usart2_send_string(" shoulder_asleep_rewakes=");
+                    usart2_send_uint(shoulder_asleep_rewakes);
+                    usart2_send_string(" elbow_asleep_rewakes=");
+                    usart2_send_uint(elbow_asleep_rewakes);
+                    usart2_send_string("\r\n");
+                    GPIOC->ODR ^= (1u << LED_PIN);
+                    shoulder_completions = 0;
+                    elbow_completions = 0;
+                    shoulder_reader.reset_counts();
+                    elbow_reader.reset_counts();
+                }
+
                 emg_window_min = 0xFFFu;
                 emg_window_max = 0u;
-                imu_completions = 0;
             }
         }
     }

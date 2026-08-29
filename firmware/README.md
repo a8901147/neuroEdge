@@ -288,6 +288,26 @@ cmake --build build --target flash_phase3_control_loop
 | `SDA` | STM32 `PB7` | 同上。 |
 | `3Vo`/`INT`/`AD0`/`FS`/`SCE`/`SDE`/`CLKIN` | 不接 | 這次用不到;`AD0` 不接時內部預設拉低,位址是 `0x68`。 |
 
+## Stage 6：第二顆 MPU6050(前臂),同一條 I2C1 bus,不同位址(2026-08-22)
+
+真實 Phase 3 硬體規劃確定要用兩顆 IMU(上臂+前臂,見 PRD.md 第 3 節架構修正),不是只有階段 5c 那一顆。兩顆共用同一條 I2C1 bus(`PB6`/`PB7`),靠位址區分——I2C 本來就是為了這個情境設計的,不需要為了「兩顆感測器」就多開一條實體匯流排(I2C2 的可用接腳跟除錯用的 JTDO 衝突,階段 4b 已經試過放棄,見上方)。
+
+**第二顆(前臂)接線,跟階段 5c 的第一顆(上臂)幾乎一樣,只差一條線**：
+
+| Adafruit 接腳 | 接到 | 備註 |
+| --- | --- | --- |
+| `Vin` | STM32 **3.3V** | 跟第一顆一樣。 |
+| `GND` | STM32 GND | 共地,跟第一顆共用。 |
+| `SCL` | STM32 `PB6` | 跟第一顆並聯在同一條線上,不是接到別的腳位。 |
+| `SDA` | STM32 `PB7` | 同上,並聯。 |
+| `AD0` | STM32 **3.3V** | **跟第一顆唯一的差異**——這條線決定位址從預設的 `0x68` 變成 `0x69`(MPU6050 資料手冊：`AD0` 是 7-bit 位址的最低位元)。第一顆的 `AD0` 維持不接(拉低,`0x68`)。 |
+
+**韌體改動**：`ImuReader` 原本把目標位址寫死成一個全域常數(`kImuTargetAddr = 0x68u`),現在改成建構子參數,`main()` 建立兩個實例(`shoulder_reader(0x68u)`、`elbow_reader(0x69u)`)。因為兩顆共用同一個實體 I2C1 週邊,同一時間只能有一顆在進行傳輸——新增一個簡單的交替邏輯：目前作用中的 reader 完整讀完一次才換下一顆,逾時的話**留在同一顆重試**,不會跳過(跟原本單顆時的重試邏輯一致)。預期效應：單顆吞吐量會下降到階段 5c 量到的 591-593 次/秒的大約一半(~290/秒),因為兩顆共用同一條 bus,每次傳輸佔用的匯流排時間不會因為換位址而改變。**這是預期中的取捨,不是 bug**——之後應該用韌體新增的 per-IMU 計數器(`shoulder_completions`/`elbow_completions`)實測確認,而不是只靠推算。
+
+**USART2 鮑率同時從 9600 提高到 115200**：新的輸出格式(`tick=<n> grip=<f> gripping=<0|1> shoulder_pitch=<f> shoulder_roll=<f> elbow=<f>`)每行約 95 bytes,9600 鮑率(~960 bytes/秒)只夠撐每秒 10 行左右,對即時追蹤手臂動作來說太卡。`BRR=0x008B` 是照 RM0368 19.3.4 公式,對應這個專案目前用的 16MHz HSI(整個 codebase 沒有任何檔案設定過 `RCC->CFGR`/`RCC->PLLCFGR`,用 grep 確認過,不是假設)算出來的,不是憑感覺選的——算式跟原本 9600 鮑率的 `BRR=0x0683` 用的是同一套,細節見 `phase3_control_loop_main.cpp` 裡 `usart2_init()` 的註解。改成每 10 個 EMG tick 印一行(100Hz,~950 bytes/秒,鮑率預算的 8% 左右),取代原本每 1000 tick 印一次的診斷輸出。
+
+**下一步(尚未執行,待實體接線完成)**：先用 `python3 tools/check_hardware_ready.py --i2c-scan` 確認兩個位址都有 ACK(不要只靠肉眼看燈號),再用 `openocd ... mdw` 讀新增的 `g_wake_result_shoulder`/`g_wake_result_elbow` 確認兩顆喚醒都成功,最後才進到 Python/MuJoCo 端驗證——完整順序見 PRD.md Stage 6 章節。
+
 ## 已知問題
 
 - **WeAct 官方的 HID bootloader 燒錄工具在這台 Apple Silicon Mac 上不能用**——追查到根因是 `hid_enumerate()` 回傳空的裝置路徑(這支 2019 年工具跟現今 IOKit 有深層相容性問題，不值得繼續修)。改用 ST-Link + OpenOCD 燒錄；完整調查過程見 PRD.md 的 Phase 1.5 章節。
