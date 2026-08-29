@@ -6,3 +6,4 @@ imgui.ini
 data/raw/
 mujoco_menagerie/
 .venv/
+__pycache__/

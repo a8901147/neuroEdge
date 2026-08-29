@@ -116,6 +116,32 @@ cmake --build build/debug-heapguard --target edgeneuro_mujoco_bridge_demo
 .venv/bin/mjpython tools/mujoco_bridge/run_demo.py   # macOS: must be mjpython, not python3
 ```
 
+### Live hardware (Stage 6): the actual point, not the CSV replay
+
+`run_demo.py` above replays a synthetic CSV — a prototype used to validate the
+3D model/control mapping in isolation. The real goal is the physical device
+(STM32F401 + real MyoWare + 2x real MPU6050) decoding and streaming live over
+USART2/USB-TTL, driving the same MuJoCo arm in real time. Firmware side:
+`firmware/src/phase3_control_loop_main.cpp`'s Stage 6 dual-IMU loop (see
+PRD §6 Stage 6 and `firmware/README.md` for wiring — two MPU6050s share I2C1
+at addresses `0x68`/`0x69`, `AD0` tied to 3.3V on the second unit). Python
+side: `tools/mujoco_bridge/run_demo_live.py`, a separate script from
+`run_demo.py` (different lifecycle — a live serial port has no "finished"
+sentinel), reusing the same MuJoCo model/actuator wiring, reading over
+`pyserial` instead of replaying a subprocess:
+
+```sh
+# after flashing phase3_control_loop and connecting the CP2102 USB-TTL adapter
+.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py
+.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --port /dev/tty.usbserial-0001 --baud 115200  # explicit defaults
+```
+
+Verify hardware bring-up SWD-first before trusting the viewer (see PRD §6
+Stage 6's verification list): `python3 tools/check_hardware_ready.py
+--i2c-scan` should ACK both `0x68` and `0x69`; the firmware's
+`g_wake_result_shoulder`/`g_wake_result_elbow` globals should both read `0`
+via `openocd ... mdw`.
+
 ## Real-dataset compatibility (EMG-EPN-612)
 
 `tools/convert_epn612.py` converts [EMG-EPN-612](https://zenodo.org/records/4421500) (Myo armband) per-user JSON recordings into `CsvSignalProvider`'s CSV layout — `EdgeNeuro<8, 10>` (8 EMG channels + accelerometer/gyroscope/quaternion). Verified end-to-end against real downloaded data (not just a synthetic fixture): the converter, and the resulting CSV read back through the real C++ `CsvSignalProvider`, both confirmed correct on `trainingJSON/user1/user1.json` (298,710 rows, values cross-checked between the Python converter's output and the C++ parser's output).
