@@ -32,35 +32,55 @@ SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "arm_hand_scene.xml"
 # them past the grasp object hard enough to knock it off its pedestal instead
 # of trapping it; 0.45 is the largest scale that held the object in testing.
 # Abduction/thumb-base actuators are left at ctrl=0 (valid neutral) -- not driven this iteration.
+#
+# 2026-09-02: retargeted to unitree_g1's left hand (thumb x3, index x2,
+# middle x2) -- see run_demo_live.py's GRIP_ACTUATORS comment for the full
+# rationale (this file's copy is kept in sync by hand, same as its other
+# actuator constants below). NOTE: wearable_1emg_12imu.csv's replayed
+# shoulder/elbow numbers were generated against the OLD shadow_hand-based
+# rig's joint conventions -- this file will run without crashing, but the
+# resulting arm pose won't be meaningfully tuned against G1's different
+# ranges/offset until that CSV (or this script's use of it) is revisited.
 GRIP_SCALE = 0.6
 GRIP_ACTUATORS = {
-    "rh_A_FFJ3": 1.5708,
-    "rh_A_MFJ3": 1.5708,
-    "rh_A_RFJ3": 1.5708,
-    "rh_A_LFJ3": 1.5708,
-    "rh_A_FFJ0": 3.1415,
-    "rh_A_MFJ0": 3.1415,
-    "rh_A_RFJ0": 3.1415,
-    "rh_A_LFJ0": 3.1415,
-    "rh_A_THJ2": 0.6981,
-    "rh_A_THJ1": 1.5708,
+    "left_hand_thumb_1_joint": 1.0472,
+    "left_hand_thumb_2_joint": 1.74533,
+    "left_hand_middle_0_joint": -1.5708,
+    "left_hand_middle_1_joint": -1.74533,
+    "left_hand_index_0_joint": -1.5708,
+    "left_hand_index_1_joint": -1.74533,
 }
 
 # Wrist is left neutral: the 2-IMU sensor budget (upper arm + forearm) drives
 # the shoulder+elbow chain below, not the wrist directly -- wrist orientation
 # isn't independently observable with only these 2 IMUs. Explicit ctrl=0 (set
 # once, not per-tick) documents this as a deliberate decision, not an oversight.
-WRIST_ROLL_ACTUATOR = "rh_A_WRJ2"
-WRIST_PITCH_ACTUATOR = "rh_A_WRJ1"
+WRIST_ROLL_ACTUATOR = "left_wrist_roll_joint"
+WRIST_PITCH_ACTUATOR = "left_wrist_pitch_joint"
+WRIST_YAW_ACTUATOR = "left_wrist_yaw_joint"
+SHOULDER_YAW_ACTUATOR = "left_shoulder_yaw_joint"
 
-SHOULDER_PITCH_ACTUATOR = "rh_A_shoulder_pitch"
-SHOULDER_PITCH_RANGE = (-1.2, 1.2)
+SHOULDER_PITCH_ACTUATOR = "left_shoulder_pitch_joint"
+# See run_demo_live.py's SHOULDER_PITCH_RANGE comment (2026-09-03 fix) --
+# NEGATIVE ctrl is flexion/forward in this joint's frame, not positive as
+# first assumed; range is expressed here in that ctrl-native sign, capped
+# by the joint's own mechanical limit on the flexion (forward) side and by
+# real ROM on the extension (backward) side.
+SHOULDER_PITCH_RANGE = (-3.0892, 1.0472)
 
-SHOULDER_ROLL_ACTUATOR = "rh_A_shoulder_roll"
-SHOULDER_ROLL_RANGE = (-0.5, 0.8)
+SHOULDER_ROLL_ACTUATOR = "left_shoulder_roll_joint"
+# See run_demo_live.py's SHOULDER_ROLL_RANGE comment -- widened to match
+# real ab/adduction ROM, capped by this joint's own mechanical limit on
+# the abduction side.
+SHOULDER_ROLL_RANGE = (-0.8727, 2.2515)
 
-ELBOW_ACTUATOR = "rh_A_elbow_flex"
-ELBOW_RANGE = (0.0, 1.4)
+ELBOW_ACTUATOR = "left_elbow_joint"
+# See run_demo_live.py's ELBOW_OFFSET comment -- +1.28 (G1's own "stand"
+# keyframe value, confirmed by direct visual comparison against the frozen
+# right arm) is straight/hanging, not -1.0472; flexion runs downward from
+# there toward -1.0472.
+ELBOW_OFFSET = 1.28
+ELBOW_RANGE = (-1.0472, 1.28)
 
 LINE_RE = re.compile(
     r"tick=(?P<tick>\d+) grip=(?P<grip>[-\d.eE+]+) gripping=(?P<gripping>\d) "
@@ -142,6 +162,8 @@ def main():
 
     data.ctrl[model.actuator(WRIST_ROLL_ACTUATOR).id] = 0.0
     data.ctrl[model.actuator(WRIST_PITCH_ACTUATOR).id] = 0.0
+    data.ctrl[model.actuator(WRIST_YAW_ACTUATOR).id] = 0.0
+    data.ctrl[model.actuator(SHOULDER_YAW_ACTUATOR).id] = 0.0
 
     object_body_id = model.body("object").id
 
@@ -154,12 +176,20 @@ def main():
 
             for name, upper_range in GRIP_ACTUATORS.items():
                 data.ctrl[grip_actuator_ids[name]] = grip * GRIP_SCALE * upper_range
-            data.ctrl[shoulder_pitch_id] = clamp(shoulder_pitch, *SHOULDER_PITCH_RANGE)
+            # Negated -- see SHOULDER_PITCH_RANGE's comment: positive data
+            # (flexion/forward) needs NEGATIVE ctrl in this joint's frame.
+            data.ctrl[shoulder_pitch_id] = clamp(-shoulder_pitch, *SHOULDER_PITCH_RANGE)
             data.ctrl[shoulder_roll_id] = clamp(shoulder_roll, *SHOULDER_ROLL_RANGE)
-            data.ctrl[elbow_id] = clamp(elbow, *ELBOW_RANGE)
+            data.ctrl[elbow_id] = clamp(ELBOW_OFFSET - elbow, *ELBOW_RANGE)
 
             mujoco.mj_step(model, data)
-            viewer.sync()
+            # Rendered far less often than stepped -- see run_demo_live.py's
+            # matching comment (2026-09-02): this scene's full 49-mesh G1
+            # mannequin is expensive enough to draw that syncing every 2ms
+            # physics step made this loop's `remaining` pacing below go
+            # permanently negative.
+            if step_count % 20 == 0:
+                viewer.sync()
 
             step_count += 1
             if step_count % 200 == 0:

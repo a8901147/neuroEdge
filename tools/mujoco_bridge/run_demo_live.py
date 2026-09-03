@@ -49,31 +49,109 @@ DEFAULT_BAUD = 115200
 
 # Same mapping/scale as run_demo.py -- see that file for the empirical
 # tuning notes (palm-down quat fix, joint damping, GRIP_SCALE).
+#
+# 2026-09-02: retargeted from the shadow_hand-based rig's 10 finger
+# actuators (4 fingers x 2 joints + thumb x2) to unitree_g1's simpler
+# 7-DOF hand (thumb x3, index x2, middle x2, no ring/pinky) after the
+# whole arm+hand was swapped from a hand-tuned shadow_hand weld to G1's
+# real, vetted arm -- see arm_hand_scene.xml's top comment for why.
+# thumb_0 (opposition/abduction) is deliberately left out here, same as
+# the old rig's untouched abduction/thumb-base actuators -- it's not a
+# curl joint, driving it by the same grip scalar as the others would
+# rotate the thumb sideways instead of closing it.
+#
+# Target signs picked from each joint's own range direction (extracted
+# from unitree_g1/g1_with_hands.xml, not guessed): middle/index ranges are
+# entirely non-positive (0 = open, negative = closed) on this LEFT hand --
+# mirrored from the source model's right hand, where the same joints are
+# entirely non-negative -- so their targets are negative here. thumb_2's
+# range is entirely non-negative (0 to +1.74533), so positive. thumb_1's
+# range straddles zero (-0.724312 to 1.0472); its sign was picked to curl
+# the same rotational direction as thumb_2 in the kinematic chain and
+# confirmed by rendering the full 6-joint grip pose, not assumed -- see
+# the scratch render this change was verified against.
 GRIP_SCALE = 0.6
 GRIP_ACTUATORS = {
-    "rh_A_FFJ3": 1.5708,
-    "rh_A_MFJ3": 1.5708,
-    "rh_A_RFJ3": 1.5708,
-    "rh_A_LFJ3": 1.5708,
-    "rh_A_FFJ0": 3.1415,
-    "rh_A_MFJ0": 3.1415,
-    "rh_A_RFJ0": 3.1415,
-    "rh_A_LFJ0": 3.1415,
-    "rh_A_THJ2": 0.6981,
-    "rh_A_THJ1": 1.5708,
+    "left_hand_thumb_1_joint": 1.0472,
+    "left_hand_thumb_2_joint": 1.74533,
+    "left_hand_middle_0_joint": -1.5708,
+    "left_hand_middle_1_joint": -1.74533,
+    "left_hand_index_0_joint": -1.5708,
+    "left_hand_index_1_joint": -1.74533,
 }
 
-WRIST_ROLL_ACTUATOR = "rh_A_WRJ2"
-WRIST_PITCH_ACTUATOR = "rh_A_WRJ1"
+WRIST_ROLL_ACTUATOR = "left_wrist_roll_joint"
+WRIST_PITCH_ACTUATOR = "left_wrist_pitch_joint"
+WRIST_YAW_ACTUATOR = "left_wrist_yaw_joint"
+SHOULDER_YAW_ACTUATOR = "left_shoulder_yaw_joint"
 
-SHOULDER_PITCH_ACTUATOR = "rh_A_shoulder_pitch"
-SHOULDER_PITCH_RANGE = (-1.2, 1.2)
+SHOULDER_PITCH_ACTUATOR = "left_shoulder_pitch_joint"
+# 2026-09-03 CORRECTED: the 2026-09-02 comment here (and the ctrl
+# assignment below) had the sign backwards. It claimed "positive pitch is
+# flexion, confirmed by rendering" -- that rendering check was never
+# actually re-run after the joint's own mechanical range in
+# arm_hand_scene.xml turned out asymmetric (-3.0892 to +2.6704, not
+# symmetric like the number that was eyeballed). Verified properly this
+# time with tools/mujoco_bridge/test_arm_kinematics.py's geometry_summary()
+# printed wrist-vs-shoulder numbers (a clean mj_forward check, not eyes on
+# the viewer): ctrl=-1.0472 puts the wrist IN FRONT of the shoulder
+# (front=+0.33m), ctrl=+2.6704 puts it BEHIND (front=-0.21m). So in MuJoCo's
+# own joint frame, NEGATIVE ctrl is flexion (forward) and POSITIVE ctrl is
+# extension (backward) -- the opposite of the old comment.
+#
+# This file's `shoulder_pitch` value (the data layer, IMU-derived) is kept
+# meaning what it always meant -- positive = flexion/forward -- so the fix
+# is entirely on the Data->MuJoCo mapping: negate it before clamping (see
+# the ctrl assignment below), and swap which of the joint's two asymmetric
+# mechanical limits acts as which anatomical cap. Real ROM is still the
+# basis (AAOS/standard goniometry: ~0-180deg forward flexion, ~0-60deg
+# backward extension from arm-at-side): flexion (now the ctrl-negative
+# side) is capped at the joint's own forward ceiling, -3.0892rad (~177deg,
+# short of the full 180deg a real shoulder can flex to, but that's G1's
+# hardware limit); extension (now the ctrl-positive side) is capped at
+# +1.0472rad (60deg), the real extension ROM -- well inside this joint's
+# +2.6704rad backward ceiling, so the real anatomy is the binding limit
+# there, not the hardware.
+SHOULDER_PITCH_RANGE = (-3.0892, 1.0472)
 
-SHOULDER_ROLL_ACTUATOR = "rh_A_shoulder_roll"
-SHOULDER_ROLL_RANGE = (-0.5, 0.8)
+SHOULDER_ROLL_ACTUATOR = "left_shoulder_roll_joint"
+# 2026-09-02: widened from (-0.5, 0.8), same reasoning as
+# SHOULDER_PITCH_RANGE above. Positive roll is abduction (confirmed by
+# rendering). Real adduction ROM (arm sweeping back down past the side) is
+# only about 0-50deg -- -0.8727rad here covers that. Real abduction ROM is
+# 0-180deg, but this joint's own mechanical limit is +2.2515rad (~129deg,
+# left_shoulder_roll_joint's range) -- again the robot's real hardware
+# ceiling, not a clamp choice.
+SHOULDER_ROLL_RANGE = (-0.8727, 2.2515)
 
-ELBOW_ACTUATOR = "rh_A_elbow_flex"
-ELBOW_RANGE = (0.0, 1.4)
+ELBOW_ACTUATOR = "left_elbow_joint"
+# 2026-09-02, corrected after visual comparison against the frozen right
+# arm (which the user pointed out clearly hangs straight, unlike the left
+# one): -1.0472 is NOT "arm straight" -- that was determined from the
+# RAW ANGLE BETWEEN the upper-arm and forearm body vectors alone, which
+# turned out to be the wrong metric. It ignores that those two "segment"
+# reference bodies (left_shoulder_roll_link, left_elbow_link) both sit
+# behind an extra shoulder_yaw_link offset that isn't part of a real
+# anatomical upper-arm bone, so a locally-large angle between them doesn't
+# mean the WHOLE arm points straight down -- confirmed the hard way:
+# elbow=-1.0472 with shoulder_pitch=shoulder_roll=0 actually renders as the
+# forearm swung up near the shoulder (looks like a mid-flexion "reaching"
+# pose, not a hang), while elbow=+1.28 -- the exact value G1's own
+# g1_with_hands.xml "stand" keyframe uses for its (frozen, undriven) right
+# arm -- renders as a natural hang, symmetric with that right arm. Trusting
+# the vendor's own resting value here instead of a self-derived numeric
+# search, which also turned out unreliable near this range (a folded
+# forearm brings the wrist close enough to the shoulder that its straight-
+# line direction stops meaningfully indicating "hanging" at all).
+#
+# Flexion now runs the OPPOSITE direction from before: DOWN from +1.28
+# (straight) toward -1.0472 (this joint's mechanical limit) is what swings
+# the forearm up toward the shoulder -- confirmed by the same visual
+# comparison (elbow=-1.0472 alone visibly looks like a mid-flexion reach).
+# That span is 1.28 - (-1.0472) = 2.327rad (~133deg), close to a real
+# elbow's ~140deg (2.44rad) full flexion range.
+ELBOW_OFFSET = 1.28
+ELBOW_RANGE = (-1.0472, 1.28)
 
 # Identical to run_demo.py's LINE_RE -- the firmware's Stage 6 output line
 # format is deliberately matched to the CSV-replay binary's, so this same
@@ -314,6 +392,16 @@ def reader_thread_main(ser, latest):
                         )
                         last_diag_key = diag_key
                         last_diag_print_time = now
+                    continue
+                # Neither LINE_RE nor DIAG_LINE_RE matched -- previously
+                # silently dropped, which hid real firmware output (e.g. the
+                # boot-time "Stage 5b: ..." banner, or a "wake write FAILED"
+                # error right before blink_code()'s infinite halt loop in
+                # phase3_control_loop_main.cpp) with nothing to show for it
+                # but a script that looked hung. Printed here instead so a
+                # firmware-side halt/error is visible instead of silent.
+                if line.strip():
+                    print(f"[FW] {line}")
     except serial.SerialException as exc:
         # A real OS-level port failure (e.g. the CP2102 adapter was
         # physically unplugged) -- distinct from the firmware just going
@@ -407,6 +495,8 @@ def main():
 
     data.ctrl[model.actuator(WRIST_ROLL_ACTUATOR).id] = 0.0
     data.ctrl[model.actuator(WRIST_PITCH_ACTUATOR).id] = 0.0
+    data.ctrl[model.actuator(WRIST_YAW_ACTUATOR).id] = 0.0
+    data.ctrl[model.actuator(SHOULDER_YAW_ACTUATOR).id] = 0.0
 
     was_stale = False  # edge-triggered: only print on stale<->healthy transitions, not every frame
     last_status_key = None  # edge-triggered the same way, for the [SENSORS] block below
@@ -442,13 +532,30 @@ def main():
                 # Subtract the zero-pose reference captured at startup --
                 # see the calibration comment above main()'s launch_passive
                 # block for why the raw absolute angles can't be clamped
-                # directly.
-                data.ctrl[shoulder_pitch_id] = clamp(shoulder_pitch - zero_shoulder_pitch, *SHOULDER_PITCH_RANGE)
+                # directly. Negated here -- see SHOULDER_PITCH_RANGE's
+                # comment: positive data (flexion/forward) needs NEGATIVE
+                # ctrl in this joint's frame.
+                data.ctrl[shoulder_pitch_id] = clamp(-(shoulder_pitch - zero_shoulder_pitch), *SHOULDER_PITCH_RANGE)
                 data.ctrl[shoulder_roll_id] = clamp(shoulder_roll - zero_shoulder_roll, *SHOULDER_ROLL_RANGE)
-                data.ctrl[elbow_id] = clamp(elbow - zero_elbow, *ELBOW_RANGE)
+                data.ctrl[elbow_id] = clamp(ELBOW_OFFSET - (elbow - zero_elbow), *ELBOW_RANGE)
 
                 mujoco.mj_step(model, data)
-                viewer.sync()
+                # Rendered far less often than stepped (2026-09-02 fix): this
+                # scene's full 49-mesh G1 mannequin (added so the arm has a
+                # real body for scale/orientation reference, see
+                # arm_hand_scene.xml's top comment) is expensive enough to
+                # draw that calling viewer.sync() every single 2ms physics
+                # step made this loop's own `remaining` pacing below go
+                # permanently negative -- confirmed directly (test_arm_kinematics.py's
+                # git history) by timing a plain rest hold against this same
+                # scene, which took 30+ real seconds for what should have
+                # been 2 simulated seconds. Every iteration still steps
+                # physics (so the arm's simulated state tracks real time
+                # correctly), just doesn't redraw every single one of those
+                # steps -- ~20 physics steps between redraws is still a
+                # smooth-looking ~25fps at this timestep.
+                if step_count % 20 == 0:
+                    viewer.sync()
 
                 step_count += 1
                 if step_count % 200 == 0:
