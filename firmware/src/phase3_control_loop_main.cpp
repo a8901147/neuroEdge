@@ -36,6 +36,7 @@
 // argument instead of a single hard-coded global, since one instance per
 // address is needed.
 
+#include <cmath>
 #include <cstdint>
 
 #include "edgeneuro/control/grip_state_machine.hpp"
@@ -707,9 +708,7 @@ int main(void) {
     // lockstep rather than diverging by an extra, unvalidated smoothing
     // stage.
     edgeneuro::ComplementaryFilter<float> shoulder_filter(0.98f, kDtPerTick);
-    edgeneuro::ComplementaryFilter<float> elbow_filter(0.98f, kDtPerTick);
     bool shoulder_filter_initialized = false;
-    bool elbow_filter_initialized = false;
 
     // Stage 6: two MPU6050s share I2C1, so their reads cannot run
     // concurrently -- only one ImuReader may have a transaction in flight
@@ -742,7 +741,6 @@ int main(void) {
     uint32_t shoulder_completions = 0;
     uint32_t elbow_completions = 0;
     uint32_t last_shoulder_completion_tick = 0;
-    uint32_t last_elbow_completion_tick = 0;
     uint32_t emg_window_min = 0xFFFu;
     uint32_t emg_window_max = 0u;
     // Cumulative since boot -- counts times ImuReader::consume_needs_rewake()
@@ -770,6 +768,15 @@ int main(void) {
     float elbow_raw_ax = 0.0f;
     float elbow_raw_ay = 0.0f;
     float elbow_raw_az = 0.0f;
+    // Temporary (2026-09-01): both sensors got remounted with a new,
+    // consistent convention (pin-header edge facing the hand/distal
+    // direction on both) -- the existing ax/ay/az remap below was derived
+    // for the OLD mount and no longer applies to either reader. Re-add the
+    // shoulder side's raw axes (removed once the last remount's remap was
+    // confirmed) to re-derive it from scratch rather than re-guessing.
+    float shoulder_raw_ax = 0.0f;
+    float shoulder_raw_ay = 0.0f;
+    float shoulder_raw_az = 0.0f;
 
     while (1) {
         // --- IMU: advance whichever reader is currently active every pass
@@ -792,49 +799,49 @@ int main(void) {
             const float raw_ax = (float)be16(&b[0]) / 16384.0f;
             const float raw_ay = (float)be16(&b[2]) / 16384.0f;
             const float raw_az = (float)be16(&b[4]) / 16384.0f;
-            const float raw_gx = (float)be16(&b[8]) / 131.0f * (3.14159265f / 180.0f);
-            // raw_gy (rotation about the axis that now points up the limb) is
-            // yaw-like in the new mount -- unmeasured/unneeded, same as the
-            // previously-untracked gyro-Z was before this remap.
+            const float raw_gy = (float)be16(&b[10]) / 131.0f * (3.14159265f / 180.0f);
             const float raw_gz = (float)be16(&b[12]) / 131.0f * (3.14159265f / 180.0f);
 
-            // Axis remap for the flat-against-skin mount (armpit/pulse-point
-            // placement, pin-header edge facing forward) -- corrected
-            // 2026-08-29 from a first, theory-only guess that didn't hold up
-            // live (front-back motion showed up on roll, not pitch).
-            // Re-derived from direct measurement of raw_ax/ay/az (see the
-            // now-removed temporary debug fields, same commit) instead of
-            // re-guessing the mount geometry: at rest raw_ay ~= -1g
-            // (confirms it's the gravity/vertical reference); front-back
-            // swing moved raw_ax by ~1.0 while raw_az stayed under 0.3;
-            // left-right swing moved raw_az by ~0.9 while raw_ax moved
-            // about as much as it did for front-back (this mount doesn't
-            // isolate raw_ax perfectly -- it responds to both -- but raw_az
-            // is the clean roll indicator, so raw_ax is the best remaining
-            // choice for pitch by elimination). Gyro channels follow the
-            // same per-slot raw axis as their paired accel component (same
-            // reasoning as before, just swapped along with ax/ay). Sign of
-            // ay/gy fixes which direction reads as positive roll, sign of
-            // ax/gy fixes positive pitch -- flip accel+its paired gyro
-            // together if a direction ever comes out backwards; it doesn't
-            // affect decoupling. ax negated 2026-08-29: live MuJoCo check
-            // showed raising the arm forward decreased shoulder_pitch,
-            // which the rig's joint convention reads as lowering the arm
-            // (rh_shoulder_pitch axis "0 1 0": positive angle rotates the
-            // rest-pose +X reach towards -Z, i.e. down) -- confirmed via a
-            // headless state check, not just eyeballing the viewer.
-            const float ax = -raw_ax;
-            const float ay = raw_az;
-            const float az = -raw_ay;
-            const float gx = raw_gx;
-            const float gy = -raw_gz;
-
             if (active_is_shoulder) {
+                shoulder_raw_ax = raw_ax;
+                shoulder_raw_ay = raw_ay;
+                shoulder_raw_az = raw_az;
                 ++shoulder_completions;
                 if (active_reader.consume_needs_rewake()) {
                     ++shoulder_asleep_rewakes;
                     mpu6050_write_reg_blocking(kShoulderImuAddr, 0x6Bu, 0x01u);
                 }
+                // Axis remap for the shoulder mount (pin-header edge facing
+                // the hand/distal direction, flat against skin) -- re-
+                // derived 2026-09-01 after remounting to a new convention
+                // (previous remap was for the armpit/pulse-point mount,
+                // pin-header facing forward -- see git history). Measured
+                // directly: at rest raw_ax ~= +1g (confirms it's the
+                // gravity/vertical reference); front-back swing moved
+                // raw_ay far more than raw_az (0.431->0.471 roughly flat vs
+                // 0.395->0.666), so raw_az is shoulder's roll indicator and
+                // raw_ay its pitch one. Gyro channels paired to the same
+                // raw axis as their accel counterpart (gx with ax's raw
+                // axis, gy with ay's).
+                //
+                // ax/gx negated 2026-09-01: live MuJoCo check (grasp_site
+                // world position, not eyeballed) showed positive pitch
+                // raising the arm, but the rig's rh_shoulder_pitch
+                // convention reads positive as lowering it -- flip sign to
+                // match.
+                //
+                // This mapping is shoulder-only now (2026-09-01): the
+                // elbow reader no longer needs any axis remap or per-sensor
+                // Euler-angle filter -- see elbow_bend_raw's computation
+                // below for why (a whole class of ax/ay-guessing bugs, this
+                // comment's previous several revisions among them, turned
+                // out to be a wrong-tool-for-the-job problem, not a mapping
+                // problem).
+                const float ax = -raw_ay;
+                const float ay = raw_az;
+                const float az = raw_ax;
+                const float gx = -raw_gy;
+                const float gy = raw_gz;
                 if (!shoulder_filter_initialized) {
                     shoulder_filter.initialize(ax, ay, az); // skip the cold-start convergence transient
                     shoulder_filter_initialized = true;
@@ -851,13 +858,6 @@ int main(void) {
                     ++elbow_asleep_rewakes;
                     mpu6050_write_reg_blocking(kElbowImuAddr, 0x6Bu, 0x01u);
                 }
-                if (!elbow_filter_initialized) {
-                    elbow_filter.initialize(ax, ay, az);
-                    elbow_filter_initialized = true;
-                }
-                const float dt = (float)(tick_count - last_elbow_completion_tick) * kDtPerTick;
-                last_elbow_completion_tick = tick_count;
-                elbow_filter.update(gx, gy, ax, ay, az, dt);
             }
         }
         // Switch turns on a successful completion, OR when the reader that
@@ -898,20 +898,54 @@ int main(void) {
             // prototype), so the same Python parsing code works unchanged
             // against either source.
             if (tick_count % 10u == 0u) {
-                // Sign verified against real hardware (2026-08-23): the CSV
-                // prototype's generator assumed elbow_filter.pitch() -
-                // shoulder_filter.pitch() >= 0 (an arbitrary construction
-                // choice, not a physical law), but real hardware showed the
-                // opposite sign for this particular pair of IMUs' actual
-                // mounting orientation -- moving the forearm sensor while
-                // watching the raw (unclamped) difference confirmed
-                // shoulder_filter.pitch() - elbow_filter.pitch() is the
-                // sign that increases with real elbow flexion for this
-                // mounting. If the sensors are ever remounted, re-verify
-                // this the same way (print the raw signed difference and
-                // physically move the forearm) rather than assuming.
-                const float elbow_bend_raw = shoulder_filter.pitch() - elbow_filter.pitch();
-                const float elbow_bend = elbow_bend_raw > 0.0f ? elbow_bend_raw : 0.0f;
+                // 2026-09-01: elbow_bend is the angle between the shoulder
+                // and elbow readers' raw (unmapped) gravity vectors, via
+                // cos(angle) = (a.b) / (|a||b|) -- NOT
+                // shoulder_filter.pitch() - elbow_filter.pitch() (removed;
+                // see git history). That subtraction decomposes each
+                // sensor's tilt into a per-axis Euler angle first, which
+                // breaks down (the classic atan2 gimbal-lock singularity)
+                // once either angle nears +-90deg -- exactly the range a
+                // real ~140deg (2.44rad) elbow flexion has to cross.
+                // Confirmed on hardware 2026-09-01: two different ax/ay
+                // swap attempts at the elbow reader's per-axis mapping both
+                // still showed the real motion landing mostly on "roll"
+                // (swinging 2-3+ rad) while "pitch" barely moved (~0.4-1.2
+                // rad), regardless of which raw channel fed which -- not a
+                // mapping bug, a property of the decomposition itself at
+                // this rotation size.
+                //
+                // The dot-product form has no such singularity (well-
+                // behaved over its full 0-180deg range) and needs no axis
+                // remap at all -- the angle between two vectors doesn't
+                // care which coordinate frame each is expressed in, as long
+                // as it's consistent per vector, so this uses each reader's
+                // raw ax/ay/az directly. Always >= 0 (can't distinguish
+                // flexion from the equivalent hyperextension), same
+                // limitation the old ">0.0f" clamp already accepted.
+                const float shoulder_mag = std::sqrt(shoulder_raw_ax * shoulder_raw_ax +
+                                                      shoulder_raw_ay * shoulder_raw_ay +
+                                                      shoulder_raw_az * shoulder_raw_az);
+                const float elbow_mag = std::sqrt(elbow_raw_ax * elbow_raw_ax +
+                                                   elbow_raw_ay * elbow_raw_ay +
+                                                   elbow_raw_az * elbow_raw_az);
+                float elbow_bend = 0.0f;
+                // Guard against either reader's raw_* still sitting at its
+                // zero-initialized default (no completion yet since boot) --
+                // a zero-length vector makes the division below meaningless,
+                // not just imprecise.
+                if (shoulder_mag > 0.1f && elbow_mag > 0.1f) {
+                    const float dot = shoulder_raw_ax * elbow_raw_ax + shoulder_raw_ay * elbow_raw_ay +
+                                       shoulder_raw_az * elbow_raw_az;
+                    // Clamp before acos: the dot-product identity can round
+                    // to just past +-1 in float even for exactly-aligned
+                    // vectors, and acos() of anything outside [-1,1] is
+                    // NaN, not a clamped boundary value.
+                    float cos_angle = dot / (shoulder_mag * elbow_mag);
+                    if (cos_angle > 1.0f) cos_angle = 1.0f;
+                    if (cos_angle < -1.0f) cos_angle = -1.0f;
+                    elbow_bend = std::acos(cos_angle);
+                }
 
                 usart2_send_string("tick=");
                 usart2_send_uint(tick_count);
@@ -944,6 +978,17 @@ int main(void) {
                 usart2_send_float(elbow_raw_ay);
                 usart2_send_string(" elbow_raw_az=");
                 usart2_send_float(elbow_raw_az);
+                // shoulder_raw_ax/ay/az: no longer just diagnostic (as of
+                // 2026-09-01) -- these, together with elbow_raw_ax/ay/az
+                // above, are the actual inputs elbow_bend's dot-product
+                // angle is computed from, so kept printed as the ground
+                // truth for that computation, not removed.
+                usart2_send_string(" shoulder_raw_ax=");
+                usart2_send_float(shoulder_raw_ax);
+                usart2_send_string(" shoulder_raw_ay=");
+                usart2_send_float(shoulder_raw_ay);
+                usart2_send_string(" shoulder_raw_az=");
+                usart2_send_float(shoulder_raw_az);
                 usart2_send_string("\r\n");
 
                 if (tick_count % 1000u == 0u) {
