@@ -31,6 +31,7 @@ RuntimeError under plain CPython on macOS.
 """
 
 import argparse
+import math
 import re
 import sys
 import threading
@@ -162,6 +163,34 @@ LINE_RE = re.compile(
     r"elbow=(?P<elbow>[-\d.eE+]+)"
 )
 
+# shoulder_raw_ax/ay/az: the UNMAPPED accelerometer axes, present later on the
+# same tick line (phase3_control_loop_main.cpp always sends them, not just
+# diagnostically -- see that file's 2026-09-01 comment). A separate regex
+# rather than folding into LINE_RE above: LINE_RE only needs to match the
+# leading fields to parse either source (this file's docstring), and these
+# three are only meaningful for shoulder-axis-remap debugging, not normal
+# operation -- added 2026-09-03 after a live test showed a forward-raise
+# landing almost entirely on shoulder_roll instead of shoulder_pitch, to
+# let the CURRENT physical mount's raw axes be measured directly (the
+# firmware's own prescribed fix method) instead of guessing at a new remap.
+SHOULDER_RAW_RE = re.compile(
+    r"shoulder_raw_ax=(?P<shoulder_raw_ax>[-\d.eE+]+) "
+    r"shoulder_raw_ay=(?P<shoulder_raw_ay>[-\d.eE+]+) "
+    r"shoulder_raw_az=(?P<shoulder_raw_az>[-\d.eE+]+)"
+)
+
+# elbow_raw_ax/ay/az -- always sent (not just diagnostic), same as
+# SHOULDER_RAW_RE's fields; added 2026-09-03 alongside the shoulder ones so a
+# single capture session can record ground-truth raw vectors for BOTH
+# sensors at once (needed for tools/mujoco_bridge/test_imu_to_mujoco.py's
+# elbow-flexion fixtures, which need real elbow_raw data the same way its
+# shoulder fixtures needed real shoulder_raw data).
+ELBOW_RAW_RE = re.compile(
+    r"elbow_raw_ax=(?P<elbow_raw_ax>[-\d.eE+]+) "
+    r"elbow_raw_ay=(?P<elbow_raw_ay>[-\d.eE+]+) "
+    r"elbow_raw_az=(?P<elbow_raw_az>[-\d.eE+]+)"
+)
+
 # The firmware's once-a-second diagnostic line (phase3_control_loop_main.cpp,
 # tick_count % 1000 block) -- shoulder_completions/elbow_completions count
 # real successful I2C reads (STOP reached after a full 14-byte transfer) in
@@ -197,6 +226,25 @@ DIAG_LINE_RE = re.compile(
 
 def clamp(value, lo, hi):
     return max(lo, min(hi, value))
+
+
+# 2026-09-03: found via tools/mujoco_bridge/test_imu_to_mujoco.py -- this
+# mount's rest pose decodes shoulder_roll very close to the atan2 branch
+# cut (+-pi; real captured zero-pose readings tonight: 2.985, -2.856, 2.985
+# rad, all near it). A plain `current - zero` subtraction is wrong there:
+# if the live reading crosses the cut (e.g. zero=+3.13, current=-3.10 --
+# physically a tiny real angle change, opposite floating-point sign purely
+# because atan2 wrapped), the naive difference comes out near +-2*pi
+# instead of the true small delta, which clamp() then saturates to the
+# joint's mechanical limit -- a large, wrong, and misleading ctrl command
+# for what was actually a small real motion. wrap_angle_delta folds any
+# difference into (-pi, pi], which is a no-op away from the cut and the
+# correct small value at it. Applied to shoulder_roll (where the problem
+# was found) and shoulder_pitch (same fix, cheap insurance -- nothing
+# currently puts its rest value near the cut, but there's no reason a
+# different mount/calibration couldn't).
+def wrap_angle_delta(delta):
+    return (delta + math.pi) % (2 * math.pi) - math.pi
 
 
 class Tee:
@@ -244,6 +292,14 @@ class LatestSample:
         self.shoulder_pitch = 0.0
         self.shoulder_roll = 0.0
         self.elbow = 0.0
+        # Unmapped shoulder accelerometer axes -- see SHOULDER_RAW_RE's
+        # comment. None until the first line carrying them arrives.
+        self.shoulder_raw_ax = None
+        self.shoulder_raw_ay = None
+        self.shoulder_raw_az = None
+        self.elbow_raw_ax = None
+        self.elbow_raw_ay = None
+        self.elbow_raw_az = None
         self.last_update_monotonic = time.monotonic()
         self.has_received_data = False  # only True once update() has actually run at least once
         self.port_error = None  # set by the reader thread on a real port-level failure
@@ -265,6 +321,26 @@ class LatestSample:
             self.elbow = elbow
             self.last_update_monotonic = time.monotonic()
             self.has_received_data = True
+
+    def update_shoulder_raw(self, ax, ay, az):
+        with self._lock:
+            self.shoulder_raw_ax = ax
+            self.shoulder_raw_ay = ay
+            self.shoulder_raw_az = az
+
+    def snapshot_shoulder_raw(self):
+        with self._lock:
+            return self.shoulder_raw_ax, self.shoulder_raw_ay, self.shoulder_raw_az
+
+    def update_elbow_raw(self, ax, ay, az):
+        with self._lock:
+            self.elbow_raw_ax = ax
+            self.elbow_raw_ay = ay
+            self.elbow_raw_az = az
+
+    def snapshot_elbow_raw(self):
+        with self._lock:
+            return self.elbow_raw_ax, self.elbow_raw_ay, self.elbow_raw_az
 
     def mark_port_error(self, message):
         with self._lock:
@@ -359,6 +435,20 @@ def reader_thread_main(ser, latest):
                         float(match.group("shoulder_roll")),
                         float(match.group("elbow")),
                     )
+                    raw_match = SHOULDER_RAW_RE.search(line)
+                    if raw_match:
+                        latest.update_shoulder_raw(
+                            float(raw_match.group("shoulder_raw_ax")),
+                            float(raw_match.group("shoulder_raw_ay")),
+                            float(raw_match.group("shoulder_raw_az")),
+                        )
+                    elbow_raw_match = ELBOW_RAW_RE.search(line)
+                    if elbow_raw_match:
+                        latest.update_elbow_raw(
+                            float(elbow_raw_match.group("elbow_raw_ax")),
+                            float(elbow_raw_match.group("elbow_raw_ay")),
+                            float(elbow_raw_match.group("elbow_raw_az")),
+                        )
                     continue
                 diag_match = DIAG_LINE_RE.search(line)
                 if diag_match:
@@ -492,6 +582,11 @@ def main():
     shoulder_pitch_id = model.actuator(SHOULDER_PITCH_ACTUATOR).id
     shoulder_roll_id = model.actuator(SHOULDER_ROLL_ACTUATOR).id
     elbow_id = model.actuator(ELBOW_ACTUATOR).id
+    # For the periodic [CORR] line below -- lets a raw-sensor value and the
+    # MuJoCo pose it produced be read off the same line instead of manually
+    # lining up two separate logs by eye/timestamp.
+    shoulder_body_id = model.body("left_shoulder_roll_link").id
+    wrist_body_id = model.body("left_wrist_yaw_link").id
 
     data.ctrl[model.actuator(WRIST_ROLL_ACTUATOR).id] = 0.0
     data.ctrl[model.actuator(WRIST_PITCH_ACTUATOR).id] = 0.0
@@ -535,8 +630,8 @@ def main():
                 # directly. Negated here -- see SHOULDER_PITCH_RANGE's
                 # comment: positive data (flexion/forward) needs NEGATIVE
                 # ctrl in this joint's frame.
-                data.ctrl[shoulder_pitch_id] = clamp(-(shoulder_pitch - zero_shoulder_pitch), *SHOULDER_PITCH_RANGE)
-                data.ctrl[shoulder_roll_id] = clamp(shoulder_roll - zero_shoulder_roll, *SHOULDER_ROLL_RANGE)
+                data.ctrl[shoulder_pitch_id] = clamp(-wrap_angle_delta(shoulder_pitch - zero_shoulder_pitch), *SHOULDER_PITCH_RANGE)
+                data.ctrl[shoulder_roll_id] = clamp(wrap_angle_delta(shoulder_roll - zero_shoulder_roll), *SHOULDER_ROLL_RANGE)
                 data.ctrl[elbow_id] = clamp(ELBOW_OFFSET - (elbow - zero_elbow), *ELBOW_RANGE)
 
                 mujoco.mj_step(model, data)
@@ -558,6 +653,35 @@ def main():
                     viewer.sync()
 
                 step_count += 1
+                # [CORR]: raw (zero-corrected) sensor value, the UNMAPPED
+                # shoulder accelerometer axes behind it, the ctrl it
+                # produced, and the resulting MuJoCo wrist position, all on
+                # one line -- added 2026-09-03 to debug a reported sideways
+                # drift during a pure forward-raise motion (2026-09-03: a
+                # live test showed the motion landing almost entirely on
+                # shoulder_roll instead of shoulder_pitch -- raw axes added
+                # after that, to re-derive the shoulder remap from real
+                # measurement instead of guessing, same method as the
+                # firmware's own 2026-09-01 remap comment describes).
+                # ~2Hz (every 250 physics steps) -- slow enough that a
+                # Monitor-style live tail doesn't get rate-limited over a
+                # long idle stretch, still fast enough to trace a few-
+                # second motion.
+                if step_count % 250 == 0:
+                    rel = data.xpos[wrist_body_id] - data.xpos[shoulder_body_id]
+                    raw_ax, raw_ay, raw_az = latest.snapshot_shoulder_raw()
+                    raw_str = ("n/a" if raw_ax is None else
+                               f"({raw_ax:+.3f},{raw_ay:+.3f},{raw_az:+.3f})")
+                    e_raw_ax, e_raw_ay, e_raw_az = latest.snapshot_elbow_raw()
+                    e_raw_str = ("n/a" if e_raw_ax is None else
+                                 f"({e_raw_ax:+.3f},{e_raw_ay:+.3f},{e_raw_az:+.3f})")
+                    print(f"[CORR] sensor: shoulder_pitch={wrap_angle_delta(shoulder_pitch - zero_shoulder_pitch):+.3f} "
+                          f"shoulder_roll={wrap_angle_delta(shoulder_roll - zero_shoulder_roll):+.3f} "
+                          f"elbow={elbow - zero_elbow:+.3f}  |  "
+                          f"raw_shoulder(ax,ay,az)={raw_str}  raw_elbow(ax,ay,az)={e_raw_str}  |  "
+                          f"ctrl: pitch={data.ctrl[shoulder_pitch_id]:+.3f} roll={data.ctrl[shoulder_roll_id]:+.3f} "
+                          f"elbow={data.ctrl[elbow_id]:+.3f}  |  "
+                          f"mujoco wrist(front,left,up)=({rel[0]:+.3f},{rel[1]:+.3f},{rel[2]:+.3f})m")
                 if step_count % 200 == 0:
                     # IMU#1/IMU#2: a real protocol-level signal, not a threshold on
                     # decoded values -- shoulder_online/elbow_online come from the

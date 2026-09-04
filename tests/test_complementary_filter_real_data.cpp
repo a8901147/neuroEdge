@@ -139,11 +139,25 @@ TEST_CASE("ComplementaryFilter tracks the Myo's own onboard orientation on a rea
 
     // The real check: after processing the whole recording, our accel+gyro
     // -only estimate should closely match the Myo's own onboard fusion
-    // (accel+gyro+magnetometer) for this same stream. Verified empirically
-    // in Python against this exact file before writing this assertion:
-    // final diff ~1.4e-4 rad (roll) / ~2.8e-4 rad (pitch). 0.01 rad
-    // (~0.6 degrees) leaves generous margin for float vs double and any
-    // remaining rounding in the CSV's 6-decimal text encoding.
+    // (accel+gyro+magnetometer) for this same stream. Roll's margin stays
+    // tight (0.01 rad, ~0.6deg -- verified empirically in Python against
+    // this exact file before writing this assertion: diff ~1.4e-4 rad,
+    // generous room for float vs double and CSV rounding).
+    //
+    // Pitch's margin was widened 2026-09-04 (from the same original 0.01
+    // rad) after accel_pitch_angle's formula changed to fix a real +-90deg
+    // sign-ambiguity bug (see complementary_filter.hpp's own comment and
+    // test_complementary_filter.cpp's ROM-sweep test) by dropping accel_y
+    // from pitch's calculation entirely. This recording has a real,
+    // substantial roll throughout (~1.2rad / ~69deg, per max_abs_roll
+    // above -- the armband doesn't sit flat on a forearm), so dropping
+    // accel_y's leveling contribution measurably reduces pitch accuracy
+    // here: diff went from the original ~2.8e-4 rad to ~0.034 rad (~1.9deg)
+    // with the new formula. That's the accepted, documented cost of fixing
+    // the sign ambiguity, not a new bug -- 0.05 rad leaves headroom above
+    // the observed ~0.034 rad while still catching a real regression (e.g.
+    // a sign flip, which would show up as an error an order of magnitude
+    // larger, not a few more hundredths of a radian).
     REQUIRE(filter.roll() == Approx(final_quat_roll).margin(0.01));
-    REQUIRE(filter.pitch() == Approx(final_quat_pitch).margin(0.01));
+    REQUIRE(filter.pitch() == Approx(final_quat_pitch).margin(0.05));
 }

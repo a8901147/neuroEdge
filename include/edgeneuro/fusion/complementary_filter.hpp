@@ -106,8 +106,31 @@ private:
         return std::atan2(accel_y, accel_z);
     }
 
-    static ValueType accel_pitch_angle(ValueType accel_x, ValueType accel_y, ValueType accel_z) noexcept {
-        return std::atan2(-accel_x, std::sqrt(accel_y * accel_y + accel_z * accel_z));
+    // 2026-09-04 FIXED: was atan2(-accel_x, sqrt(accel_y^2+accel_z^2)).
+    // sqrt() is always >= 0, which mathematically restricts atan2's output
+    // to [-90deg,+90deg] no matter the true rotation -- past that, a real,
+    // physically continuous rotation reflects back into that range instead
+    // of continuing, so two genuinely different angles (e.g. a forward-
+    // raise and a backward-extension both past ~90deg from rest) can
+    // decode to the IDENTICAL pitch. Found 2026-09-04 from a real hardware
+    // session where exactly that happened; proven with a pure synthetic
+    // rotation sweep in tests/test_complementary_filter.cpp (not tied to
+    // that session's specific sensor mount).
+    //
+    // Fixed by dropping accel_y from the denominator entirely -- same
+    // simplification accel_roll_angle below already makes (it uses only
+    // accel_y/accel_z, ignoring accel_x), which is why roll never had this
+    // problem: a plain two-argument atan2(-accel_x, accel_z) carries full
+    // sign information in both arguments, so it has the same unrestricted
+    // +-180deg range as accel_roll_angle, with no reflection point. Trade-
+    // off: pitch is now less accurate during LARGE simultaneous roll
+    // (accel_y no longer contributes to leveling the reference), the same
+    // known limitation accel_roll_angle already accepted for accel_x --
+    // a deliberate, precedented choice, not an oversight, and a far
+    // smaller cost than a hard sign ambiguity on the primary flexion/
+    // extension axis.
+    static ValueType accel_pitch_angle(ValueType accel_x, ValueType /*accel_y*/, ValueType accel_z) noexcept {
+        return std::atan2(-accel_x, accel_z);
     }
 
     ValueType alpha_;

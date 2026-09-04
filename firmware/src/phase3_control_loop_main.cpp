@@ -811,35 +811,71 @@ int main(void) {
                     ++shoulder_asleep_rewakes;
                     mpu6050_write_reg_blocking(kShoulderImuAddr, 0x6Bu, 0x01u);
                 }
-                // Axis remap for the shoulder mount (pin-header edge facing
-                // the hand/distal direction, flat against skin) -- re-
-                // derived 2026-09-01 after remounting to a new convention
-                // (previous remap was for the armpit/pulse-point mount,
-                // pin-header facing forward -- see git history). Measured
-                // directly: at rest raw_ax ~= +1g (confirms it's the
-                // gravity/vertical reference); front-back swing moved
-                // raw_ay far more than raw_az (0.431->0.471 roughly flat vs
-                // 0.395->0.666), so raw_az is shoulder's roll indicator and
-                // raw_ay its pitch one. Gyro channels paired to the same
-                // raw axis as their accel counterpart (gx with ax's raw
-                // axis, gy with ay's).
+                // Axis remap for the shoulder mount (upper arm, near the
+                // inner elbow, GY-521 chip face outward/away from skin,
+                // -X toward the hand/distal direction) -- CORRECTED
+                // 2026-09-03 after the 2026-09-01 remap below turned out
+                // wrong for this mount: a live forward-raise test showed
+                // the motion landing almost entirely on the filter's roll
+                // output (0.1->1.9rad) while pitch barely moved (0.03->
+                // -0.3rad, wrong sign too) -- see PRD.md/git history for
+                // the full [CORR] trace this was diagnosed from.
                 //
-                // ax/gx negated 2026-09-01: live MuJoCo check (grasp_site
-                // world position, not eyeballed) showed positive pitch
-                // raising the arm, but the rig's rh_shoulder_pitch
-                // convention reads positive as lowering it -- flip sign to
-                // match.
+                // Geometric derivation (not just re-measured empirically --
+                // this is the actual root cause the 2026-09-01 remap got
+                // wrong): -X toward the hand means +X points toward the
+                // shoulder (proximal) when the arm hangs at rest, so a
+                // stationary accelerometer should read raw_ax ~= +1g at
+                // rest (an axis pointing "up", opposing gravity, reads
+                // +1g) -- confirmed directly, rest reading was raw_ax
+                // ~= +0.72 to +0.83. As the arm flexes forward, X rotates
+                // away from vertical toward horizontal, so raw_ax MUST
+                // decrease -- confirmed, it dropped to ~-0.24 to -0.30 at
+                // full forward raise. This is the axis that actually
+                // carries the pitch signal; the 2026-09-01 remap instead
+                // fed it into az (the shared reference/denominator used by
+                // BOTH the pitch and roll formulas), which is why roll
+                // picked up almost the entire motion instead of pitch --
+                // feeding the most motion-sensitive axis into the role
+                // meant to stay stable explains the bug mechanically, not
+                // just by having re-measured and gotten different numbers.
+                // raw_ay empirically stays close to flat through the same
+                // motion (-0.58 to -0.65), consistent with it being the
+                // axis largely uninvolved in pure forward/backward
+                // rotation, so it takes over az's old (reference) role.
                 //
-                // This mapping is shoulder-only now (2026-09-01): the
-                // elbow reader no longer needs any axis remap or per-sensor
-                // Euler-angle filter -- see elbow_bend_raw's computation
-                // below for why (a whole class of ax/ay-guessing bugs, this
-                // comment's previous several revisions among them, turned
-                // out to be a wrong-tool-for-the-job problem, not a mapping
-                // problem).
-                const float ax = -raw_ay;
+                // ax NOT negated (unlike the previous remap): with
+                // ax=raw_ax directly, pitch increased (-0.79->+0.24 by the
+                // accel-angle formula) as the arm was raised forward,
+                // already matching the "positive pitch = forward" data
+                // convention (tools/mujoco_bridge/run_demo_live.py) with no
+                // sign flip needed for this mount.
+                //
+                // NOT YET RE-VERIFIED: gx/gy gyro pairing below is left
+                // UNCHANGED from the 2026-09-01 remap (gx=-raw_gy,
+                // gy=raw_gz) -- that pairing was derived for the OLD
+                // (wrong) ax/ay assignment and almost certainly needs its
+                // own re-derivation now, but doing that from theory alone
+                // needs the exact physical relationship between each accel
+                // axis and its corresponding rotation-sensing gyro axis,
+                // which isn't nailed down here -- left as-is rather than
+                // guessed, per this project's standing rule against
+                // speculative axis/register values. The complementary
+                // filter's alpha=0.98 weighting means gyro dominates
+                // short-term response (~0.5s time constant back to the
+                // accel-implied angle), so a mismatched gyro pairing here
+                // is a plausible remaining source of transient error even
+                // though the corrected accel mapping above is the
+                // dominant, verified fix. Re-derive by isolating gyro
+                // channels the same way the accel channels were isolated
+                // above (a clean, single-axis motion test), not by guessing.
+                //
+                // This mapping is shoulder-only: the elbow reader no
+                // longer needs any axis remap or per-sensor Euler-angle
+                // filter -- see elbow_bend_raw's computation below for why.
+                const float ax = raw_ax;
                 const float ay = raw_az;
-                const float az = raw_ax;
+                const float az = raw_ay;
                 const float gx = -raw_gy;
                 const float gy = raw_gz;
                 if (!shoulder_filter_initialized) {

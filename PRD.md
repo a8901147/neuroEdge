@@ -307,3 +307,54 @@ Phase 1.5 的可行性驗證確認四個關鍵未知數皆可行後，再依 Pha
   * 設定 STM32 硬體 Timer 輸出高精度 PWM 訊號，驅動伺服馬達、仿生機械手掌或外部致動端。
   * 完成最終毫秒級閉環控制：「感測器採樣 $\rightarrow$ DMA Ring Buffer 接收 $\rightarrow$ 零動態配置 C++ 引擎解碼 $\rightarrow$ PWM 致動反饋」。
   * 解決物理世界工程挑戰：馬達驅動迴路與類比感測路徑的光偶接供電隔離 (Power Isolation)、共模電源雜訊濾除與肌電貼片阻抗匹配與調適。
+
+---
+
+### Session Handoff (2026-09-03/04)：肩膀 IMU 方向 bug 三連發 + tilt/azimuth 演算法重構(進行中，未完工)
+
+這次 session 從「測試手臂動作方向對不對」開始，一路挖出三個獨立、疊在一起的真實 bug，最後定位到問題根源需要換一種角度表示法，**目前演算法核心+測試已完成並通過，但還沒接回 firmware/CSV demo/Python 控制層，下個 session 要接著做**。以下依序記录，給下個 session 快速抓回脈絡用。
+
+**目前實體硬體貼法確認過(有照片佐證)**：上臂那顆(貼在手肘內側)GY-521，晶片面朝外(背向皮膚)，-X 軸朝手掌延伸方向；前臂那顆(貼脈搏處)用 dot-product 法，不挑朝向。左手。
+
+#### 抓到的三個真實 bug(依發現順序)
+
+1. **Data→MuJoCo 的 shoulder_pitch 符號反了**——`run_demo.py`/`run_demo_live.py` 原本 `SHOULDER_PITCH_RANGE=(-1.0472,2.6704)` 假設正值=前舉，實測用純 MuJoCo `mj_forward` 驗證發現方向相反。**已修正並已 commit**(commit `0369d58`)：range 改成 `(-3.0892,1.0472)`，ctrl 指定加負號。這個 bug 只在 Data→MuJoCo 這層，不牽涉硬體/firmware。
+
+2. **firmware 的肩膀軸向 remap 選錯了原始加速度計軸**——實測「往前舉」動作在硬體上幾乎全部跑到 `shoulder_roll` 而不是 `shoulder_pitch`。用真實錄到的原始 raw_ax/ay/az(靜止 vs 前舉到頂)配合幾何推導(-X 朝手掌 + 晶片朝外，可以完整算出 X 軸方向；Y/Z 因為手臂圓周角度的關係無法純幾何算完，但有實測數據佐證)，確認 `raw_ax` 才是真正該驅動 pitch 的軸，原本卻被塞進 pitch/roll 共用的參考軸角色。**已修正**（`firmware/src/phase3_control_loop_main.cpp` 的 shoulder remap 三行，現在是 `ax=raw_ax, ay=raw_az, az=raw_ay`）。陀螺儀 `gx=-raw_gy, gy=raw_gz` 那兩行**還沒重新驗證**，是照舊配對留著，標了「NOT YET RE-VERIFIED」註解——這組配對是配合*舊的*(錯的)加速度計軸選的，理論上該重推但還沒做。
+
+3. **`accel_pitch_angle` 公式本身在大角度會失真，這是這次最根本、最花時間的發現**——`include/edgeneuro/fusion/complementary_filter.hpp` 原本的 `atan2(-ax, sqrt(ay²+az²))`，因為分母開根號恆為正，數學上把輸出鎖死在 ±90° 內，超過就會「折返」，導致兩個方向相反的真實大角度動作（例如前舉 110° vs 後擺 90°）解出**同號、無法分辨方向**的 pitch。用真實 REST 重力向量 + 合成旋轉直接算出這個折返現象、寫成 Catch2 測試證實（`tests/test_complementary_filter.cpp` 新增的 ROM 掃描測試）。**第一次嘗試的簡單修法(把 ay 從公式拿掉、只用 az)已證明不夠**——雖然解決了 ±90° 的範圍限制，但套到這個真實安裝角度的數值後，又剛好卡進 atan2 自己「另一個」分支切割點（±180° 邊界），前舉/後擺又變回同號。查證後確認這是**生物力學界已知的問題**（ISB 建議的 YXY 歐拉序列在肩膀外展 90° 時會 gimbal lock，已發表的論文用「Tilt-and-Torsion」法解決，見 arxiv.org/abs/2108.12282）——任何「固定寫死方向」的角度公式，都可能剛好讓某個安裝角度卡到自己的邊界，唯一穩健的解法是**角度基準要跟著實際量到的 REST 姿勢走，不能寫死**。
+
+#### 已完成並通過測試的部分
+
+- **`include/edgeneuro/fusion/tilt_azimuth.hpp`(新檔案)**：`tilt_azimuth()` 算「跟 REST 差多少角度(tilt, 0~180°，無邊界問題)+ 往哪個方向(azimuth)」；`orthonormal_basis_perpendicular_to()` 只需要 REST 這一個向量就能自動算出兩個正交基準軸，不用額外校正動作。
+- **`tests/test_tilt_azimuth.cpp`(新檔案)**：合成資料測試，涵蓋垂下/前舉/左前舉/右前舉四個使用者指定動作，加上完整 0°~170° x 六個方位角的全 ROM 掃描，**全部通過**，包含直接證明「前舉 vs 後擺不再同號」的專屬測試案例。
+- `tests/test_complementary_filter.cpp` 新增的 ROM 掃描測試、`tests/test_complementary_filter_real_data.cpp` 的容忍度調整（因拿掉 ay 造成的已知、有文件記錄的精度取捨）——**全部通過**（72 個測試案例、22798 個斷言，`./build/debug-heapguard/edgeneuro_tests` 全綠）。
+- `src/mujoco_bridge_demo.cpp` 補回跟 firmware 同步（原本已經跟 firmware 脫節，沒做軸向 remap、手肘還在用已淘汰的角度相減法，現已對齊 dot-product 法 + 新的 remap）。
+- `tools/mujoco_bridge/log_raw_imu.py`（新檔案）：純 raw 訊號互動式錄製工具，不需要 mjpython/MuJoCo/校零，逐一提示動作、自動倒數錄製、每做完一個立刻存檔（避免中斷全部流失）、支援續錄跳過已完成項目。今晚用它真實錄到 REST/BACKWARD_EXTENSION/ABDUCTION_LEFT/ADDUCTION_RIGHT/ELBOW_FLEXION 五組姿勢的真實配對 raw 數值，存在 `tools/mujoco_bridge/raw_imu_capture.json`（未加入 git）。
+- `tools/mujoco_bridge/test_imu_to_mujoco.py`（新檔案）：IMU 訊號→C++ 解碼 binary→Data→MuJoCo 全流程整合測試，目前用的是**舊的 accel_pitch_angle 公式（drop-ay 版本）**，所以目前執行會有 FORWARD_RAISE/ABDUCTION_LEFT 相關斷言失敗——這是預期的，因為 tilt/azimuth 還沒接進來，不是新 bug，見下方 TODO。
+
+#### 下個 session 要接著做的事（TODO，依優先順序）
+
+1. **把 `tilt_azimuth.hpp` 接進 `phase3_control_loop_main.cpp` 的 shoulder 計算**，取代現在還在用的 `ComplementaryFilter::pitch()/roll()`。需要決定：REST 參考向量從哪裡來（目前 firmware 的零點校正只存純量 zero_shoulder_pitch/roll，需要改成存整個 raw 向量）；算出 tilt/azimuth 後怎麼換算回餵給 MuJoCo 的 pitch_ctrl/roll_ctrl（目前構想是 `pitch_equiv = tilt*cos(azimuth)`, `roll_equiv = tilt*sin(azimuth)`，尚未驗證這個換算在大角度下跟 MuJoCo 的兩個獨立 revolute joint 幾何吻合得多好，可能需要微調)。
+2. 同步更新 `src/mujoco_bridge_demo.cpp`（同一份邏輯要同步兩份，見上面第 2 個 bug 的教訓——這個檔案很容易跟 firmware 脫節，兩邊改動最好一起做、一起測)。
+3. 更新 `tools/mujoco_bridge/run_demo_live.py`/`run_demo.py` 的 Data→ctrl 映射，改吃 tilt/azimuth 換算後的值；零點校正邏輯要改成存 raw 向量而非純量。
+4. 更新 `tools/mujoco_bridge/test_imu_to_mujoco.py` 的假設/斷言，改用新算法後重新驗證今晚錄到的五組真實資料（`raw_imu_capture.json`）方向是否正確。
+5. 陀螺儀 `gx/gy` 配對重新驗證（bug #2 遺留的未完成項目）——tilt/azimuth 若改成純 accel-based（不用 gyro，比照手肘 dot-product 法的精神），這一項可能整個變得不需要，待評估。
+6. `ADDUCTION_RIGHT`（右擺/內收）這個動作本身，今晚錄了三次才錄到「看起來正常」的一次，實際動作是否真的乾淨隔離仍有疑慮（幅度偏大、跟外展數值有點像）——用新演算法重新檢視這組資料時要留意。
+7. 目前所有改動都**還沒 commit**（見下方 git 狀態），下個 session 開始前建議先跟使用者確認要不要先 commit 這一批（bug #2 的 firmware+demo 修正 + 新測試），再繼續做 tilt/azimuth 的接線工作，避免兩批不同性質的改動混在同一個 commit。
+
+#### 目前 git 未提交狀態
+```
+ M firmware/src/phase3_control_loop_main.cpp     (bug #2 的 shoulder remap 修正)
+ M include/edgeneuro/fusion/complementary_filter.hpp  (bug #3 的 drop-ay 嘗試，已知不夠，會被 tilt/azimuth 取代)
+ M src/mujoco_bridge_demo.cpp                     (跟 firmware 同步)
+ M tests/test_complementary_filter.cpp            (新增 ROM 掃描測試)
+ M tests/test_complementary_filter_real_data.cpp  (容忍度調整)
+ M tools/mujoco_bridge/run_demo_live.py           (新增 [CORR] log、wrap_angle_delta)
+?? include/edgeneuro/fusion/tilt_azimuth.hpp       (新演算法核心，已測試通過)
+?? tests/test_tilt_azimuth.cpp                     (新演算法測試，已通過)
+?? tools/mujoco_bridge/log_raw_imu.py              (raw 訊號錄製工具)
+?? tools/mujoco_bridge/raw_imu_capture.json        (今晚錄到的真實資料，未加入 git)
+?? tools/mujoco_bridge/test_imu_to_mujoco.py       (整合測試，待用新演算法更新)
+```
+(`run_demo.py`、`arm_hand_scene.xml` 的 bug #1 修正已經是更早的 commit `0369d58`，不在上面清單裡。)

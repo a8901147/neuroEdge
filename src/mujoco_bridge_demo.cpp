@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -74,7 +75,6 @@ int main(int argc, char** argv) {
     GripStateMachine<float> grip(kGripThreshold, kOnDuration, kOffDuration);
     SlewRateLimiter<float> setpoint(kSlewRate);
     ComplementaryFilter<float> shoulder_filter(0.98f, kDt); // upper-arm IMU
-    ComplementaryFilter<float> elbow_imu_filter(0.98f, kDt); // forearm IMU
 
     Provider::SampleT sample;
     std::size_t tick = 0;
@@ -87,34 +87,62 @@ int main(int argc, char** argv) {
         // imu[0..5] = upper-arm IMU [ax,ay,az,gx,gy,gz], imu[6..11] =
         // forearm IMU, same per-IMU order as iteration 1 -- CsvSignalProvider's
         // column-order contract, confirmed against src/main.cpp's own comment.
-        const float shoulder_ax = sample.imu[0];
-        const float shoulder_ay = sample.imu[1];
-        const float shoulder_az = sample.imu[2];
-        const float shoulder_gx = sample.imu[3];
-        const float shoulder_gy = sample.imu[4];
+        const float shoulder_raw_ax = sample.imu[0];
+        const float shoulder_raw_ay = sample.imu[1];
+        const float shoulder_raw_az = sample.imu[2];
+        const float shoulder_raw_gy = sample.imu[4];
+        const float shoulder_raw_gz = sample.imu[5];
 
-        const float elbow_ax = sample.imu[6];
-        const float elbow_ay = sample.imu[7];
-        const float elbow_az = sample.imu[8];
-        const float elbow_gx = sample.imu[9];
-        const float elbow_gy = sample.imu[10];
+        const float elbow_raw_ax = sample.imu[6];
+        const float elbow_raw_ay = sample.imu[7];
+        const float elbow_raw_az = sample.imu[8];
+
+        // 2026-09-03: kept in lockstep with firmware/src/phase3_control_loop_main.cpp's
+        // shoulder axis remap and dot-product elbow_bend -- this file had
+        // drifted from firmware (no remap at all, plus an Euler-angle-
+        // subtraction elbow_bend the firmware itself moved away from for
+        // hitting a gimbal-lock-like singularity near real elbow flexion
+        // angles) until this pass caught it while building
+        // tools/mujoco_bridge/test_imu_to_mujoco.py, which depends on this
+        // binary actually reflecting firmware's real decode logic to be a
+        // meaningful test. See phase3_control_loop_main.cpp's own remap
+        // comment for the full geometric derivation + on-hardware
+        // verification this mirrors.
+        const float ax = shoulder_raw_ax;
+        const float ay = shoulder_raw_az;
+        const float az = shoulder_raw_ay;
+        const float gx = -shoulder_raw_gy;
+        const float gy = shoulder_raw_gz;
 
         if (!filters_initialized) {
             // skip the cold-start convergence transient
-            shoulder_filter.initialize(shoulder_ax, shoulder_ay, shoulder_az);
-            elbow_imu_filter.initialize(elbow_ax, elbow_ay, elbow_az);
+            shoulder_filter.initialize(ax, ay, az);
             filters_initialized = true;
         }
-        shoulder_filter.update(shoulder_gx, shoulder_gy, shoulder_ax, shoulder_ay, shoulder_az, kDt);
-        elbow_imu_filter.update(elbow_gx, elbow_gy, elbow_ax, elbow_ay, elbow_az, kDt);
+        shoulder_filter.update(gx, gy, ax, ay, az, kDt);
 
-        // Elbow flexion = forearm pitch relative to upper-arm pitch. Valid
-        // because tools/generate_sample_data.py's wearable_arm_fusion_csv()
-        // deliberately builds forearm_pitch = shoulder_pitch + elbow_bend(t)
-        // with elbow_bend(t) >= 0 always -- clamped at 0 here to absorb
-        // filter noise around the fully-straight pose, not because negative
-        // bend is otherwise possible.
-        const float elbow_bend = std::max(0.0f, elbow_imu_filter.pitch() - shoulder_filter.pitch());
+        // Elbow flexion via the raw-vector dot product (angle between the
+        // shoulder and elbow readers' own unmapped gravity vectors) -- same
+        // formula and same reasoning as firmware's elbow_bend computation:
+        // no axis remap needed (the angle between two vectors doesn't care
+        // which frame each is expressed in, as long as it's consistent per
+        // vector), and no gimbal-lock singularity across the full flexion
+        // range, unlike the Euler-subtraction approach this replaced.
+        const float shoulder_mag = std::sqrt(shoulder_raw_ax * shoulder_raw_ax +
+                                              shoulder_raw_ay * shoulder_raw_ay +
+                                              shoulder_raw_az * shoulder_raw_az);
+        const float elbow_mag = std::sqrt(elbow_raw_ax * elbow_raw_ax +
+                                           elbow_raw_ay * elbow_raw_ay +
+                                           elbow_raw_az * elbow_raw_az);
+        float elbow_bend = 0.0f;
+        if (shoulder_mag > 0.1f && elbow_mag > 0.1f) {
+            const float dot = shoulder_raw_ax * elbow_raw_ax + shoulder_raw_ay * elbow_raw_ay +
+                               shoulder_raw_az * elbow_raw_az;
+            float cos_angle = dot / (shoulder_mag * elbow_mag);
+            if (cos_angle > 1.0f) cos_angle = 1.0f;
+            if (cos_angle < -1.0f) cos_angle = -1.0f;
+            elbow_bend = std::acos(cos_angle);
+        }
 
         grip.update(sample.emg[0], kDt);
         const float grip_setpoint = setpoint.update(grip.is_gripping() ? 1.0f : 0.0f, kDt);
