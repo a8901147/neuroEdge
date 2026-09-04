@@ -228,23 +228,74 @@ def clamp(value, lo, hi):
     return max(lo, min(hi, value))
 
 
-# 2026-09-03: found via tools/mujoco_bridge/test_imu_to_mujoco.py -- this
-# mount's rest pose decodes shoulder_roll very close to the atan2 branch
-# cut (+-pi; real captured zero-pose readings tonight: 2.985, -2.856, 2.985
-# rad, all near it). A plain `current - zero` subtraction is wrong there:
-# if the live reading crosses the cut (e.g. zero=+3.13, current=-3.10 --
-# physically a tiny real angle change, opposite floating-point sign purely
-# because atan2 wrapped), the naive difference comes out near +-2*pi
-# instead of the true small delta, which clamp() then saturates to the
-# joint's mechanical limit -- a large, wrong, and misleading ctrl command
-# for what was actually a small real motion. wrap_angle_delta folds any
-# difference into (-pi, pi], which is a no-op away from the cut and the
-# correct small value at it. Applied to shoulder_roll (where the problem
-# was found) and shoulder_pitch (same fix, cheap insurance -- nothing
-# currently puts its rest value near the cut, but there's no reason a
-# different mount/calibration couldn't).
-def wrap_angle_delta(delta):
-    return (delta + math.pi) % (2 * math.pi) - math.pi
+# Pure-Python port of include/edgeneuro/fusion/tilt_azimuth.hpp's
+# make_oblique_basis()/oblique_decompose() -- keep any change to the math in
+# both places in sync. Replaces this file's old approach (subtract a single
+# zero-pose reading from firmware's ComplementaryFilter-decoded
+# shoulder_pitch/shoulder_roll, see the removed wrap_angle_delta and its
+# comment in git history) because that decode has two independent real
+# problems found 2026-09-03/04 (PRD.md Session Handoff): the gyro
+# integration it depends on drifts multiple radians with zero corresponding
+# accelerometer change, and its accel-only formula folds back past +-90deg
+# so two genuinely different poses (e.g. forward-raise vs backward-
+# extension) can decode to the same value. tilt_azimuth.hpp's approach
+# fixes both by working from the raw accelerometer vector directly (no
+# gyro) and centering on the real REST reading (no fixed-formula fold-
+# back) -- but the further step of splitting that into two independent
+# pitch/roll-like numbers can't assume FORWARD_RAISE and ABDUCTION_LEFT are
+# perpendicular (real capture, 2026-09-04: only ~29deg apart, confirmed
+# reproducible, not measurement noise -- see PRD.md), hence solving against
+# the two REAL calibration directions (oblique, not assumed-orthogonal)
+# below instead of a fixed cos/sin split.
+def _normalize3(v):
+    mag = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    return (v[0] / mag, v[1] / mag, v[2] / mag)
+
+
+def _dot3(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _project_onto_tangent_plane(v, ref):
+    d = _dot3(v, ref)
+    return (v[0] - d * ref[0], v[1] - d * ref[1], v[2] - d * ref[2])
+
+
+def make_oblique_basis(ref_raw, fwd_raw, abd_raw):
+    """ref_raw/fwd_raw/abd_raw: raw (not-yet-normalized) calibration
+    readings for REST/FORWARD_RAISE/ABDUCTION_LEFT. Returns a dict consumed
+    by oblique_decompose(), plus the two calibration poses' own tilt angles
+    (radians, via acos) so the caller can scale the dimensionless fwd/abd
+    coefficients back into real angle-equivalents."""
+    ref = _normalize3(ref_raw)
+    fwd = _normalize3(fwd_raw)
+    abd = _normalize3(abd_raw)
+    pf = _project_onto_tangent_plane(fwd, ref)
+    pa = _project_onto_tangent_plane(abd, ref)
+    a11 = _dot3(pf, pf)
+    a12 = _dot3(pf, pa)
+    a22 = _dot3(pa, pa)
+    det = a11 * a22 - a12 * a12
+    tilt_fwd = math.acos(clamp(_dot3(ref, fwd), -1.0, 1.0))
+    tilt_abd = math.acos(clamp(_dot3(ref, abd), -1.0, 1.0))
+    return {
+        "ref": ref, "pf": pf, "pa": pa,
+        "a11": a11, "a12": a12, "a22": a22, "inv_det": 1.0 / det,
+        "tilt_fwd": tilt_fwd, "tilt_abd": tilt_abd,
+    }
+
+
+def oblique_decompose(basis, accel_raw):
+    """accel_raw: raw (not-yet-normalized) live accelerometer reading.
+    Returns (fwd, abd) coefficients -- 1.0 means "exactly as far in that
+    direction as its calibration reading", 0.0 means "at REST"."""
+    accel = _normalize3(accel_raw)
+    p = _project_onto_tangent_plane(accel, basis["ref"])
+    b1 = _dot3(p, basis["pf"])
+    b2 = _dot3(p, basis["pa"])
+    fwd = (b1 * basis["a22"] - b2 * basis["a12"]) * basis["inv_det"]
+    abd = (b2 * basis["a11"] - b1 * basis["a12"]) * basis["inv_det"]
+    return fwd, abd
 
 
 class Tee:
@@ -527,51 +578,66 @@ def main():
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
     reader.start()
 
-    # Zero-offset calibration: ComplementaryFilter reports an ABSOLUTE
-    # gravity-referenced angle, which depends entirely on how the IMU
-    # happens to be physically mounted -- there's no reason that absolute
-    # angle lands anywhere near the small range the joint limits/clamp()
-    # below expect (found the hard way: real hardware read shoulder_pitch
-    # ~1.3 rad and shoulder_roll ~-2.7 to -3.1 rad, both permanently outside
-    # SHOULDER_PITCH_RANGE/SHOULDER_ROLL_RANGE, so clamp() pinned them to
-    # the same boundary value no matter how the sensor moved -- the arm
-    # looked completely frozen even though the raw data was fine). Capture
-    # the first live reading as a zero reference and subtract it from every
-    # subsequent one, so it's the CHANGE from wherever the arm happened to
-    # be at startup that drives the joints, not the raw absolute angle.
-    print("Calibrating zero pose -- get the arm down at your side, elbow "
-          "straight, now (2s to get in position, then ~2s of averaging)...")
+    # Shoulder calibration: 3 poses (REST, FORWARD_RAISE, ABDUCTION_LEFT),
+    # each averaged over a settle+hold window -- replaces the old single-
+    # pose "zero" capture (git history) now that the shoulder is decoded
+    # via oblique_decompose() above instead of subtracting a zero reference
+    # from firmware's ComplementaryFilter output. Elbow keeps the same
+    # zero-offset approach as before (firmware's dot-product elbow_bend has
+    # neither of the problems that drove this shoulder change), captured
+    # during the REST hold alongside the shoulder reading.
+    #
+    # Averaging window (not a single instantaneous read): measured directly
+    # against real hardware (raw_capture2.py, 2026-08-29) that an arm
+    # someone is actively trying to hold still still drifts ~0.2-0.27rad
+    # over several seconds (hand tremor, not sensor noise) -- a fixed
+    # window absorbs that without needing the reading to fully stop
+    # changing, which never converges in practice.
+    def _capture_window(seconds=2.0):
+        raw_window = []
+        elbow_window = []
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            raw = latest.snapshot_shoulder_raw()
+            if raw[0] is not None:
+                raw_window.append(raw)
+            elbow_window.append(latest.snapshot()[3])
+            time.sleep(0.05)
+        n = len(raw_window)
+        raw_avg = (
+            sum(w[0] for w in raw_window) / n,
+            sum(w[1] for w in raw_window) / n,
+            sum(w[2] for w in raw_window) / n,
+        )
+        elbow_avg = sum(elbow_window) / len(elbow_window)
+        return raw_avg, elbow_avg
+
     while not latest.is_ready():
         time.sleep(0.05)
-    # A fixed 0.3s settle delay (the original approach) silently locks in
-    # whatever pose the arm happened to be in at that instant -- if it's
-    # still mid-motion (e.g. the person hasn't finished getting into
-    # position over a chat-paced back-and-forth), the "zero" reference is
-    # wrong, and every subsequent reading gets offset by that error. Most
-    # visibly this can pin the elbow at its clamped range boundary (looks
-    # frozen) if the miscaptured zero sits above the real range the person
-    # then moves through.
-    #
-    # First fix attempt required the reading to stop changing (rolling-
-    # window spread under a threshold) before locking in -- that never
-    # converged: measured directly (raw_capture2.py against real hardware,
-    # 2026-08-29), an arm someone is actually trying to hold still still
-    # drifts by ~0.2-0.27 rad over several seconds (hand tremor, not sensor
-    # noise), an order of magnitude past any threshold tight enough to
-    # reject "still getting into position." Averaging over a fixed window
-    # handles that tremor without requiring the impossible condition that
-    # it stop entirely.
-    time.sleep(2.0)  # time to get in position, not a stability guarantee
-    window = []
-    window_deadline = time.monotonic() + 2.0
-    while time.monotonic() < window_deadline:
-        window.append(latest.snapshot()[1:])  # (shoulder_pitch, shoulder_roll, elbow)
+    while latest.snapshot_shoulder_raw()[0] is None:
         time.sleep(0.05)
-    zero_shoulder_pitch = sum(v[0] for v in window) / len(window)
-    zero_shoulder_roll = sum(v[1] for v in window) / len(window)
-    zero_elbow = sum(v[2] for v in window) / len(window)
-    print(f"Zero pose captured: shoulder_pitch={zero_shoulder_pitch:.3f} "
-          f"shoulder_roll={zero_shoulder_roll:.3f} elbow={zero_elbow:.3f}")
+
+    print("Calibrating shoulder -- REST: get the arm down at your side, elbow "
+          "straight, now (2s to get in position, then ~2s of averaging)...")
+    time.sleep(2.0)  # time to get in position, not a stability guarantee
+    rest_raw, zero_elbow = _capture_window(2.0)
+
+    print("FORWARD_RAISE: raise the arm forward to the highest comfortable "
+          "point, now (2s to get in position, then ~2s of averaging)...")
+    time.sleep(2.0)
+    fwd_raw, _ = _capture_window(2.0)
+
+    print("ABDUCTION_LEFT: raise the arm out to the LEFT side, now (2s to "
+          "get in position, then ~2s of averaging)...")
+    time.sleep(2.0)
+    abd_raw, _ = _capture_window(2.0)
+
+    shoulder_basis = make_oblique_basis(rest_raw, fwd_raw, abd_raw)
+    print(f"Shoulder calibrated: REST=({rest_raw[0]:+.3f},{rest_raw[1]:+.3f},{rest_raw[2]:+.3f}) "
+          f"FORWARD_RAISE=({fwd_raw[0]:+.3f},{fwd_raw[1]:+.3f},{fwd_raw[2]:+.3f}) "
+          f"[tilt={math.degrees(shoulder_basis['tilt_fwd']):.1f}deg] "
+          f"ABDUCTION_LEFT=({abd_raw[0]:+.3f},{abd_raw[1]:+.3f},{abd_raw[2]:+.3f}) "
+          f"[tilt={math.degrees(shoulder_basis['tilt_abd']):.1f}deg]  elbow zero={zero_elbow:.3f}")
 
     model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
     data = mujoco.MjData(model)
@@ -603,7 +669,8 @@ def main():
             while viewer.is_running():
                 step_start = time.time()
 
-                grip, shoulder_pitch, shoulder_roll, elbow = latest.snapshot()
+                grip, old_shoulder_pitch, old_shoulder_roll, elbow = latest.snapshot()
+                shoulder_raw = latest.snapshot_shoulder_raw()
                 is_stale, port_error = latest.status()
 
                 if port_error is not None:
@@ -624,14 +691,25 @@ def main():
 
                 for name, upper_range in GRIP_ACTUATORS.items():
                     data.ctrl[grip_actuator_ids[name]] = grip * GRIP_SCALE * upper_range
-                # Subtract the zero-pose reference captured at startup --
-                # see the calibration comment above main()'s launch_passive
-                # block for why the raw absolute angles can't be clamped
-                # directly. Negated here -- see SHOULDER_PITCH_RANGE's
-                # comment: positive data (flexion/forward) needs NEGATIVE
-                # ctrl in this joint's frame.
-                data.ctrl[shoulder_pitch_id] = clamp(-wrap_angle_delta(shoulder_pitch - zero_shoulder_pitch), *SHOULDER_PITCH_RANGE)
-                data.ctrl[shoulder_roll_id] = clamp(wrap_angle_delta(shoulder_roll - zero_shoulder_roll), *SHOULDER_ROLL_RANGE)
+                # oblique_decompose gives dimensionless fwd/abd coefficients
+                # (1.0 = "as far as the calibration pose"); scale each by
+                # its OWN calibration pose's real tilt angle to get a
+                # radian-equivalent, then clamp the same way the old
+                # zero-referenced decode did. Negated for pitch -- see
+                # SHOULDER_PITCH_RANGE's comment: positive
+                # data (flexion/forward) needs NEGATIVE ctrl in this
+                # joint's frame. No wrap_angle_delta needed here (unlike
+                # the old ComplementaryFilter-decoded values this replaces):
+                # oblique_decompose is a linear projection with no atan2
+                # branch cut to wrap around.
+                # shoulder_raw can't still be None here: main() already
+                # blocked until the first raw reading arrived, before
+                # calibration, and LatestSample never resets it afterward.
+                fwd_coeff, abd_coeff = oblique_decompose(shoulder_basis, shoulder_raw)
+                pitch_equiv = fwd_coeff * shoulder_basis["tilt_fwd"]
+                roll_equiv = abd_coeff * shoulder_basis["tilt_abd"]
+                data.ctrl[shoulder_pitch_id] = clamp(-pitch_equiv, *SHOULDER_PITCH_RANGE)
+                data.ctrl[shoulder_roll_id] = clamp(roll_equiv, *SHOULDER_ROLL_RANGE)
                 data.ctrl[elbow_id] = clamp(ELBOW_OFFSET - (elbow - zero_elbow), *ELBOW_RANGE)
 
                 mujoco.mj_step(model, data)
@@ -675,9 +753,10 @@ def main():
                     e_raw_ax, e_raw_ay, e_raw_az = latest.snapshot_elbow_raw()
                     e_raw_str = ("n/a" if e_raw_ax is None else
                                  f"({e_raw_ax:+.3f},{e_raw_ay:+.3f},{e_raw_az:+.3f})")
-                    print(f"[CORR] sensor: shoulder_pitch={wrap_angle_delta(shoulder_pitch - zero_shoulder_pitch):+.3f} "
-                          f"shoulder_roll={wrap_angle_delta(shoulder_roll - zero_shoulder_roll):+.3f} "
-                          f"elbow={elbow - zero_elbow:+.3f}  |  "
+                    print(f"[CORR] oblique: fwd={fwd_coeff:+.3f} abd={abd_coeff:+.3f} "
+                          f"(pitch_equiv={pitch_equiv:+.3f} roll_equiv={roll_equiv:+.3f} rad)  "
+                          f"old_decode(unzeroed): shoulder_pitch={old_shoulder_pitch:+.3f} "
+                          f"shoulder_roll={old_shoulder_roll:+.3f}  elbow={elbow - zero_elbow:+.3f}  |  "
                           f"raw_shoulder(ax,ay,az)={raw_str}  raw_elbow(ax,ay,az)={e_raw_str}  |  "
                           f"ctrl: pitch={data.ctrl[shoulder_pitch_id]:+.3f} roll={data.ctrl[shoulder_roll_id]:+.3f} "
                           f"elbow={data.ctrl[elbow_id]:+.3f}  |  "

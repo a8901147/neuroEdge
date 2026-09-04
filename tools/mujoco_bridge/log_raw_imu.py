@@ -53,7 +53,10 @@ SETTLE_TAIL_SECONDS = 1.5  # average only the last N seconds of the hold -- give
 POSES = [
     ("REST", "維持垂下、手肘打直的姿勢不動(這就是基準姿勢本身)"),
     ("FORWARD_RAISE", "手肘打直,整支手臂往前舉到最高"),
+    ("BACKWARD_EXTENSION", "手肘打直,整支手臂往後擺到最高"),
     ("ABDUCTION_LEFT", "手肘打直,整支手臂往左側抬起"),
+    ("ADDUCTION_RIGHT", "手肘打直,整支手臂往右側抬起(內收)"),
+    ("ELBOW_FLEXION", "上臂不動,手肘彎曲"),
 ]
 
 
@@ -156,6 +159,12 @@ def main():
     parser.add_argument("--port", default=DEFAULT_PORT)
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument("--out", default=str(REPO_ROOT / "tools" / "mujoco_bridge" / "raw_imu_capture.json"))
+    parser.add_argument("--repeats", type=int, default=1,
+                         help="Capture each pose this many times in a row (return to rest between "
+                              "each repeat) instead of once. With --repeats>1, results[name] is a "
+                              "list of capture dicts instead of a single dict -- used to check "
+                              "raw-sensor/human-repeatability noise, not the normal single-capture "
+                              "fixture shape other tools (test_imu_to_mujoco.py) expect.")
     args = parser.parse_args()
 
     ser = serial.Serial(args.port, args.baud, timeout=1)
@@ -185,45 +194,56 @@ def main():
             print(f"發現先前的錄製結果({', '.join(results.keys())}),會跳過這些、只錄剩下的。\n")
 
     for name, instruction in POSES:
-        if name in results:
+        done = len(results.get(name, [])) if args.repeats > 1 else (1 if name in results else 0)
+        if done >= args.repeats:
             print(f"=== {name} === (已有資料,跳過)")
             continue
-        print(f"=== {name} ===")
-        print("請把手回到原位,手垂下、手肘打直。準備好後按 Enter。")
-        input()
-        print(f"3 秒後開始 -- 接下來請做:「{instruction}」,並保持住直到錄製結束。")
-        for n in (3, 2, 1):
-            print(f"  {n}...", flush=True)
-            time.sleep(1.0)
-        print("開始錄製!請維持姿勢。")
-        samples = record_pose(latest, RECORD_SECONDS)
-        shoulder_avg, elbow_avg = average_tail(samples, SETTLE_TAIL_SECONDS)
-        if shoulder_avg is None:
-            print("  警告:這段完全沒收到資料,跳過。")
-            continue
-        print(f"  完成 -- shoulder raw(ax,ay,az)=({shoulder_avg[0]:+.3f},{shoulder_avg[1]:+.3f},{shoulder_avg[2]:+.3f})  "
-              f"elbow raw(ax,ay,az)=({elbow_avg[0]:+.3f},{elbow_avg[1]:+.3f},{elbow_avg[2]:+.3f})\n")
-        results[name] = {
-            "shoulder_raw_avg": shoulder_avg,
-            "elbow_raw_avg": elbow_avg,
-            "n_samples": len(samples),
-            "all_samples": [
-                {"t": t, "shoulder": s, "elbow": e} for (t, s, e) in samples
-            ],
-        }
-        # Saved after EVERY pose (not just once at the end) -- see the
-        # resume-support comment above main()'s loop for why: losing a
-        # whole session's data to one interrupted run already happened once.
-        with open(args.out, "w") as f:
-            json.dump(results, f, indent=2)
+        for rep in range(done, args.repeats):
+            label = f"{name} ({rep + 1}/{args.repeats})" if args.repeats > 1 else name
+            print(f"=== {label} ===")
+            print("請把手回到原位,手垂下、手肘打直。準備好後按 Enter。")
+            input()
+            print(f"3 秒後開始 -- 接下來請做:「{instruction}」,並保持住直到錄製結束。")
+            for n in (3, 2, 1):
+                print(f"  {n}...", flush=True)
+                time.sleep(1.0)
+            print("開始錄製!請維持姿勢。")
+            samples = record_pose(latest, RECORD_SECONDS)
+            shoulder_avg, elbow_avg = average_tail(samples, SETTLE_TAIL_SECONDS)
+            if shoulder_avg is None:
+                print("  警告:這段完全沒收到資料,跳過。")
+                continue
+            print(f"  完成 -- shoulder raw(ax,ay,az)=({shoulder_avg[0]:+.3f},{shoulder_avg[1]:+.3f},{shoulder_avg[2]:+.3f})  "
+                  f"elbow raw(ax,ay,az)=({elbow_avg[0]:+.3f},{elbow_avg[1]:+.3f},{elbow_avg[2]:+.3f})\n")
+            entry = {
+                "shoulder_raw_avg": shoulder_avg,
+                "elbow_raw_avg": elbow_avg,
+                "n_samples": len(samples),
+                "all_samples": [
+                    {"t": t, "shoulder": s, "elbow": e} for (t, s, e) in samples
+                ],
+            }
+            if args.repeats > 1:
+                results.setdefault(name, []).append(entry)
+            else:
+                results[name] = entry
+            # Saved after EVERY repeat (not just once at the end, and not
+            # just once per pose) -- see the resume-support comment above
+            # main()'s loop for why: losing a whole session's data to one
+            # interrupted run already happened once.
+            with open(args.out, "w") as f:
+                json.dump(results, f, indent=2)
 
     print(f"全部完成,結果存到 {args.out}")
 
     print("\n=== 總覽 ===")
     for name, data in results.items():
-        s = data["shoulder_raw_avg"]
-        e = data["elbow_raw_avg"]
-        print(f"{name:20s} shoulder=({s[0]:+.3f},{s[1]:+.3f},{s[2]:+.3f})  elbow=({e[0]:+.3f},{e[1]:+.3f},{e[2]:+.3f})")
+        entries = data if isinstance(data, list) else [data]
+        for i, entry in enumerate(entries):
+            s = entry["shoulder_raw_avg"]
+            e = entry["elbow_raw_avg"]
+            label = f"{name} ({i + 1}/{len(entries)})" if isinstance(data, list) else name
+            print(f"{label:20s} shoulder=({s[0]:+.3f},{s[1]:+.3f},{s[2]:+.3f})  elbow=({e[0]:+.3f},{e[1]:+.3f},{e[2]:+.3f})")
 
 
 if __name__ == "__main__":

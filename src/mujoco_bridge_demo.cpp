@@ -39,6 +39,7 @@
 #include "edgeneuro/control/grip_state_machine.hpp"
 #include "edgeneuro/control/slew_rate_limiter.hpp"
 #include "edgeneuro/fusion/complementary_filter.hpp"
+#include "edgeneuro/fusion/tilt_azimuth.hpp"
 #include "edgeneuro/providers/csv_signal_provider.hpp"
 
 using namespace edgeneuro;
@@ -64,6 +65,35 @@ constexpr float kOffDuration = 0.1f;
 // it off its pedestal -- verified by directly stepping the MuJoCo model.
 constexpr float kSlewRate = 1.5f;
 
+// Real shoulder calibration basis (REST/FORWARD_RAISE/ABDUCTION_LEFT unit
+// vectors, this project's real mount -- see
+// tools/mujoco_bridge/raw_imu_calibration.json and PRD.md's 2026-09-04/05
+// Session Handoff). Replaces ComplementaryFilter::pitch()/roll() for the
+// shoulder: that decode has two independent real problems (gyro-
+// integration drift with zero corresponding accel change, and an
+// accel-only formula that folds back past +-90deg so genuinely different
+// poses like forward-raise/backward-extension can decode identically).
+// tilt_azimuth.hpp's oblique_decompose fixes both -- see
+// tools/mujoco_bridge/run_demo_live.py's matching Python port for the same
+// math applied to the live hardware path, and this file's own top comment
+// for why this binary needs to mirror that logic instead of just
+// firmware's.
+//
+// raw_imu_calibration.json is a single sitting's 6-pose x 5-repeat capture
+// (log_raw_imu.py --repeats 5), averaged per pose -- both more robust than
+// a single-shot capture AND has real paired shoulder+elbow readings for
+// every pose (an earlier same-day 5-repeat capture's elbow IMU was
+// unplugged/silent the whole time, elbow_raw_avg ~(0,0,0) for every pose;
+// re-run with the elbow IMU actually connected). Using the SAME session's
+// data for both this calibration basis and
+// tools/mujoco_bridge/test_imu_to_mujoco.py's fixtures matters: comparing
+// against a calibration basis from a DIFFERENT session reintroduces
+// exactly the cross-session REST mismatch this project already hit once
+// (PRD.md 2026-09-04).
+constexpr float kShoulderRefX = 0.96756683f, kShoulderRefY = -0.24536111f, kShoulderRefZ = -0.06010292f;
+constexpr float kShoulderFwdX = 0.23614663f, kShoulderFwdY = -0.53617526f, kShoulderFwdZ = 0.81040166f;
+constexpr float kShoulderAbdX = 0.11104646f, kShoulderAbdY = -0.91944181f, kShoulderAbdZ = 0.37722067f;
+
 using Provider = CsvSignalProvider<float, kEmgChannels, kImuChannels, kMaxSamples>;
 
 } // namespace
@@ -74,7 +104,12 @@ int main(int argc, char** argv) {
     Provider provider(csv_path);
     GripStateMachine<float> grip(kGripThreshold, kOnDuration, kOffDuration);
     SlewRateLimiter<float> setpoint(kSlewRate);
-    ComplementaryFilter<float> shoulder_filter(0.98f, kDt); // upper-arm IMU
+    ComplementaryFilter<float> shoulder_filter(0.98f, kDt); // upper-arm IMU, old decode kept only for [OLD] comparison output
+
+    const auto shoulder_basis = make_oblique_basis(
+        kShoulderRefX, kShoulderRefY, kShoulderRefZ,
+        kShoulderFwdX, kShoulderFwdY, kShoulderFwdZ,
+        kShoulderAbdX, kShoulderAbdY, kShoulderAbdZ);
 
     Provider::SampleT sample;
     std::size_t tick = 0;
@@ -131,6 +166,28 @@ int main(int argc, char** argv) {
         const float shoulder_mag = std::sqrt(shoulder_raw_ax * shoulder_raw_ax +
                                               shoulder_raw_ay * shoulder_raw_ay +
                                               shoulder_raw_az * shoulder_raw_az);
+
+        // Shoulder pitch/roll-equivalent via oblique_decompose_scaled, on
+        // the RAW (pre-remap) shoulder axes -- shoulder_basis's calibration
+        // readings are themselves raw sensor axes (same convention as
+        // tools/mujoco_bridge/log_raw_imu.py's capture), not the ax/ay/az
+        // remap above (that remap is specific to ComplementaryFilter's own
+        // axis convention, kept above only for the [OLD] comparison
+        // output). oblique_decompose_scaled normalizes internally, so the
+        // raw (unnormalized) axes are passed directly -- see its own
+        // comment for why a plain oblique_decompose scaled by the
+        // calibration's own tilt overshoots for off-axis poses (e.g. a
+        // real ~16deg ELBOW_FLEXION drift that overshot to ~35deg).
+        // Guarded the same way as elbow_bend below: a stationary/
+        // disconnected reader can report near-zero magnitude, which
+        // oblique_decompose_scaled's own internal normalize would blow up.
+        float pitch_equiv = 0.0f, roll_equiv = 0.0f;
+        if (shoulder_mag > 0.1f) {
+            const auto coeffs = oblique_decompose_scaled(shoulder_basis, shoulder_raw_ax, shoulder_raw_ay, shoulder_raw_az);
+            pitch_equiv = coeffs.fwd;
+            roll_equiv = coeffs.abd;
+        }
+
         const float elbow_mag = std::sqrt(elbow_raw_ax * elbow_raw_ax +
                                            elbow_raw_ay * elbow_raw_ay +
                                            elbow_raw_az * elbow_raw_az);
@@ -147,12 +204,23 @@ int main(int argc, char** argv) {
         grip.update(sample.emg[0], kDt);
         const float grip_setpoint = setpoint.update(grip.is_gripping() ? 1.0f : 0.0f, kDt);
 
+        // shoulder_pitch=/shoulder_roll= (ComplementaryFilter, unchanged)
+        // must stay exactly as-is: tools/mujoco_bridge/run_demo.py is a
+        // SEPARATE consumer of this same binary that replays the fully
+        // synthetic data/wearable_1emg_12imu.csv (tools/generate_sample_data.py),
+        // which has no relationship to this real mount's calibration basis
+        // -- feeding it through oblique_decompose would produce meaningless
+        // values. pitch_equiv=/roll_equiv= are ADDED fields, read only by
+        // tools/mujoco_bridge/test_imu_to_mujoco.py's real-hardware-fixture
+        // path (see this file's top comment).
         std::cout << "tick=" << tick
                   << " grip=" << grip_setpoint
                   << " gripping=" << (grip.is_gripping() ? 1 : 0)
                   << " shoulder_pitch=" << shoulder_filter.pitch()
                   << " shoulder_roll=" << shoulder_filter.roll()
                   << " elbow=" << elbow_bend
+                  << " pitch_equiv=" << pitch_equiv
+                  << " roll_equiv=" << roll_equiv
                   << "\n";
         std::cout.flush(); // required: stdout is fully buffered (not line-buffered) once it's a pipe, not a tty
 

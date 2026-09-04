@@ -358,3 +358,34 @@ Phase 1.5 的可行性驗證確認四個關鍵未知數皆可行後，再依 Pha
 ?? tools/mujoco_bridge/test_imu_to_mujoco.py       (整合測試，待用新演算法更新)
 ```
 (`run_demo.py`、`arm_hand_scene.xml` 的 bug #1 修正已經是更早的 commit `0369d58`，不在上面清單裡。)
+
+### Session Handoff (2026-09-04 續)：tilt/azimuth 接線完成（TODO #1-#4），架構跟原計畫不同
+
+**重要說明**：上面這份 TODO 清單、git 狀態，在這個 session 開始前已經被**另一個平行執行的 session** 提交成 commit `87ce334`（bug #2/#3 修正 + tilt_azimuth 核心）跟 `71de296`（pipeline 測試），兩筆都帶了 `Co-Authored-By: Claude Sonnet 5` trailer（違反 [[feedback_no_coauthor_trailer]] 的既有偏好，經使用者確認後決定保留現狀、不重寫歷史）。這個 session 是基於那個已提交的狀態繼續往下做 TODO #1-#4。
+
+#### 跟原計畫的關鍵架構差異
+
+TODO #1 原文說「接進 `phase3_control_loop_main.cpp`」，但實際查證後發現**校正從來不在 firmware 端**——firmware 只串流 raw ax/ay/az，校正（目前是零點）一直是 `run_demo_live.py` 每次重開都重新錄的。tilt/azimuth 需要三個完整參考向量（REST/FORWARD_RAISE/ABDUCTION_LEFT），若照字面接進 firmware 需要新增一套韌體端三姿勢校正握手協定，會失去「每次重開都重新校正」的彈性，還需要重新燒錄+實際戴上硬體才能驗證每次修改。**改為：firmware 完全不動，tilt/azimuth + 新的非正交基底解法整個放在 Python(`run_demo_live.py`) 跟 C++ demo(`mujoco_bridge_demo.cpp`) 這兩個消費 raw 數據的地方**，經使用者確認同意。
+
+#### 完成的部分
+
+1. **`include/edgeneuro/fusion/tilt_azimuth.hpp` 新增 `make_oblique_basis()`/`oblique_decompose()`/`oblique_decompose_scaled()`**：用實測到的 FORWARD_RAISE/ABDUCTION_LEFT 當非正交基底（Gram matrix 最小二乘解），取代原本假設兩者正交的 `tilt*cos(azimuth)`/`tilt*sin(azimuth)` 換算。過程中發現並修正一個真實 bug：`oblique_decompose()` 原始係數乘上校正姿勢自己的傾角，在偏離校正軸的姿勢上會嚴重放大（真實 ELBOW_FLEXION 姿勢肩膀只漂移 16°，卻被放大成 35° pitch_equiv）——`oblique_decompose_scaled()` 改成只用 oblique 係數決定**方向**，量值改用獨立量測的真實傾角（acos），確保輸出量值永遠不超過真實傾角。`tests/test_tilt_azimuth.cpp` 新增對應測試，全數通過（7 個 test case、453 個斷言）。
+2. **`run_demo_live.py`**：開場的 1 姿勢零點校正擴充成 3 姿勢（REST/FORWARD_RAISE/ABDUCTION_LEFT），純 Python 移植 `make_oblique_basis`/`oblique_decompose`（跟 C++ 版本逐行對應，已用真實資料交叉驗證數值一致）。主迴圈 shoulder ctrl 改用 raw ax/ay/az + oblique 換算，`ComplementaryFilter` 解碼值(`shoulder_pitch`/`shoulder_roll`)保留在 `[CORR]` 診斷行做新舊對照，但不再驅動 ctrl。手肘完全沒動（原本就是 firmware 上的 dot-product 法）。`wrap_angle_delta` 已移除（新方法沒有 atan2 branch cut 問題）。**尚未在真實硬體上測試**，只驗證過純 Python 邏輯跟真實錄製資料的數值。
+3. **`src/mujoco_bridge_demo.cpp`**：新增 `pitch_equiv=`/`roll_equiv=` 輸出欄位（硬編碼校正常數，來自 `tools/mujoco_bridge/raw_imu_calibration.json`，見下方檔案說明)。**`shoulder_pitch=`/`shoulder_roll=` 舊欄位刻意保留不動**——`run_demo.py` 是另一個消費同一支 binary 的獨立程式，重播完全合成的 `data/wearable_1emg_12imu.csv`，跟這次的真實校正無關，改掉會讓它壞掉。
+4. **`tools/mujoco_bridge/test_imu_to_mujoco.py` 全面重寫**：改用單一場次的真實 6 姿勢資料；斷言改用新算法量到的真實數值——某些舊門檻（如 `ADDUCTION_RIGHT` 的 roll delta <= -0.15）在新算法下不成立，已改成如實反映真實量到的行為（只驗證方向，不驗證舊算法的特定量值），並在註解裡說明為什麼放寬。全部斷言通過。
+
+#### 真實資料檔案的迭代（未加入 git，刻意的）
+
+這個 session 過程中錄了三份資料，前兩份都已被第三份取代並刪除：
+
+1. `raw_imu_capture_new.json`（單次 6 姿勢，含手肘）→ 最初拿來當 calibration basis + 測試 fixture 來源。
+2. `raw_imu_repeatability.json`（6 姿勢 x 5 次重複，只錄肩膀）→ 拿來驗證「前舉跟外展只差 29°、不是 90°」是真實幾何、不是量測雜訊（重現性雜訊只有 3-6°，遠小於 60° 的落差）；但那次手肘 IMU 沒接，`elbow_raw_avg` 全部是 0，不能當手肘資料用。
+3. **`raw_imu_calibration.json`（最終版，6 姿勢 x 5 次重複，手肘確認有接、資料正常）**——使用者發現①②各自只滿足一半需求（①是單次、沒有重複驗證；②沒有手肘資料無法拿來當 fixture），建議乾脆重錄一份同時滿足兩者，於是重錄了這份，**一次扮演「calibration 常數來源」+「測試 fixture 來源」+「重現性佐證」三個角色**，①②因此刪除。重現性分析用這份資料再次獨立驗證了前舉/外展 29-42° 的發現（這次量到 36.3°，第三次獨立錄製，同一量級），確認是真實幾何、不是單次雜訊。
+
+#### 下個 session 要接著做的事
+
+1. **在真實硬體上跑 `run_demo_live.py`，驗證新的 3 姿勢校正 + oblique 換算實際可用**——這是目前最大的未驗證項目，之前所有驗證都是離線（真實錄製資料 + 純 Python/C++ 邏輯），還沒有真的在即時串流下測過。
+2. TODO #5（陀螺儀 gx/gy 重新驗證）已經**不需要做了**：tilt/azimuth 完全是 accel-based，不用 gyro，這個顧慮不再適用。
+3. TODO #6（`ADDUCTION_RIGHT` 資料品質疑慮）已解決：這個姿勢的傾角在三次獨立錄製間都落在 36-41° 這個量級，是可信的。
+4. `tools/mujoco_bridge/test_tilt_azimuth_pipeline.py`（另一個平行 session 的 commit `71de296` 產物）目前還在用**合成的 placeholder** calibration basis（`REF`/`BASIS_U` 是隨便挑的非軸對齊向量，不是真實量到的方向），該檔案自己的註解也說「等真實校正資料到位後要換掉」——現在真實資料已經到位（`raw_imu_calibration.json`），但這個 session 沒有動這個檔案，下個 session 可以視情況補上或評估是否還需要保留合成版本。
+5. 目前這批改動（見上方 git 狀態）**還沒 commit**，比照上次的教訓，建議下個 session 開始前先跟使用者確認 commit 策略。
