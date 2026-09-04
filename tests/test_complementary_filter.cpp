@@ -10,6 +10,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <numbers>
 
 #include "edgeneuro/fusion/complementary_filter.hpp"
@@ -121,4 +122,52 @@ TEST_CASE("ComplementaryFilter::reset clears roll/pitch state", "[fusion]") {
     filter.reset();
     REQUIRE(filter.roll() == Approx(0.0f).margin(1e-6));
     REQUIRE(filter.pitch() == Approx(0.0f).margin(1e-6));
+}
+
+// 2026-09-04: added after a real hardware session found firmware's shoulder
+// pitch/roll flipping sign between a forward-raise and a backward-extension
+// that should have been opposite -- traced to this exact formula, not the
+// sensor or the specific mount (see PRD.md/git history for the full
+// derivation). Kept in this file, tested the same sensor-format-independent
+// way as the rest of it (a pure synthetic rotation, not real captured
+// data): initialize() from a synthetic gravity vector rotated by a known
+// angle about the Y axis (accel = (sin(theta), 0, cos(theta)), so
+// theta=0 matches this file's own "gravity on Z" rest convention) and read
+// back pitch().
+TEST_CASE("ComplementaryFilter pitch stays monotonic across a full real shoulder ROM sweep", "[fusion][bug]") {
+    auto pitch_for_angle_deg = [](float deg) {
+        ComplementaryFilter<float> filter;
+        const float rad = deg * std::numbers::pi_v<float> / 180.0f;
+        filter.initialize(std::sin(rad), 0.0f, std::cos(rad));
+        return filter.pitch();
+    };
+
+    // Sharpest, most concrete demonstration: 70deg and 110deg are two
+    // clearly DIFFERENT real rotations (40deg apart), well within a real
+    // shoulder's flexion range (up to ~150-180deg) -- but
+    // accel_pitch_angle's atan2(-ax, sqrt(ay^2+az^2)) has a second
+    // argument that's a sqrt (always >= 0), which mathematically restricts
+    // its output to [-90deg,+90deg]. Past 90deg the true angle reflects
+    // instead of continuing, so these two distinct real angles currently
+    // decode to the IDENTICAL pitch -- this REQUIRE describes the CORRECT
+    // behavior (they must differ) and is expected to FAIL against today's
+    // formula; it should start passing once accel_pitch_angle is replaced
+    // with a wide-range formulation (see PRD.md's swing/twist notes).
+    REQUIRE(pitch_for_angle_deg(110.0f) != Approx(pitch_for_angle_deg(70.0f)).margin(1e-3));
+
+    // Full-range monotonicity: a real shoulder's flexion/extension sweep
+    // (roughly -60deg extension to +160deg flexion, see
+    // tools/mujoco_bridge/run_demo_live.py's SHOULDER_PITCH_RANGE comment
+    // for the anatomical reference) should decode to a pitch that moves
+    // the same direction throughout -- no reflecting back partway through
+    // a real, physically continuous motion. Also expected to fail today.
+    constexpr int kStartDeg = -60;
+    constexpr int kEndDeg = 160;
+    constexpr int kStepDeg = 5;
+    float prev = pitch_for_angle_deg(static_cast<float>(kStartDeg));
+    for (int deg = kStartDeg + kStepDeg; deg <= kEndDeg; deg += kStepDeg) {
+        const float current = pitch_for_angle_deg(static_cast<float>(deg));
+        REQUIRE(current < prev); // this formula's sign convention: pitch decreases as angle increases
+        prev = current;
+    }
 }

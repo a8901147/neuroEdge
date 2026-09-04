@@ -299,3 +299,5 @@ Once Phase 1.5 answers its four questions, its results set how much goes into Mu
   * Timer PWM drives servos.
   * The full loop: sensor sample $\rightarrow$ ring buffer $\rightarrow$ zero-allocation engine $\rightarrow$ PWM.
   * Practical issues: separate supplies for motors and sensors, supply noise, electrode contact.
+
+---
