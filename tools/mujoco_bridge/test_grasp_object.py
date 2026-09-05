@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import sys
 
 import grasp_test_common as gtc
 
@@ -44,4 +45,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Exit code reflects the actual verdict (2026-09-05 fix) -- main()
+    # used to just return the result dict, which Python ignores for the
+    # process exit code, so `python3 test_grasp_object.py --headless &&
+    # echo PASS` would print PASS even on a DROPPED verdict. sys.exit(1)
+    # here is what makes this usable as an actual regression check, not
+    # just a script that prints something a human has to read.
+    sys.exit(0 if main()["held"] else 1)

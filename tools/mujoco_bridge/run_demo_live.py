@@ -287,6 +287,36 @@ def clamp(value, lo, hi):
     return max(lo, min(hi, value))
 
 
+def ema_step(current, target, alpha):
+    """One exponential-moving-average update: blends `alpha` of the way
+    from `current` toward `target`. Used for RAW_SMOOTHING_ALPHA (raw
+    shoulder accel + decoded elbow angle, smoothing continuous per-tick
+    noise before it reaches the ctrl mapping) -- extracted 2026-09-05 as
+    its own function so it has something a unit test can call directly,
+    instead of only existing as an inline expression inside main()'s loop."""
+    return current + alpha * (target - current)
+
+
+def rate_limit_step(current, target, max_step):
+    """Steps `current` toward `target` by at most `max_step`, never
+    overshooting -- lands exactly on `target` if it's already within one
+    step. Used for MAX_CTRL_RATE_RAD_PER_SEC (hard-caps how far ctrl can
+    move in one tick, regardless of why the target jumped). Extracted
+    2026-09-05, same reasoning as ema_step above."""
+    return current + clamp(target - current, -max_step, max_step)
+
+
+def calibration_tilt_deg(ref_raw, raw):
+    """Real tilt (degrees) between a calibration candidate reading and the
+    REST/BASELINE reference it's measured against -- the pure decision
+    input behind _calibrate_pose()'s MIN_CALIBRATION_TILT_DEG retry guard,
+    pulled out so that guard's logic can be unit tested without also
+    needing to mock input()/serial capture."""
+    ref_unit = _normalize3(ref_raw)
+    raw_unit = _normalize3(raw)
+    return math.degrees(math.acos(clamp(_dot3(ref_unit, raw_unit), -1.0, 1.0)))
+
+
 # Pure-Python port of include/edgeneuro/fusion/tilt_azimuth.hpp's
 # make_oblique_basis()/oblique_decompose() -- keep any change to the math in
 # both places in sync. Replaces this file's old approach (subtract a single
@@ -549,6 +579,26 @@ class LatestSample:
         return stale, port_error
 
 
+def split_lines(buf, chunk):
+    """Appends `chunk` to `buf`, splits out every complete \\r\\n-terminated
+    line, and returns (lines, remaining_buf). A chunk boundary landing
+    mid-line is handled correctly -- the incomplete trailing line stays in
+    the returned buffer for the next call instead of being dropped or
+    decoded early, which is exactly what real serial reads do (pyserial's
+    ser.read(256) has no reason to land on a line boundary). Decoding uses
+    errors="ignore" (matches this function's original inline behavior) so
+    a corrupted byte from a real wire glitch doesn't crash the reader.
+    Extracted 2026-09-06 from reader_thread_main's inline buffer handling
+    so this exact behavior has its own test, independent of needing a real
+    or mocked serial port."""
+    buf = buf + chunk
+    lines = []
+    while b"\r\n" in buf:
+        raw, buf = buf.split(b"\r\n", 1)
+        lines.append(raw.decode("utf-8", errors="ignore"))
+    return lines, buf
+
+
 def reader_thread_main(ser, latest):
     # Read raw bytes and split on the firmware's own \r\n line ending
     # rather than iterating the pyserial object directly -- matches
@@ -568,10 +618,8 @@ def reader_thread_main(ser, latest):
             chunk = ser.read(256)
             if not chunk:
                 continue
-            buf += chunk
-            while b"\r\n" in buf:
-                raw, buf = buf.split(b"\r\n", 1)
-                line = raw.decode("utf-8", errors="ignore")
+            lines, buf = split_lines(buf, chunk)
+            for line in lines:
                 match = LINE_RE.search(line)
                 if match:
                     latest.update(
@@ -814,9 +862,7 @@ def main():
             if ref_raw is None or min_tilt_deg is None:
                 return result
             raw, _ = result
-            ref_unit = _normalize3(ref_raw)
-            raw_unit = _normalize3(raw)
-            tilt_deg = math.degrees(math.acos(clamp(_dot3(ref_unit, raw_unit), -1.0, 1.0)))
+            tilt_deg = calibration_tilt_deg(ref_raw, raw)
             if tilt_deg >= min_tilt_deg:
                 print(f"  Angle large enough (tilt={tilt_deg:.1f}deg >= {min_tilt_deg:.0f}deg); this recording is used.\n")
                 return result
@@ -983,10 +1029,10 @@ def main():
                     smoothed_elbow_raw_scalar = elbow
                 else:
                     smoothed_shoulder_raw = tuple(
-                        smoothed_shoulder_raw[i] + RAW_SMOOTHING_ALPHA * (shoulder_raw[i] - smoothed_shoulder_raw[i])
+                        ema_step(smoothed_shoulder_raw[i], shoulder_raw[i], RAW_SMOOTHING_ALPHA)
                         for i in range(3)
                     )
-                    smoothed_elbow_raw_scalar += RAW_SMOOTHING_ALPHA * (elbow - smoothed_elbow_raw_scalar)
+                    smoothed_elbow_raw_scalar = ema_step(smoothed_elbow_raw_scalar, elbow, RAW_SMOOTHING_ALPHA)
 
                 if port_error is not None:
                     sys.exit(f"\nserial port failed: {port_error}\n"
@@ -1040,9 +1086,9 @@ def main():
                     smoothed_roll_ctrl = target_roll_ctrl
                     smoothed_elbow_ctrl = target_elbow_ctrl
                 else:
-                    smoothed_pitch_ctrl += clamp(target_pitch_ctrl - smoothed_pitch_ctrl, -max_ctrl_step, max_ctrl_step)
-                    smoothed_roll_ctrl += clamp(target_roll_ctrl - smoothed_roll_ctrl, -max_ctrl_step, max_ctrl_step)
-                    smoothed_elbow_ctrl += clamp(target_elbow_ctrl - smoothed_elbow_ctrl, -max_ctrl_step, max_ctrl_step)
+                    smoothed_pitch_ctrl = rate_limit_step(smoothed_pitch_ctrl, target_pitch_ctrl, max_ctrl_step)
+                    smoothed_roll_ctrl = rate_limit_step(smoothed_roll_ctrl, target_roll_ctrl, max_ctrl_step)
+                    smoothed_elbow_ctrl = rate_limit_step(smoothed_elbow_ctrl, target_elbow_ctrl, max_ctrl_step)
                 data.ctrl[shoulder_pitch_id] = smoothed_pitch_ctrl
                 data.ctrl[shoulder_roll_id] = smoothed_roll_ctrl
                 data.ctrl[elbow_id] = smoothed_elbow_ctrl
