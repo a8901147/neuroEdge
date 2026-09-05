@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import csv
+import sys
 
 import grasp_test_common as gtc
 
@@ -153,8 +154,8 @@ def main():
     return gtc.run_with_viewer_or_headless(args, grip_at_t=grip_at_t,
                                             grip_phase_seconds=args.grip_phase_seconds)
 
-    return result
-
 
 if __name__ == "__main__":
-    main()
+    # See test_grasp_object.py's matching comment -- exit code must
+    # reflect the actual verdict, not just always be 0.
+    sys.exit(0 if main()["held"] else 1)
