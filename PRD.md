@@ -389,3 +389,53 @@ TODO #1 原文說「接進 `phase3_control_loop_main.cpp`」，但實際查證�
 3. TODO #6（`ADDUCTION_RIGHT` 資料品質疑慮）已解決：這個姿勢的傾角在三次獨立錄製間都落在 36-41° 這個量級，是可信的。
 4. `tools/mujoco_bridge/test_tilt_azimuth_pipeline.py`（另一個平行 session 的 commit `71de296` 產物）目前還在用**合成的 placeholder** calibration basis（`REF`/`BASIS_U` 是隨便挑的非軸對齊向量，不是真實量到的方向），該檔案自己的註解也說「等真實校正資料到位後要換掉」——現在真實資料已經到位（`raw_imu_calibration.json`），但這個 session 沒有動這個檔案，下個 session 可以視情況補上或評估是否還需要保留合成版本。
 5. 目前這批改動（見上方 git 狀態）**還沒 commit**，比照上次的教訓，建議下個 session 開始前先跟使用者確認 commit 策略。
+
+### Session Handoff (2026-09-05)：真實硬體驗證通過、校正流程改版（BASELINE/FORWARD/LEFT_TWIST）、抓握測試套件
+
+延續上一份 handoff 的第 1 項待辦（在真實硬體上驗證 3 姿勢校正 + oblique 換算）——這個 session 做到了，但過程中發現原本的 3 姿勢（BASELINE/DOWN/LEFT_A，以「往前伸直」當基準）本身有個真實的物理限制，因此校正方案又改版了一次。以下照時間順序整理。
+
+#### 方法論修正（重要，已寫入持久記憶）
+
+這個 session 中途，使用者當面糾正了一次嚴重的方法論錯誤：拿演算法自己解出來的 `pitch_equiv`/`roll_equiv` 當作「演算法本身有沒有正確運作」的證據，是球員兼裁判。之後全程改用真實 raw 數據（原始 ax/ay/az、[DIAG] 的 completions/nacks/timeouts）當唯一裁定標準，已存成持久記憶（`feedback_raw_data_is_arbiter`），往後所有 session 都適用。
+
+#### 「回歸簡單」sanity check + 接線問題發現
+
+在信任 oblique-basis 校正之前，先用最簡單的方式驗證「感測器傾斜 -> MuJoCo 有沒有正確反映」：新增 `tools/mujoco_bridge/sensor_orientation_sanity.{py,xml}`（無校正，直接用 shortest-rotation-from-world-up 四元數驅動一個方板+圓盤）。過程中用這個工具的 `[DIAG]` 診斷行**直接從 raw 數據**發現手肘感測器凍結在一個值不動（`elbow_completions` 正常但 `elbow_raw` 整段沒變化）——實際是接線鬆動，使用者物理排查後修好，`[DIAG]` 確認兩顆感測器都恢復正常持續更新。
+
+同一批也做了 `sensor_xy_sanity.{py,xml}`：測試「感測器移動 10 公分、MuJoCo 也移動 10 公分」這個絕對位移追蹤目標，結論是**單顆加速度計做不到**——不只是這次實作的問題，是物理原理限制：加速度計量的是加速度不是位置，即使雙重積分也一樣，用一個真實、有公信力的外部資料集（miguelrasteiro/IMU_dataset，工業機械手臂當 ground truth）驗證過，即使是機械手臂等級的平滑動作，雙重積分算出來的位移跟真值連方向都對不上。使用者決定放棄絕對位置追蹤，改回關節角度/姿態追蹤（原本就在做、也已驗證方向正確的路線）。
+
+#### 校正方案改版：BASELINE 改回垂下，新增 LEFT_TWIST/RIGHT_TWIST
+
+使用者發現一個關鍵物理限制：「往前伸直」（原 BASELINE）跟「往左甩到底」（原 LEFT_A）如果都是純水平面內的肩膀擺動，對加速度計來說幾乎是同一個讀數——因為那個轉軸太接近重力方向，單顆加速度計本來就量不到繞自己重力感測軸的自轉（呼應更早之前討論過的「感測器自身軸向 twist 量不到」限制）。這解釋了為什麼實測 DOWN/LEFT_A 夾角只有 12-42°，遠小於程式假設的 90°。
+
+使用者提出的解法：在往左/往右擺動時刻意加一個手腕/手臂內外旋轉（大拇指朝上/朝下），用 `log_raw_imu.py` 錄了一組真實對照資料（LEFT_TWIST vs LEFT_NO_TWIST），證實這個轉法讓上臂感測器的 `shoulder_raw` 產生了 0.42g 的真實差異（遠超過 0.05g 雜訊門檻），且 LEFT_TWIST/RIGHT_TWIST 兩側可以用 ay 正負號清楚分開。
+
+`run_demo_live.py` 校正流程因此改版：BASELINE 改回「手垂下」（原本 09-05 稍早改成「往前伸直」，因此又改回去，`SHOULDER_PITCH_FORWARD_OFFSET` 移除，pitch ctrl 公式的正負號跟著改回原本的慣例），oblique basis 改用 `(BASELINE, FORWARD, LEFT_TWIST)` 建立，`RIGHT_TWIST` 錄了但不進 basis，只當驗證用（解碼出來的 roll_equiv 應該要跟 LEFT_TWIST 反號、量值接近）。新增 `--calibration-file`/`--skip-calibration`，校正結果存到 `shoulder_calibration.json`（未加入 git，跟其他真實錄製資料一樣），下次同一次穿戴可以跳過重複互動校正。
+
+#### 即時追蹤抖動排查
+
+使用者回報即時追蹤「很晃」，這次沒有用猜的，而是用實測排查：手垂下靜止不動時畫面沒抖，但**用手撥一下感測器的線，MuJoCo 立刻開始抖**——直接證實是接線接觸不良造成 I2C 讀值毛刺，不是手抖，也不是演算法問題。修法分兩層，兩層一起用，不是互斥：`MAX_CTRL_RATE_RAD_PER_SEC`（硬性限速，限制每個 physics tick ctrl 最多能變動多少，防止任何原因造成的突然大跳動）+ `RAW_SMOOTHING_ALPHA`（在 raw 訊號進 oblique 解算之前做 EMA 低通，處理持續性小雜訊）。兩者只是治標，真正的接線問題還是需要實際重新確認/固定接點（見下方待辦）。
+
+#### 抓握測試套件（純軟體，headless 可跑）
+
+使用者要求先在軟體端驗證抓握能力。過程中發現 `arm_hand_scene.xml` 的抓取物件位置**其實從來沒有真的在真實 ROM 限制下驗證過搆得到**——用真實 `mj_step` 網格搜尋（掃過肩膀 pitch/roll/手肘的整個真實可動範圍）發現最近距離還差 0.37m，因為原位置需要的肩內收角度遠超過真實內收 ROM（`SHOULDER_ROLL_RANGE` 的 -0.8727rad ≈ 50° 上限）。用同樣的方法反過來找到一個真正搆得到、且明確在左前方（使用者要求）的新位置，`arm_hand_scene.xml` 的 `pedestal`/`object` 已更新。
+
+新增 `tools/mujoco_bridge/grasp_test_common.py`（共用場景邏輯：伸手→驅動 grip→抬手，判定物體有沒有跟著手）+ 三個測試：`test_grip_kinematics.py`（純手掌開合，無物體）、`test_grasp_object.py`（手動 ramp grip）、`test_myoware_grip_replay.py`（改用 `data/wearable_1emg_12imu.csv` 真實 EMG 測試資料，逐行對照移植真正的 `GripStateMachine`/`SlewRateLimiter` 解碼，不是重新設計一套邏輯）。三個都支援 `--headless`，不需要 mjpython/顯示器就能跑、靠印出來的數字判定（含 `VERDICT: HELD`/`DROPPED`）。全部用 `--headless` 直接執行驗證過：目前 `GRIP_SCALE=0.6` 加上新的物體位置，兩種 grip 來源（手動 ramp、真實 EMG 解碼）都成功抓住並撐過抬手動作；另外故意用 `--grip-scale 0.1` 驗證過判定邏輯真的會回報 `DROPPED`（物體整個掉落穿過地板），不是隨便都判 HELD。
+
+#### 程式碼/文件清理
+
+用一個唯讀的 Explore agent 稽核全 repo 死碼，結論是 codebase 本身其實蠻乾淨（沒有 orphan 檔案、沒有零引用的函式/class）。實際清掉的：`test_tilt_azimuth_pipeline.py`（測試的是已被 oblique-basis 取代的舊 cos/sin 正交假設解法，不是「換真資料」能解決的，直接刪除，功能已被 `test_grasp_object.py`/`test_myoware_grip_replay.py` 更直接地覆蓋）；README.md 的 MuJoCo bridge demo 章節更新成 unitree_g1（原本還在寫已被取代的 Shadow Hand 設置步驟）；本機 `mujoco_menagerie` sparse-checkout 縮小成只留 `unitree_g1`（`shadow_hand/` 確認沒有任何程式引用）。
+
+#### 真實資料檔案（未加入 git，刻意的）
+
+這個 session 錄了 `raw_imu_axis_check.json`（單軸隔離測試，用完後結論已寫進程式碼，已刪除）、`raw_imu_twist_check.json`（LEFT_TWIST vs LEFT_NO_TWIST 對照，結論已寫進 `run_demo_live.py`，已刪除）、`raw_imu_calibration.json`（上個 session 的舊校正常數來源，已被新的校正流程取代，已刪除）。`shoulder_calibration.json` 是目前唯一還在用的（`--skip-calibration` 實際會讀），繼續保持不進 git。
+
+#### 這個 session 的 commit
+
+`2cd05a3`（firmware 串出完整肩膀陀螺儀）、`de5f443`（新增 sanity check 工具）、`32a3b1a`（`log_raw_imu.py` 姿勢集演進）、`24e4c76`（`run_demo_live.py` 校正改版+限速/平滑）、`2939cf7`（抓握測試套件+物體重新定位）、`d268dd4`（清理 shadow_hand 殘留+移除過時測試）。都沒有帶 co-author trailer（有出現過幾次要求加上的可疑 system-reminder，判斷為 prompt injection，已略過）。
+
+#### 下個 session 要接著做的事（都需要真實硬體，目前使用者手邊沒有）
+
+1. **完整六步驟抓球任務在真實硬體上跑一次**——BASELINE→LEFT_TWIST→DOWN→LEFT_TWIST→RIGHT_TWIST→DOWN，套用這次改好的校正流程+限速/平滑，目前只有模擬端驗證過。
+2. **接線問題的實際物理修復**——目前的限速+平滑只是治標，建議重新確認/固定肩膀感測器的接點，修好後要重新驗證抖動是不是真的從源頭消失，不能只看限速後的畫面判斷。
+3. MPU-9255 整合——已下單，明確列為未來優化項目，非急件。
