@@ -1,0 +1,33 @@
+<mujoco model="sensor_xy_sanity">
+  <!-- Even simpler than sensor_orientation_sanity.xml (2026-09-05): no
+       rotation joint at all. Each shape only has two `slide` joints (X and
+       Y), so its orientation is permanently fixed at whatever it was
+       authored with -- there is no quaternion/twist ambiguity to
+       misinterpret. Purpose: check raw_ax/raw_ay -> on-screen X/Y motion
+       direction match, before trusting any orientation (tilt) math. -->
+  <option gravity="0 0 0"/>
+
+  <asset>
+    <texture type="2d" name="grid" builtin="checker" rgb1=".15 .15 .15" rgb2=".25 .25 .25" width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="4 4" reflectance=".1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" diffuse="1 1 1"/>
+    <geom type="plane" size="2 2 0.1" material="grid"/>
+
+    <!-- SHOULDER: square block. raw_ax drives X, raw_ay drives Y. -->
+    <body name="shoulder_shape" pos="-0.5 0 1">
+      <joint name="shoulder_x" type="slide" axis="1 0 0" range="-0.4 0.4"/>
+      <joint name="shoulder_y" type="slide" axis="0 1 0" range="-0.4 0.4"/>
+      <geom type="box" size="0.08 0.08 0.08" rgba="0.9 0.15 0.15 1"/>
+    </body>
+
+    <!-- ELBOW: round disc, same X/Y mapping from its own raw ax/ay. -->
+    <body name="elbow_shape" pos="0.5 0 1">
+      <joint name="elbow_x" type="slide" axis="1 0 0" range="-0.4 0.4"/>
+      <joint name="elbow_y" type="slide" axis="0 1 0" range="-0.4 0.4"/>
+      <geom type="cylinder" size="0.09 0.05" rgba="0.15 0.55 0.9 1"/>
+    </body>
+  </worldbody>
+</mujoco>

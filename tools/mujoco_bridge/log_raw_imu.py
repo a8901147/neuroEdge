@@ -45,18 +45,39 @@ RAW_RE = re.compile(
     r"shoulder_raw_az=(?P<shoulder_raw_az>[-\d.eE+]+)"
 )
 
-RECORD_SECONDS = 4.0
-SETTLE_TAIL_SECONDS = 1.5  # average only the last N seconds of the hold -- gives the motion time to finish and settle before it counts
+# 2026-09-05: both raised (was 4.0/1.5) after real hardware data showed the
+# OLD tail window wasn't long enough for a deliberately EXAGGERATED
+# calibration pose (see run_demo_live.py's MIN_CALIBRATION_TILT_DEG comment
+# for why exaggerated poses are wanted) -- comparing the first half of the
+# old 1.5s tail against its second half showed real, still-ongoing drift
+# (PURE_DOWN's az moved another -0.14 WITHIN the supposedly-settled window),
+# meaning a big effortful reach can still be settling into position most of
+# the way through a short recording, not just during an initial "moving"
+# phase. average_tail() below now also warns if this is still happening.
+RECORD_SECONDS = 6.0
+SETTLE_TAIL_SECONDS = 2.5  # average only the last N seconds of the hold -- gives the motion time to finish and settle before it counts
 
 # (pose name, spoken instruction) -- edit this list to capture a different
 # set of poses. Order matters only for the printed prompts, not the output.
+# 2026-09-05, second pass: testing whether adding a deliberate forearm/
+# shoulder twist (thumb up when reaching left, thumb down when reaching
+# right) to the LEFT/RIGHT reach gives the shoulder (bicep-mounted) sensor
+# a distinguishable signal it otherwise wouldn't have -- a pure horizontal
+# shoulder sweep rotates mostly about an axis close to parallel with
+# gravity, which a single accelerometer fundamentally cannot see (the same
+# "twist about its own gravity-sensing axis is unobservable" limit
+# discussed for the sanity-check work). The first 4 poses are candidates
+# for the ACTUAL future calibration sequence if this works; LEFT_NO_TWIST
+# is a comparison-only control, not part of the intended calibration flow
+# -- it exists purely to diff against LEFT_TWIST and see whether the twist
+# actually changes shoulder_raw by a meaningful amount, or only elbow_raw
+# (which would mean the twist is happening at the wrist, not the shoulder).
 POSES = [
-    ("REST", "Keep the arm hanging with the elbow straight (the reference pose itself)"),
-    ("FORWARD_RAISE", "Elbow straight, raise the whole arm forward as high as it goes"),
-    ("BACKWARD_EXTENSION", "Elbow straight, swing the whole arm back as far as it goes"),
-    ("ABDUCTION_LEFT", "Elbow straight, raise the whole arm to the left side"),
-    ("ADDUCTION_RIGHT", "Elbow straight, raise the whole arm across to the right (adduction)"),
-    ("ELBOW_FLEXION", "Upper arm still, bend the elbow"),
+    ("BASELINE", "Arm hanging naturally, elbow straight (the reference pose itself, the zero)"),
+    ("FORWARD", "From BASELINE, raise the arm straight forward, elbow straight, without turning the wrist"),
+    ("LEFT_TWIST", "From BASELINE swing the arm fully left, elbow straight, turning the thumb up"),
+    ("RIGHT_TWIST", "From BASELINE swing the arm fully right, elbow straight, turning the thumb down"),
+    ("LEFT_NO_TWIST", "(comparison, not a calibration pose) From BASELINE swing the arm fully left, elbow straight, wrist not turned; compare with LEFT_TWIST"),
 ]
 
 
@@ -137,7 +158,15 @@ def average_tail(samples, tail_seconds):
     time to finish moving and settle before any of it counts toward the
     reported pose, same reasoning as test_imu_to_mujoco.py's HOLD_TICKS
     convergence-window approach, just applied to real samples instead of a
-    synthetic fixture."""
+    synthetic fixture.
+
+    Also warns (2026-09-05) if the tail window itself still shows real
+    drift -- splits the tail in half and compares the two halves' averages,
+    since real hardware data showed the "settled" window can still be
+    mid-settle for a big effortful pose (see this file's RECORD_SECONDS
+    comment). This is a printed warning, not an automatic retry (unlike
+    run_demo_live.py's MIN_CALIBRATION_TILT_DEG guard) -- read it and judge
+    whether to redo the pose with more hold time."""
     if not samples:
         return None, None
     t_max = samples[-1][0]
@@ -151,6 +180,20 @@ def average_tail(samples, tail_seconds):
     ex = sum(s[2][0] for s in tail) / n
     ey = sum(s[2][1] for s in tail) / n
     ez = sum(s[2][2] for s in tail) / n
+
+    if len(tail) >= 4:
+        t_mid = (tail[0][0] + tail[-1][0]) / 2.0
+        first_half = [s[1] for s in tail if s[0] < t_mid]
+        second_half = [s[1] for s in tail if s[0] >= t_mid]
+        if first_half and second_half:
+            fh = [sum(v[i] for v in first_half) / len(first_half) for i in range(3)]
+            sh = [sum(v[i] for v in second_half) / len(second_half) for i in range(3)]
+            drift = max(abs(sh[i] - fh[i]) for i in range(3))
+            if drift > 0.05:
+                print(f"  Warning: shoulder raw was still drifting during this recording's settled part "
+                      f"(first half vs second half differ by up to {drift:.3f} g): the pose may not have been held "
+                      f"still. Consider re-recording and holding the pose longer.")
+
     return (sx, sy, sz), (ex, ey, ez)
 
 
@@ -201,7 +244,22 @@ def main():
         for rep in range(done, args.repeats):
             label = f"{name} ({rep + 1}/{args.repeats})" if args.repeats > 1 else name
             print(f"=== {label} ===")
-            print("Bring the arm back: hanging, elbow straight. Press Enter when ready.")
+            # 2026-09-05: this used to hardcode "hang the arm down" as the universal
+            # return-to-neutral instruction before every pose, which made
+            # sense when POSES[0] (REST) really was "arm hangs down" --
+            # but broke silently once POSES[0] became BASELINE ("arm
+            # straight forward" for the constrained grasp task): every
+            # subsequent pose kept telling the person to hang the arm down
+            # first, contradicting the actual intended baseline. Derived
+            # from POSES[0] itself now instead of a separate hardcoded
+            # string, so it can't drift out of sync with the pose list
+            # again. POSES[0] itself (the reference pose) has no prior
+            # pose to return to, so it skips this line entirely.
+            if name == POSES[0][0]:
+                print(f"Take this pose: \"{instruction}\".")
+            else:
+                print(f"First return to the \"{POSES[0][0]}\" pose ({POSES[0][1]}).")
+            print("Press Enter when ready.")
             input()
             print(f"Starting in 3 s. Next: \"{instruction}\", and hold it until recording ends.")
             for n in (3, 2, 1):
