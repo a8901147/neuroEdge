@@ -777,6 +777,16 @@ int main(void) {
     float shoulder_raw_ax = 0.0f;
     float shoulder_raw_ay = 0.0f;
     float shoulder_raw_az = 0.0f;
+    // Full 3-axis raw shoulder gyro, added 2026-09-05: gy/gz were already
+    // read (as raw_gy/raw_gz below, used by the complementary filter) but
+    // never stored/streamed, and raw_gx wasn't even read at all -- a live
+    // debugging session needed the actual raw 6-axis stream (not just this
+    // file's own post-decode pitch/roll numbers) to tell "the arm really
+    // moved a lot" apart from "the algorithm mis-split a small motion",
+    // and accel alone couldn't settle that.
+    float shoulder_raw_gx = 0.0f;
+    float shoulder_raw_gy = 0.0f;
+    float shoulder_raw_gz = 0.0f;
 
     while (1) {
         // --- IMU: advance whichever reader is currently active every pass
@@ -799,6 +809,7 @@ int main(void) {
             const float raw_ax = (float)be16(&b[0]) / 16384.0f;
             const float raw_ay = (float)be16(&b[2]) / 16384.0f;
             const float raw_az = (float)be16(&b[4]) / 16384.0f;
+            const float raw_gx = (float)be16(&b[8]) / 131.0f * (3.14159265f / 180.0f);
             const float raw_gy = (float)be16(&b[10]) / 131.0f * (3.14159265f / 180.0f);
             const float raw_gz = (float)be16(&b[12]) / 131.0f * (3.14159265f / 180.0f);
 
@@ -806,6 +817,9 @@ int main(void) {
                 shoulder_raw_ax = raw_ax;
                 shoulder_raw_ay = raw_ay;
                 shoulder_raw_az = raw_az;
+                shoulder_raw_gx = raw_gx;
+                shoulder_raw_gy = raw_gy;
+                shoulder_raw_gz = raw_gz;
                 ++shoulder_completions;
                 if (active_reader.consume_needs_rewake()) {
                     ++shoulder_asleep_rewakes;
@@ -1025,6 +1039,17 @@ int main(void) {
                 usart2_send_float(shoulder_raw_ay);
                 usart2_send_string(" shoulder_raw_az=");
                 usart2_send_float(shoulder_raw_az);
+                // shoulder_raw_gx/gy/gz (added 2026-09-05): full raw
+                // gyro, not just the gx/gy pairing the complementary
+                // filter consumes internally -- see the field's own
+                // declaration comment for why a live debugging session
+                // needed this on the wire instead of only accel.
+                usart2_send_string(" shoulder_raw_gx=");
+                usart2_send_float(shoulder_raw_gx);
+                usart2_send_string(" shoulder_raw_gy=");
+                usart2_send_float(shoulder_raw_gy);
+                usart2_send_string(" shoulder_raw_gz=");
+                usart2_send_float(shoulder_raw_gz);
                 usart2_send_string("\r\n");
 
                 if (tick_count % 1000u == 0u) {
