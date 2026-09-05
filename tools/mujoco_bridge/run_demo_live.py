@@ -31,6 +31,7 @@ RuntimeError under plain CPython on macOS.
 """
 
 import argparse
+import json
 import math
 import re
 import sys
@@ -71,6 +72,38 @@ DEFAULT_BAUD = 115200
 # the same rotational direction as thumb_2 in the kinematic chain and
 # confirmed by rendering the full 6-joint grip pose, not assumed -- see
 # the scratch render this change was verified against.
+# 2026-09-05: raw accelerometer noise was being reflected frame-by-frame
+# straight into MuJoCo's ctrl every single physics tick, with no smoothing
+# anywhere in the live tracking loop. First fix tried was an EMA low-pass
+# (CTRL_SMOOTHING_ALPHA blend) -- reduced but didn't fix visible
+# shakiness. Root cause found by the user directly (raw-data-grounded, not
+# guessed): the arm hanging at rest with no muscle tension showed NO shake
+# at all, but flicking the sensor's wire immediately produced visible
+# shaking -- i.e. this isn't hand tremor, it's a loose/marginal physical
+# connection glitching the raw I2C reads whenever the wire is disturbed
+# (same fault class as the earlier frozen-elbow wiring bug in this
+# project). An EMA still lets a single large glitch sample move the output
+# by alpha*glitch in one tick; a hard rate limit is a stronger guarantee
+# regardless of what's causing an implausible jump (bad reading OR genuine
+# fast motion) -- caps how far ctrl can move per tick outright, per the
+# user's explicit ask ("regardless of the cause, don't let MuJoCo's motion
+# be too steep"). Doesn't fix bad data at the source -- the wiring itself
+# should still get reseated/resecured -- but bounds how it looks either way.
+MAX_CTRL_RATE_RAD_PER_SEC = 6.0
+
+# 2026-09-05: the rate limiter above bounds worst-case per-tick jumps
+# (good for occasional large glitches, e.g. the wire-flick spike), but
+# doesn't reduce continuous small jitter every tick the way a low-pass
+# does -- if the raw signal wobbles a little on EVERY sample, the rate
+# limiter just tracks that wobble at its capped speed instead of
+# smoothing it away. Re-adding an EMA, but this time on the RAW sensor
+# signal (shoulder accel + decoded elbow angle) BEFORE it goes through
+# oblique_decompose_scaled/the ctrl mapping, not on the already-mapped
+# ctrl output like the first attempt -- filtering closer to the actual
+# noise source. Runs alongside the rate limiter, not instead of it: they
+# guard against two different kinds of bad signal.
+RAW_SMOOTHING_ALPHA = 0.03
+
 GRIP_SCALE = 0.6
 GRIP_ACTUATORS = {
     "left_hand_thumb_1_joint": 1.0472,
@@ -114,6 +147,23 @@ SHOULDER_PITCH_ACTUATOR = "left_shoulder_pitch_joint"
 # +2.6704rad backward ceiling, so the real anatomy is the binding limit
 # there, not the hardware.
 SHOULDER_PITCH_RANGE = (-3.0892, 1.0472)
+
+# 2026-09-05, reverted: the constrained-envelope task's calibration
+# baseline briefly moved from "arm hangs at side" to "arm straight
+# forward" (which needed a -1.4784rad offset here, since ctrl=0 is fixed
+# by this MJCF model's own joint definition as hang-down and doesn't move
+# just because the real-world reference did). Baseline has since moved
+# BACK to hang-down -- real hardware data (log_raw_imu.py's twist-check
+# capture) showed that a pure horizontal left/right shoulder sweep barely
+# changes the raw accelerometer reading at all (rotating about an axis too
+# close to gravity-parallel to be observable by a single accelerometer),
+# which made the old forward-reach baseline's LEFT_A calibration pose
+# nearly degenerate. Adding a deliberate thumb-up/thumb-down twist to the
+# LEFT/RIGHT reach fixed that (real Delta ay ~0.4g on the shoulder sensor,
+# well above noise), but that twist is easiest to execute cleanly starting
+# from a hang-down arm, not a forward-reaching one -- hence reverting the
+# baseline. ctrl=0 (hang-down) now matches BASELINE again with no offset
+# needed, same as before the 2026-09-05 forward-reach pivot.
 
 SHOULDER_ROLL_ACTUATOR = "left_shoulder_roll_joint"
 # 2026-09-02: widened from (-0.5, 0.8), same reasoning as
@@ -173,10 +223,19 @@ LINE_RE = re.compile(
 # landing almost entirely on shoulder_roll instead of shoulder_pitch, to
 # let the CURRENT physical mount's raw axes be measured directly (the
 # firmware's own prescribed fix method) instead of guessing at a new remap.
+#
+# shoulder_raw_gx/gy/gz added 2026-09-05: a live debugging session needed
+# the actual raw gyro (angular velocity), not just accel, to tell "the arm
+# really moved a lot" apart from "the algorithm mis-split a small motion"
+# when only looking at this script's own post-decode pitch/roll numbers
+# wasn't convincing enough on its own.
 SHOULDER_RAW_RE = re.compile(
     r"shoulder_raw_ax=(?P<shoulder_raw_ax>[-\d.eE+]+) "
     r"shoulder_raw_ay=(?P<shoulder_raw_ay>[-\d.eE+]+) "
-    r"shoulder_raw_az=(?P<shoulder_raw_az>[-\d.eE+]+)"
+    r"shoulder_raw_az=(?P<shoulder_raw_az>[-\d.eE+]+) "
+    r"shoulder_raw_gx=(?P<shoulder_raw_gx>[-\d.eE+]+) "
+    r"shoulder_raw_gy=(?P<shoulder_raw_gy>[-\d.eE+]+) "
+    r"shoulder_raw_gz=(?P<shoulder_raw_gz>[-\d.eE+]+)"
 )
 
 # elbow_raw_ax/ay/az -- always sent (not just diagnostic), same as
@@ -298,6 +357,28 @@ def oblique_decompose(basis, accel_raw):
     return fwd, abd
 
 
+def oblique_decompose_scaled(basis, accel_raw):
+    """Fixes a real overshoot in oblique_decompose()'s "coefficient times
+    its calibration pose's own tilt" scaling: exact AT that pose, but for
+    an off-axis reading it can badly overshoot the real angle (found on
+    real hardware 2026-09-05: pitch_equiv/roll_equiv growing past +-3rad --
+    impossible for a real shoulder -- during ordinary live tracking; also
+    found earlier, offline, in a real ~16deg ELBOW_FLEXION drift that blew
+    up to ~35deg -- same bug, same fix, this port just didn't exist yet
+    when the C++ side (tilt_azimuth.hpp) got it first). Keeps the oblique
+    decomposition for DIRECTION only, and substitutes the independently-
+    measured real tilt (acos-based, physically exact, can't exceed pi) for
+    MAGNITUDE, so total output magnitude can never exceed the real tilt."""
+    accel = _normalize3(accel_raw)
+    dot_ref = clamp(_dot3(accel, basis["ref"]), -1.0, 1.0)
+    tilt = math.acos(dot_ref)
+    fwd, abd = oblique_decompose(basis, accel_raw)
+    mag = math.hypot(fwd, abd)
+    if mag < 1e-6:
+        return 0.0, 0.0
+    return tilt * fwd / mag, tilt * abd / mag
+
+
 class Tee:
     """Mirrors writes to multiple streams -- used to send every existing
     print() call (unchanged at each call site) to both the terminal and a
@@ -348,6 +429,9 @@ class LatestSample:
         self.shoulder_raw_ax = None
         self.shoulder_raw_ay = None
         self.shoulder_raw_az = None
+        self.shoulder_raw_gx = None
+        self.shoulder_raw_gy = None
+        self.shoulder_raw_gz = None
         self.elbow_raw_ax = None
         self.elbow_raw_ay = None
         self.elbow_raw_az = None
@@ -382,6 +466,16 @@ class LatestSample:
     def snapshot_shoulder_raw(self):
         with self._lock:
             return self.shoulder_raw_ax, self.shoulder_raw_ay, self.shoulder_raw_az
+
+    def update_shoulder_raw_gyro(self, gx, gy, gz):
+        with self._lock:
+            self.shoulder_raw_gx = gx
+            self.shoulder_raw_gy = gy
+            self.shoulder_raw_gz = gz
+
+    def snapshot_shoulder_raw_gyro(self):
+        with self._lock:
+            return self.shoulder_raw_gx, self.shoulder_raw_gy, self.shoulder_raw_gz
 
     def update_elbow_raw(self, ax, ay, az):
         with self._lock:
@@ -493,6 +587,11 @@ def reader_thread_main(ser, latest):
                             float(raw_match.group("shoulder_raw_ay")),
                             float(raw_match.group("shoulder_raw_az")),
                         )
+                        latest.update_shoulder_raw_gyro(
+                            float(raw_match.group("shoulder_raw_gx")),
+                            float(raw_match.group("shoulder_raw_gy")),
+                            float(raw_match.group("shoulder_raw_gz")),
+                        )
                     elbow_raw_match = ELBOW_RAW_RE.search(line)
                     if elbow_raw_match:
                         latest.update_elbow_raw(
@@ -561,6 +660,22 @@ def main():
         help="also append all terminal output to this file (tee-style), for sessions too "
              "long to paste in full",
     )
+    parser.add_argument(
+        "--calibration-file", type=Path,
+        default=REPO_ROOT / "tools" / "mujoco_bridge" / "shoulder_calibration.json",
+        help="where to save the interactive shoulder calibration (BASELINE/FORWARD/LEFT_TWIST/"
+             "RIGHT_TWIST raw vectors + elbow zero) after capturing it, or load it from when "
+             "--skip-calibration is passed.",
+    )
+    parser.add_argument(
+        "--skip-calibration", action="store_true",
+        help="skip the interactive BASELINE/FORWARD/LEFT_TWIST/RIGHT_TWIST prompts and load a "
+             "previously-saved calibration from --calibration-file instead. Only valid if the IMU "
+             "mount/strap hasn't changed since that calibration was captured -- the raw-vector-to-"
+             "real-pose mapping is specific to how the sensor happens to be strapped on that "
+             "session (see the calibration comment below), so re-run without this flag after "
+             "re-mounting or re-strapping either sensor.",
+    )
     args = parser.parse_args()
 
     if not SCENE_XML.exists():
@@ -578,66 +693,238 @@ def main():
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
     reader.start()
 
-    # Shoulder calibration: 3 poses (REST, FORWARD_RAISE, ABDUCTION_LEFT),
-    # each averaged over a settle+hold window -- replaces the old single-
-    # pose "zero" capture (git history) now that the shoulder is decoded
-    # via oblique_decompose() above instead of subtracting a zero reference
-    # from firmware's ComplementaryFilter output. Elbow keeps the same
-    # zero-offset approach as before (firmware's dot-product elbow_bend has
-    # neither of the problems that drove this shoulder change), captured
-    # during the REST hold alongside the shoulder reading.
+    # Shoulder calibration: 3 poses feed the oblique basis, each averaged
+    # over a settle+hold window -- replaces the old single-pose "zero"
+    # capture (git history) now that the shoulder is decoded via
+    # oblique_decompose() above instead of subtracting a zero reference
+    # from firmware's ComplementaryFilter output. Which 3 real poses fill
+    # the 3 slots has changed over time (REST/FORWARD_RAISE/ABDUCTION_LEFT
+    # for the original full-ROM task; briefly BASELINE/DOWN/LEFT_A for a
+    # forward-reach-baseline constrained task; now BASELINE/FORWARD/
+    # LEFT_TWIST -- see the calibration calls below for why) -- the
+    # function itself doesn't care, only real distinct captured directions
+    # matter. Elbow keeps the same zero-offset approach as before
+    # (firmware's dot-product elbow_bend has neither of the problems that
+    # drove this shoulder change), captured during the BASELINE hold
+    # alongside the shoulder reading.
     #
-    # Averaging window (not a single instantaneous read): measured directly
-    # against real hardware (raw_capture2.py, 2026-08-29) that an arm
-    # someone is actively trying to hold still still drifts ~0.2-0.27rad
-    # over several seconds (hand tremor, not sensor noise) -- a fixed
-    # window absorbs that without needing the reading to fully stop
-    # changing, which never converges in practice.
-    def _capture_window(seconds=2.0):
-        raw_window = []
-        elbow_window = []
-        deadline = time.monotonic() + seconds
+    # Record for RECORD_SECONDS but only average the last SETTLE_TAIL_SECONDS
+    # -- same as log_raw_imu.py's record_pose()/average_tail(), and for the
+    # same reason: the 3/2/1 countdown ending is not the same instant as
+    # "the arm has actually finished moving and settled", especially for a
+    # bigger reach like FORWARD_RAISE. An earlier version of this function
+    # averaged the WHOLE window starting immediately after the countdown
+    # (no settle margin at all) -- confirmed too short on real hardware
+    # (2026-09-05): the person was still mid-motion when averaging started,
+    # producing calibration readings measurably smaller/less-separated than
+    # log_raw_imu.py's own captures of the same poses.
+    #
+    # RECORD_SECONDS/SETTLE_TAIL_SECONDS raised again (was 4.0/1.5, kept in
+    # sync with log_raw_imu.py's own constants -- see that file's comment):
+    # real data showed even the 1.5s "settled" tail was still drifting
+    # internally for a deliberately EXAGGERATED calibration pose (PURE_DOWN's
+    # az moved another -0.14 comparing the tail's own first half to its
+    # second half) -- a big effortful reach can keep settling well past 2.5s
+    # in, not just during an initial "moving" phase.
+    RECORD_SECONDS = 6.0
+    SETTLE_TAIL_SECONDS = 2.5
+
+    def _capture_window(seconds=RECORD_SECONDS, tail_seconds=SETTLE_TAIL_SECONDS):
+        # Prints raw_shoulder every ~0.5s during the recording (added
+        # 2026-09-05): a real debugging session had no way to tell "the arm
+        # really didn't move much during this capture" apart from "it moved
+        # plenty but got averaged/timed wrong" -- only the final settled
+        # value was ever visible. This makes the actual trajectory visible
+        # in the log itself, not just the end result.
+        samples = []  # (t, raw_shoulder, elbow)
+        t_start = time.monotonic()
+        deadline = t_start + seconds
+        last_print_t = -1.0
         while time.monotonic() < deadline:
             raw = latest.snapshot_shoulder_raw()
             if raw[0] is not None:
-                raw_window.append(raw)
-            elbow_window.append(latest.snapshot()[3])
-            time.sleep(0.05)
-        n = len(raw_window)
+                t = time.monotonic() - t_start
+                samples.append((t, raw, latest.snapshot()[3]))
+                if t - last_print_t >= 0.5:
+                    print(f"    t={t:4.1f}s raw_shoulder=({raw[0]:+.3f},{raw[1]:+.3f},{raw[2]:+.3f})")
+                    last_print_t = t
+            time.sleep(0.02)
+        t_max = samples[-1][0]
+        tail = [s for s in samples if s[0] >= t_max - tail_seconds]
+        if not tail:
+            tail = samples[-5:]
+        n = len(tail)
         raw_avg = (
-            sum(w[0] for w in raw_window) / n,
-            sum(w[1] for w in raw_window) / n,
-            sum(w[2] for w in raw_window) / n,
+            sum(s[1][0] for s in tail) / n,
+            sum(s[1][1] for s in tail) / n,
+            sum(s[1][2] for s in tail) / n,
         )
-        elbow_avg = sum(elbow_window) / len(elbow_window)
+        elbow_avg = sum(s[2] for s in tail) / n
+
+        # Warns (2026-09-05) if the tail window itself still shows real
+        # drift -- see RECORD_SECONDS's comment above for why a big
+        # effortful pose can still be mid-settle this far in. Printed only,
+        # not an automatic retry (unlike MIN_CALIBRATION_TILT_DEG's guard
+        # below) -- read it and judge whether to redo with more hold time.
+        if len(tail) >= 4:
+            t_mid = (tail[0][0] + tail[-1][0]) / 2.0
+            first_half = [s[1] for s in tail if s[0] < t_mid]
+            second_half = [s[1] for s in tail if s[0] >= t_mid]
+            if first_half and second_half:
+                fh = [sum(v[i] for v in first_half) / len(first_half) for i in range(3)]
+                sh = [sum(v[i] for v in second_half) / len(second_half) for i in range(3)]
+                drift = max(abs(sh[i] - fh[i]) for i in range(3))
+                if drift > 0.05:
+                    print(f"  警告:這段錄製的『穩定期』內部,shoulder raw 還在漂移"
+                          f"(前半段 vs 後半段最大差異 {drift:.3f}g)——這個姿勢可能還沒真的定住,"
+                          f"考慮重錄、保持動作更久再結束。")
+
         return raw_avg, elbow_avg
+
+    # Interactive per-pose calibration -- press Enter when actually in
+    # position, then a visible 3/2/1 countdown before the capture window
+    # starts, same pattern as log_raw_imu.py's proven interactive flow.
+    # The earlier version of this calibration just printed an instruction
+    # and slept a fixed 2s regardless of whether the person was actually
+    # ready -- with no confirmation step, a slow transition (or a chat-
+    # paced back-and-forth) meant the capture window could start before
+    # the arm ever got there, silently baking a wrong reading into the
+    # whole session's calibration basis.
+    # min_tilt_deg/ref_raw: automatic retry guard against a too-small
+    # calibration pose, added 2026-09-05 after DOWN/LEFT_A came out at
+    # 1.8-9.2deg from BASELINE four separate real-hardware attempts in a
+    # row despite the instruction already saying "exaggerate this" --
+    # relying on the person to notice the printed tilt themselves and
+    # manually redo clearly wasn't reliable enough. Loops the SAME prompt
+    # instead of proceeding with an almost-degenerate basis (see the
+    # comment above this function's call sites for why that basis
+    # amplifies ordinary hand-tremor noise into large, unstable output).
+    def _calibrate_pose(instruction, ref_raw=None, min_tilt_deg=None):
+        while True:
+            print(instruction)
+            print("準備好後按 Enter。")
+            input()
+            print(f"3 秒後開始 -- 請保持住直到錄製結束(共 {RECORD_SECONDS:.0f} 秒,前段是移動時間,"
+                  f"只有最後 {SETTLE_TAIL_SECONDS:.1f} 秒會拿來平均)。")
+            for n in (3, 2, 1):
+                print(f"  {n}...", flush=True)
+                time.sleep(1.0)
+            print("開始錄製!請維持姿勢。")
+            result = _capture_window()
+            if ref_raw is None or min_tilt_deg is None:
+                return result
+            raw, _ = result
+            ref_unit = _normalize3(ref_raw)
+            raw_unit = _normalize3(raw)
+            tilt_deg = math.degrees(math.acos(clamp(_dot3(ref_unit, raw_unit), -1.0, 1.0)))
+            if tilt_deg >= min_tilt_deg:
+                print(f"  角度足夠(tilt={tilt_deg:.1f}deg >= {min_tilt_deg:.0f}deg),採用這次錄製。\n")
+                return result
+            print(f"  角度太小(tilt={tilt_deg:.1f}deg,需要 >= {min_tilt_deg:.0f}deg)——"
+                  f"這個角度離基準點太近,校正基底會不穩定,請重來一次,這次動作要更誇張。\n")
 
     while not latest.is_ready():
         time.sleep(0.05)
     while latest.snapshot_shoulder_raw()[0] is None:
         time.sleep(0.05)
 
-    print("Calibrating shoulder -- REST: get the arm down at your side, elbow "
-          "straight, now (2s to get in position, then ~2s of averaging)...")
-    time.sleep(2.0)  # time to get in position, not a stability guarantee
-    rest_raw, zero_elbow = _capture_window(2.0)
+    # 2026-09-05, second pass: calibration baseline moved back to "arm
+    # hangs at side" (see SHOULDER_PITCH_FORWARD_OFFSET's comment above).
+    # FORWARD takes the old fwd slot (pitch axis: hang-down <-> forward
+    # reach). LEFT_TWIST takes the abd slot (roll axis) instead of the old
+    # LEFT_A -- a real capture via log_raw_imu.py (raw_imu_twist_check.json)
+    # showed a plain horizontal left/right sweep barely changes shoulder_raw
+    # at all (rotating about an axis too close to gravity-parallel for a
+    # single accelerometer to see), but adding a deliberate thumb-up twist
+    # to the same reach produced a real, large, clearly separable signal
+    # (shoulder ay: +0.471 with twist vs +0.055 without, for the same "arm
+    # swung left" target -- a 0.42g difference, far above the 0.05g noise/
+    # drift floor used elsewhere in this project). RIGHT_TWIST (mirror:
+    # thumb-down) is captured too but NOT fed into make_oblique_basis() --
+    # it's a held-out validation check instead, printed below, confirming
+    # the basis built from LEFT_TWIST alone also correctly recognizes the
+    # opposite-side motion.
+    # Each step below explicitly says "回到 BASELINE 再做" -- see git
+    # history (the DOWN/LEFT_A version of this comment) for why an implicit
+    # "start from wherever you happen to be" produced an almost-degenerate
+    # basis once; kept here even though FORWARD/LEFT_TWIST are big,
+    # unambiguous motions less likely to suffer from it.
+    # 20deg minimum: comfortably above real hand-tremor-scale noise
+    # (measured elsewhere in this project at a few degrees) and still
+    # well within a real shoulder's comfortable ROM in either direction.
+    MIN_CALIBRATION_TILT_DEG = 20.0
 
-    print("FORWARD_RAISE: raise the arm forward to the highest comfortable "
-          "point, now (2s to get in position, then ~2s of averaging)...")
-    time.sleep(2.0)
-    fwd_raw, _ = _capture_window(2.0)
+    # --skip-calibration (2026-09-05): re-doing all 4 poses every single
+    # run got tedious once the pipeline itself was already trusted -- load
+    # a previously-saved capture instead of prompting. Only valid as long
+    # as the physical strap/mount hasn't changed, since these are raw
+    # vectors specific to that mounting (see the big comment above this
+    # block) -- NOT re-verified against anything live, just trusted at
+    # face value, so re-run without this flag after any re-mount/re-strap.
+    if args.skip_calibration:
+        if not args.calibration_file.exists():
+            sys.exit(f"--skip-calibration passed but {args.calibration_file} doesn't exist -- "
+                      f"run once without --skip-calibration first to create it.")
+        with open(args.calibration_file) as f:
+            saved = json.load(f)
+        baseline_raw = tuple(saved["baseline_raw"])
+        forward_raw = tuple(saved["forward_raw"])
+        left_twist_raw = tuple(saved["left_twist_raw"])
+        right_twist_raw = tuple(saved["right_twist_raw"])
+        zero_elbow = saved["zero_elbow"]
+        print(f"--skip-calibration: loaded shoulder/elbow calibration from {args.calibration_file} "
+              f"(captured {saved.get('captured_at', 'unknown time')}) -- not re-verified against "
+              f"the current mount, only trusted at face value.")
+    else:
+        baseline_raw, zero_elbow = _calibrate_pose(
+            "Calibrating shoulder -- BASELINE: 請把手臂自然垂下,手肘打直。")
 
-    print("ABDUCTION_LEFT: raise the arm out to the LEFT side, now (2s to "
-          "get in position, then ~2s of averaging)...")
-    time.sleep(2.0)
-    abd_raw, _ = _capture_window(2.0)
+        forward_raw, _ = _calibrate_pose(
+            "FORWARD: 先回到 BASELINE(垂下),然後手肘打直,手臂往前伸直到底,手腕不要轉。",
+            ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
 
-    shoulder_basis = make_oblique_basis(rest_raw, fwd_raw, abd_raw)
-    print(f"Shoulder calibrated: REST=({rest_raw[0]:+.3f},{rest_raw[1]:+.3f},{rest_raw[2]:+.3f}) "
-          f"FORWARD_RAISE=({fwd_raw[0]:+.3f},{fwd_raw[1]:+.3f},{fwd_raw[2]:+.3f}) "
+        left_twist_raw, _ = _calibrate_pose(
+            "LEFT_TWIST: 先回到 BASELINE(垂下),然後手肘打直,手臂往左甩到底,"
+            "同時大拇指轉朝上。",
+            ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
+
+        right_twist_raw, _ = _calibrate_pose(
+            "RIGHT_TWIST(驗證用,不會進入校正基底): 先回到 BASELINE(垂下),然後手肘打直,"
+            "手臂往右甩到底,同時大拇指轉朝下。",
+            ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
+
+        args.calibration_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.calibration_file, "w") as f:
+            json.dump({
+                "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "baseline_raw": baseline_raw,
+                "forward_raw": forward_raw,
+                "left_twist_raw": left_twist_raw,
+                "right_twist_raw": right_twist_raw,
+                "zero_elbow": zero_elbow,
+            }, f, indent=2)
+        print(f"Calibration saved to {args.calibration_file} -- next run can pass "
+              f"--skip-calibration to reuse it instead of re-prompting.")
+
+    shoulder_basis = make_oblique_basis(baseline_raw, forward_raw, left_twist_raw)
+    print(f"Shoulder calibrated: BASELINE=({baseline_raw[0]:+.3f},{baseline_raw[1]:+.3f},{baseline_raw[2]:+.3f}) "
+          f"FORWARD=({forward_raw[0]:+.3f},{forward_raw[1]:+.3f},{forward_raw[2]:+.3f}) "
           f"[tilt={math.degrees(shoulder_basis['tilt_fwd']):.1f}deg] "
-          f"ABDUCTION_LEFT=({abd_raw[0]:+.3f},{abd_raw[1]:+.3f},{abd_raw[2]:+.3f}) "
+          f"LEFT_TWIST=({left_twist_raw[0]:+.3f},{left_twist_raw[1]:+.3f},{left_twist_raw[2]:+.3f}) "
           f"[tilt={math.degrees(shoulder_basis['tilt_abd']):.1f}deg]  elbow zero={zero_elbow:.3f}")
+
+    # Validation-only check (2026-09-05): RIGHT_TWIST was never fed into
+    # make_oblique_basis() above -- decode it through the resulting basis
+    # anyway and print the result. Expect roll_equiv here to come out
+    # negative (opposite side from LEFT_TWIST, which the basis defines as
+    # positive) and reasonably close in magnitude to tilt_abd -- if it
+    # doesn't, LEFT_TWIST/RIGHT_TWIST aren't as mirror-symmetric on this
+    # body as the log_raw_imu.py capture suggested, and the basis may need
+    # rebuilding from an average of both sides instead of LEFT_TWIST alone.
+    _right_pitch_check, _right_roll_check = oblique_decompose_scaled(shoulder_basis, right_twist_raw)
+    print(f"  (validation) RIGHT_TWIST decodes to pitch_equiv={_right_pitch_check:+.3f} "
+          f"roll_equiv={_right_roll_check:+.3f} rad -- expect roll_equiv negative, "
+          f"magnitude near {shoulder_basis['tilt_abd']:.3f} rad if left/right are symmetric")
 
     model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
     data = mujoco.MjData(model)
@@ -663,6 +950,19 @@ def main():
     last_status_key = None  # edge-triggered the same way, for the [SENSORS] block below
     last_status_print_time = 0.0
 
+    # Rate-limited ctrl state for the final ctrl values -- see
+    # MAX_CTRL_RATE_RAD_PER_SEC's comment above. None until the first tick, so
+    # the very first frame snaps straight to its target instead of easing
+    # up from an arbitrary 0.0 start.
+    smoothed_pitch_ctrl = None
+    smoothed_roll_ctrl = None
+    smoothed_elbow_ctrl = None
+
+    # Raw-domain EMA state -- see RAW_SMOOTHING_ALPHA's comment. None until
+    # the first tick, same reasoning as the rate-limited state above.
+    smoothed_shoulder_raw = None
+    smoothed_elbow_raw_scalar = None
+
     try:
         with mujoco.viewer.launch_passive(model, data) as viewer:
             step_count = 0
@@ -672,6 +972,21 @@ def main():
                 grip, old_shoulder_pitch, old_shoulder_roll, elbow = latest.snapshot()
                 shoulder_raw = latest.snapshot_shoulder_raw()
                 is_stale, port_error = latest.status()
+
+                # Raw-domain EMA (see RAW_SMOOTHING_ALPHA's comment) --
+                # smooths the shoulder accel vector and the decoded elbow
+                # angle BEFORE either goes into oblique_decompose_scaled or
+                # the ctrl mapping below, so continuous per-tick noise gets
+                # averaged out instead of just rate-capped downstream.
+                if smoothed_shoulder_raw is None:
+                    smoothed_shoulder_raw = shoulder_raw
+                    smoothed_elbow_raw_scalar = elbow
+                else:
+                    smoothed_shoulder_raw = tuple(
+                        smoothed_shoulder_raw[i] + RAW_SMOOTHING_ALPHA * (shoulder_raw[i] - smoothed_shoulder_raw[i])
+                        for i in range(3)
+                    )
+                    smoothed_elbow_raw_scalar += RAW_SMOOTHING_ALPHA * (elbow - smoothed_elbow_raw_scalar)
 
                 if port_error is not None:
                     sys.exit(f"\nserial port failed: {port_error}\n"
@@ -691,26 +1006,46 @@ def main():
 
                 for name, upper_range in GRIP_ACTUATORS.items():
                     data.ctrl[grip_actuator_ids[name]] = grip * GRIP_SCALE * upper_range
-                # oblique_decompose gives dimensionless fwd/abd coefficients
-                # (1.0 = "as far as the calibration pose"); scale each by
-                # its OWN calibration pose's real tilt angle to get a
-                # radian-equivalent, then clamp the same way the old
-                # zero-referenced decode did. Negated for pitch -- see
-                # SHOULDER_PITCH_RANGE's comment: positive
-                # data (flexion/forward) needs NEGATIVE ctrl in this
-                # joint's frame. No wrap_angle_delta needed here (unlike
-                # the old ComplementaryFilter-decoded values this replaces):
-                # oblique_decompose is a linear projection with no atan2
-                # branch cut to wrap around.
+                # oblique_decompose_scaled gives a radian-equivalent whose
+                # magnitude is bounded by the real measured tilt (see its
+                # own docstring -- the plain "coefficient times the
+                # calibration pose's own tilt" version overshot badly for
+                # off-axis readings, confirmed on real hardware). No
+                # wrap_angle_delta needed here (unlike the old
+                # ComplementaryFilter-decoded values this replaces): this
+                # is a linear projection + acos, no atan2 branch cut to
+                # wrap around.
                 # shoulder_raw can't still be None here: main() already
                 # blocked until the first raw reading arrived, before
                 # calibration, and LatestSample never resets it afterward.
-                fwd_coeff, abd_coeff = oblique_decompose(shoulder_basis, shoulder_raw)
-                pitch_equiv = fwd_coeff * shoulder_basis["tilt_fwd"]
-                roll_equiv = abd_coeff * shoulder_basis["tilt_abd"]
-                data.ctrl[shoulder_pitch_id] = clamp(-pitch_equiv, *SHOULDER_PITCH_RANGE)
-                data.ctrl[shoulder_roll_id] = clamp(roll_equiv, *SHOULDER_ROLL_RANGE)
-                data.ctrl[elbow_id] = clamp(ELBOW_OFFSET - (elbow - zero_elbow), *ELBOW_RANGE)
+                pitch_equiv, roll_equiv = oblique_decompose_scaled(shoulder_basis, smoothed_shoulder_raw)
+                # pitch_equiv is FORWARD-direction again now that BASELINE
+                # is hang-down (see the calibration comment above):
+                # +pitch_equiv means tilting FROM hang-down TOWARD forward
+                # reach, which is real shoulder flexion -- MORE negative
+                # ctrl (SHOULDER_PITCH_RANGE's own comment: negative =
+                # flexion/forward from arm-at-side). Negated here, no
+                # offset needed, since ctrl=0 already IS BASELINE now.
+                target_pitch_ctrl = clamp(-pitch_equiv, *SHOULDER_PITCH_RANGE)
+                target_roll_ctrl = clamp(roll_equiv, *SHOULDER_ROLL_RANGE)
+                target_elbow_ctrl = clamp(ELBOW_OFFSET - (smoothed_elbow_raw_scalar - zero_elbow), *ELBOW_RANGE)
+                # Hard rate limit (see MAX_CTRL_RATE_RAD_PER_SEC's comment)
+                # -- steps toward each target by at most max_ctrl_step per
+                # tick, no matter how far away the target jumped to. Unlike
+                # an EMA blend, this bounds worst-case per-tick movement
+                # directly instead of only reducing its expected size.
+                max_ctrl_step = MAX_CTRL_RATE_RAD_PER_SEC * model.opt.timestep
+                if smoothed_pitch_ctrl is None:
+                    smoothed_pitch_ctrl = target_pitch_ctrl
+                    smoothed_roll_ctrl = target_roll_ctrl
+                    smoothed_elbow_ctrl = target_elbow_ctrl
+                else:
+                    smoothed_pitch_ctrl += clamp(target_pitch_ctrl - smoothed_pitch_ctrl, -max_ctrl_step, max_ctrl_step)
+                    smoothed_roll_ctrl += clamp(target_roll_ctrl - smoothed_roll_ctrl, -max_ctrl_step, max_ctrl_step)
+                    smoothed_elbow_ctrl += clamp(target_elbow_ctrl - smoothed_elbow_ctrl, -max_ctrl_step, max_ctrl_step)
+                data.ctrl[shoulder_pitch_id] = smoothed_pitch_ctrl
+                data.ctrl[shoulder_roll_id] = smoothed_roll_ctrl
+                data.ctrl[elbow_id] = smoothed_elbow_ctrl
 
                 mujoco.mj_step(model, data)
                 # Rendered far less often than stepped (2026-09-02 fix): this
@@ -750,14 +1085,23 @@ def main():
                     raw_ax, raw_ay, raw_az = latest.snapshot_shoulder_raw()
                     raw_str = ("n/a" if raw_ax is None else
                                f"({raw_ax:+.3f},{raw_ay:+.3f},{raw_az:+.3f})")
+                    # Full raw gyro (rad/s), not just accel -- added
+                    # 2026-09-05 so a live debugging session can tell "the
+                    # arm really moved a lot" (large angular velocity)
+                    # apart from "the algorithm mis-split a small motion"
+                    # without having to trust only this file's own post-
+                    # decode pitch_equiv/roll_equiv numbers.
+                    raw_gx, raw_gy, raw_gz = latest.snapshot_shoulder_raw_gyro()
+                    gyro_str = ("n/a" if raw_gx is None else
+                                f"({raw_gx:+.3f},{raw_gy:+.3f},{raw_gz:+.3f})")
                     e_raw_ax, e_raw_ay, e_raw_az = latest.snapshot_elbow_raw()
                     e_raw_str = ("n/a" if e_raw_ax is None else
                                  f"({e_raw_ax:+.3f},{e_raw_ay:+.3f},{e_raw_az:+.3f})")
-                    print(f"[CORR] oblique: fwd={fwd_coeff:+.3f} abd={abd_coeff:+.3f} "
-                          f"(pitch_equiv={pitch_equiv:+.3f} roll_equiv={roll_equiv:+.3f} rad)  "
+                    print(f"[CORR] oblique: pitch_equiv={pitch_equiv:+.3f} roll_equiv={roll_equiv:+.3f} rad  "
                           f"old_decode(unzeroed): shoulder_pitch={old_shoulder_pitch:+.3f} "
                           f"shoulder_roll={old_shoulder_roll:+.3f}  elbow={elbow - zero_elbow:+.3f}  |  "
-                          f"raw_shoulder(ax,ay,az)={raw_str}  raw_elbow(ax,ay,az)={e_raw_str}  |  "
+                          f"raw_shoulder_accel(ax,ay,az)={raw_str}  raw_shoulder_gyro(gx,gy,gz)={gyro_str} rad/s  "
+                          f"raw_elbow_accel(ax,ay,az)={e_raw_str}  |  "
                           f"ctrl: pitch={data.ctrl[shoulder_pitch_id]:+.3f} roll={data.ctrl[shoulder_roll_id]:+.3f} "
                           f"elbow={data.ctrl[elbow_id]:+.3f}  |  "
                           f"mujoco wrist(front,left,up)=({rel[0]:+.3f},{rel[1]:+.3f},{rel[2]:+.3f})m")
