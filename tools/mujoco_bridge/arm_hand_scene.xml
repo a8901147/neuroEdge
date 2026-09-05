@@ -457,15 +457,47 @@
   
 
     <!-- static pedestal: without support the object free-falls to the floor
-         faster than the reach animation takes to arrive. Position re-checked
-         against the new full-body mannequin's actual left-hand reach (see
-         the render-test that accompanied this change), not just carried
-         over from the arm-only iteration. -->
-    <body name="pedestal" pos="-0.05 -0.35 0.5">
+         faster than the reach animation takes to arrive.
+
+         2026-09-05 REPOSITIONED: the previous position (-0.05,-0.35,0.5 for
+         the pedestal) put the object 0.49m to the RIGHT of the left
+         shoulder (world -Y is the wearer's right, see this file's Sensor ->
+         DOF mapping note) -- that needs real shoulder adduction (swinging
+         the left arm across the body) far beyond SHOULDER_ROLL_RANGE's real
+         -0.8727rad (~50deg) adduction limit (run_demo_live.py's own
+         comment: real adduction ROM is only 0-50deg). Confirmed genuinely
+         unreachable, not assumed: a grid search over the actual actuator
+         ranges (pitch/roll/elbow, plus yaw for good measure even though
+         it's fixed at 0 in real operation) settled via real mj_step (not
+         just mj_forward) never got the wrist closer than ~0.37m to the old
+         object position -- an order of magnitude too far for a 0.025m-
+         radius ball. The old position's own comment claimed it was
+         "re-checked against the new mannequin's reach", which likely only
+         checked distance/proportions, not this ROM constraint specifically
+         (SHOULDER_ROLL_RANGE was tightened to real anatomical limits the
+         same day). New position found the same way, in reverse: swept a
+         grid of real, comfortable (non-boundary) pitch/roll/elbow values,
+         drove the actual GRIP_ACTUATORS to a closed-fist pose, and used the
+         resulting thumb/middle/index fingertip centroid (where a grasped
+         object actually ends up) as the target -- not the wrist joint
+         itself, which sits behind the closed fingers.
+
+         2026-09-05 MOVED AGAIN: the position above was reachable but nearly
+         centered on the body (only 0.19m left of the shoulder) rather than
+         a clear front-LEFT reach the user asked for. Re-ran the same
+         settled-mj_step search biased toward a real, comfortable abduction
+         angle (roll=+0.80, well short of SHOULDER_ROLL_RANGE's +2.2515rad
+         ceiling) -- fingertip centroid came out at (0.051,0.332,0.99),
+         0.45m in front and 0.19m -> 0.45m further left of the previous
+         spot, still fully within real ROM. REACH_CTRL in
+         grasp_test_common.py / test_grip_kinematics.py was updated to this
+         same (pitch=-1.00, roll=+0.80, elbow=0.90) pose -- keep both in
+         sync if either changes again. -->
+    <body name="pedestal" pos="0.051 0.332 0.935">
       <geom type="box" size="0.03 0.03 0.03" rgba="0.6 0.5 0.4 1"/>
     </body>
 
-    <body name="object" pos="-0.05 -0.35 0.55">
+    <body name="object" pos="0.051 0.332 0.99">
       <freejoint/>
       <geom type="sphere" size="0.025" rgba="0.5 0.7 0.5 1" condim="6" priority="1"
         friction="1.0 0.02 0.005" mass="0.05"/>
