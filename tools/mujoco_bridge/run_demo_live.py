@@ -579,6 +579,26 @@ class LatestSample:
         return stale, port_error
 
 
+def split_lines(buf, chunk):
+    """Appends `chunk` to `buf`, splits out every complete \\r\\n-terminated
+    line, and returns (lines, remaining_buf). A chunk boundary landing
+    mid-line is handled correctly -- the incomplete trailing line stays in
+    the returned buffer for the next call instead of being dropped or
+    decoded early, which is exactly what real serial reads do (pyserial's
+    ser.read(256) has no reason to land on a line boundary). Decoding uses
+    errors="ignore" (matches this function's original inline behavior) so
+    a corrupted byte from a real wire glitch doesn't crash the reader.
+    Extracted 2026-09-06 from reader_thread_main's inline buffer handling
+    so this exact behavior has its own test, independent of needing a real
+    or mocked serial port."""
+    buf = buf + chunk
+    lines = []
+    while b"\r\n" in buf:
+        raw, buf = buf.split(b"\r\n", 1)
+        lines.append(raw.decode("utf-8", errors="ignore"))
+    return lines, buf
+
+
 def reader_thread_main(ser, latest):
     # Read raw bytes and split on the firmware's own \r\n line ending
     # rather than iterating the pyserial object directly -- matches
@@ -598,10 +618,8 @@ def reader_thread_main(ser, latest):
             chunk = ser.read(256)
             if not chunk:
                 continue
-            buf += chunk
-            while b"\r\n" in buf:
-                raw, buf = buf.split(b"\r\n", 1)
-                line = raw.decode("utf-8", errors="ignore")
+            lines, buf = split_lines(buf, chunk)
+            for line in lines:
                 match = LINE_RE.search(line)
                 if match:
                     latest.update(

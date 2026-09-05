@@ -186,6 +186,48 @@ def main():
           f"ELBOW_FLEXION: expected ctrl clearly below straight-arm ELBOW_OFFSET={rdl.ELBOW_OFFSET}, "
           f"got {data.ctrl[elbow_id]:+.3f}")
 
+    # --- Glitch resilience: this session's real "flick the wire and
+    # MuJoCo shakes" finding (PRD.md 2026-09-05) was fixed with
+    # MAX_CTRL_RATE_RAD_PER_SEC + RAW_SMOOTHING_ALPHA, but nothing had
+    # actually injected a bad sample and checked the result -- the
+    # existing unit tests only prove rate_limit_step's own math never
+    # overshoots in isolation, not that a single wild sample mixed into
+    # an otherwise-steady real stream stays bounded once it's flowing
+    # through the whole live loop. ---
+    state = LiveLoopState(shoulder_basis, zero_elbow=BASELINE_ELBOW)
+    max_ctrl_step = rdl.MAX_CTRL_RATE_RAD_PER_SEC * model.opt.timestep
+    hold_pose(model, data, state, BASELINE_RAW, BASELINE_ELBOW, pitch_id, roll_id, elbow_id, n_ticks=500)
+    steady_pitch, steady_roll = state.smoothed_pitch_ctrl, state.smoothed_roll_ctrl
+
+    # One absurd, physically-impossible raw sample (a real wire glitch can
+    # produce anything -- garbage bytes read as if they were a plausible
+    # accel value, not a small perturbation).
+    glitch_pitch, glitch_roll, _ = state.tick((50.0, -50.0, 50.0), BASELINE_ELBOW, max_ctrl_step)
+    pitch_jump = abs(glitch_pitch - steady_pitch)
+    roll_jump = abs(glitch_roll - steady_roll)
+    print(f"GLITCH            steady=({steady_pitch:+.4f},{steady_roll:+.4f})  "
+          f"after 1 glitch tick=({glitch_pitch:+.4f},{glitch_roll:+.4f})  "
+          f"max_allowed_step={max_ctrl_step:.5f}")
+    check(pitch_jump <= max_ctrl_step + 1e-9,
+          f"GLITCH: pitch moved {pitch_jump:.5f} in one tick, more than the "
+          f"{max_ctrl_step:.5f} rate limit should ever allow")
+    check(roll_jump <= max_ctrl_step + 1e-9,
+          f"GLITCH: roll moved {roll_jump:.5f} in one tick, more than the "
+          f"{max_ctrl_step:.5f} rate limit should ever allow")
+
+    # Recovery: back to BASELINE for long enough that both the EMA and the
+    # rate limiter have time to settle again -- confirms the one bad
+    # sample doesn't leave a lasting offset.
+    for _ in range(500):
+        pitch_ctrl, roll_ctrl, elbow_ctrl = state.tick(BASELINE_RAW, BASELINE_ELBOW, max_ctrl_step)
+    print(f"GLITCH recovery   after 500 more ticks=({pitch_ctrl:+.4f},{roll_ctrl:+.4f})")
+    check(abs(pitch_ctrl - steady_pitch) < 0.01,
+          f"GLITCH: pitch didn't recover to steady state ({steady_pitch:+.4f}), "
+          f"still at {pitch_ctrl:+.4f}")
+    check(abs(roll_ctrl - steady_roll) < 0.01,
+          f"GLITCH: roll didn't recover to steady state ({steady_roll:+.4f}), "
+          f"still at {roll_ctrl:+.4f}")
+
     if failures:
         print("\nFAILED:")
         for f in failures:
