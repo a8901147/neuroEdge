@@ -55,23 +55,36 @@ LIFT_SHOULDER_PITCH = -0.40
 
 DEFAULT_BALL_RADIUS = 0.025
 DEFAULT_BALL_FRICTION = "1.0 0.02 0.005"
+DEFAULT_PEDESTAL_POS = (0.051, 0.332, 0.935)
+DEFAULT_OBJECT_POS = (0.051, 0.332, 0.99)
 
 FINGERTIP_BODIES = ["left_hand_thumb_2_link", "left_hand_middle_1_link", "left_hand_index_1_link"]
 
 SYNC_EVERY_N_STEPS = 20
 
 
-def load_model(ball_radius=DEFAULT_BALL_RADIUS, ball_friction=DEFAULT_BALL_FRICTION):
+def _xyz_str(pos):
+    return f"{pos[0]:g} {pos[1]:g} {pos[2]:g}"
+
+
+def load_model(ball_radius=DEFAULT_BALL_RADIUS, ball_friction=DEFAULT_BALL_FRICTION,
+                pedestal_pos=DEFAULT_PEDESTAL_POS, object_pos=DEFAULT_OBJECT_POS):
     """Loads arm_hand_scene.xml, optionally with the grasp object's radius/
-    friction overridden. Substitutes the two exact attribute strings in the
-    XML text (confirmed unique in the file) rather than editing the shared
-    XML on disk -- lets test_grasp_object.py's --ball-radius/--ball-friction
-    flags experiment (per the user's own idea: maybe a smaller/grippier
-    ball is what it takes) without mutating the file every other script in
-    this directory also loads. Writes to a temp file IN this same directory
-    (not /tmp) so the XML's relative meshdir="../../mujoco_menagerie" still
-    resolves; the temp file is only needed during from_xml_path's parse, so
-    it's deleted immediately after, before this function returns.
+    friction/position overridden. Substitutes the exact attribute strings in
+    the XML text (confirmed unique in the file) rather than editing the
+    shared XML on disk -- lets test_grasp_object.py's --ball-radius/
+    --ball-friction flags experiment (per the user's own idea: maybe a
+    smaller/grippier ball is what it takes) without mutating the file every
+    other script in this directory also loads. pedestal_pos/object_pos
+    (added 2026-09-06 for test_grasp_coverage.py) let a caller relocate the
+    whole reach target to test a different direction, the same way
+    arm_hand_scene.xml's own pedestal comment relocated it originally --
+    each (pedestal_pos, object_pos) pair passed in should already be
+    verified reachable via the same real mj_step search method, not guessed.
+    Writes to a temp file IN this same directory (not /tmp) so the XML's
+    relative meshdir="../../mujoco_menagerie" still resolves; the temp file
+    is only needed during from_xml_path's parse, so it's deleted immediately
+    after, before this function returns.
     """
     xml_text = SCENE_XML.read_text()
     changed = False
@@ -88,6 +101,22 @@ def load_model(ball_radius=DEFAULT_BALL_RADIUS, ball_friction=DEFAULT_BALL_FRICT
         new = f'friction="{ball_friction}"'
         if old not in xml_text:
             raise ValueError(f"expected exactly one {old!r} in {SCENE_XML} (the object sphere) -- "
+                              f"file may have changed, update this override logic")
+        xml_text = xml_text.replace(old, new)
+        changed = True
+    if pedestal_pos != DEFAULT_PEDESTAL_POS:
+        old = f'name="pedestal" pos="{_xyz_str(DEFAULT_PEDESTAL_POS)}"'
+        new = f'name="pedestal" pos="{_xyz_str(pedestal_pos)}"'
+        if old not in xml_text:
+            raise ValueError(f"expected exactly one {old!r} in {SCENE_XML} -- "
+                              f"file may have changed, update this override logic")
+        xml_text = xml_text.replace(old, new)
+        changed = True
+    if object_pos != DEFAULT_OBJECT_POS:
+        old = f'name="object" pos="{_xyz_str(DEFAULT_OBJECT_POS)}"'
+        new = f'name="object" pos="{_xyz_str(object_pos)}"'
+        if old not in xml_text:
+            raise ValueError(f"expected exactly one {old!r} in {SCENE_XML} -- "
                               f"file may have changed, update this override logic")
         xml_text = xml_text.replace(old, new)
         changed = True
@@ -143,10 +172,12 @@ def step_and_sync(model, data, viewer, seconds, on_tick=None):
 
 
 def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
-                        lift_seconds=2.0, print_every_seconds=0.3):
-    """Runs: settle at REACH_CTRL with grip=0 -> drive grip from
-    `grip_at_t(t)` (t in seconds since the grip phase started, returns a
-    [0,1] scalar) for `grip_phase_seconds` -> lift (ramp shoulder_pitch to
+                        lift_seconds=2.0, print_every_seconds=0.3,
+                        reach_ctrl=None, verbose=True):
+    """Runs: settle at `reach_ctrl` (defaults to module-level REACH_CTRL)
+    with grip=0 -> drive grip from `grip_at_t(t)` (t in seconds since the
+    grip phase started, returns a [0,1] scalar) for `grip_phase_seconds` ->
+    lift (ramp shoulder_pitch to
     LIFT_SHOULDER_PITCH over `lift_seconds`, holding the last commanded grip
     target) -> report.
 
@@ -157,19 +188,25 @@ def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
     0.05m -- both generous relative to the 0.025m default ball radius, so
     "held" means genuinely still in the hand, not just technically nearby).
     """
+    reach_ctrl = REACH_CTRL if reach_ctrl is None else reach_ctrl
+
+    def _p(*args, **kwargs):
+        if verbose:
+            print(*args, **kwargs)
+
     grip_ids = {name: model.actuator(name).id for name in GRIP_ACTUATORS}
     object_id = model.body("object").id
     pitch_id = model.actuator("left_shoulder_pitch_joint").id
 
-    for name, val in REACH_CTRL.items():
+    for name, val in reach_ctrl.items():
         data.ctrl[model.actuator(name).id] = val
 
-    print("Settling into reach pose (grip=0)...")
+    _p("Settling into reach pose (grip=0)...")
     step_and_sync(model, data, viewer, 1.5)
     centroid = fingertip_centroid(model, data)
     obj_pos = data.xpos[object_id].copy()
-    print(f"  fingertip_centroid={centroid.round(3)}  object={obj_pos.round(3)}  "
-          f"dist={float(_dist(centroid, obj_pos)):.3f}m")
+    _p(f"  fingertip_centroid={centroid.round(3)}  object={obj_pos.round(3)}  "
+       f"dist={float(_dist(centroid, obj_pos)):.3f}m")
 
     last_grip = [0.0]
     last_print = [-999.0]
@@ -179,21 +216,21 @@ def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
         last_grip[0] = grip
         for name, upper_range in GRIP_ACTUATORS.items():
             data.ctrl[grip_ids[name]] = grip * GRIP_SCALE * upper_range
-        if t - last_print[0] >= print_every_seconds:
+        if verbose and t - last_print[0] >= print_every_seconds:
             c = fingertip_centroid(model, data)
             o = data.xpos[object_id]
             print(f"  [GRIP]  t={t:5.2f}s grip={grip:.3f}  object={o.round(3)}  "
                   f"dist_to_fingertips={float(_dist(c, o)):.3f}m")
             last_print[0] = t
 
-    print(f"\n[GRIP PHASE] driving grip for {grip_phase_seconds:.1f}s...")
+    _p(f"\n[GRIP PHASE] driving grip for {grip_phase_seconds:.1f}s...")
     step_and_sync(model, data, viewer, grip_phase_seconds, on_tick=_on_tick_grip)
 
     centroid_before_lift = fingertip_centroid(model, data)
     obj_before_lift = data.xpos[object_id].copy()
     dist_before_lift = float(_dist(centroid_before_lift, obj_before_lift))
-    print(f"\nBefore lift: dist_to_fingertips={dist_before_lift:.3f}m  "
-          f"object_height={obj_before_lift[2]:.3f}m")
+    _p(f"\nBefore lift: dist_to_fingertips={dist_before_lift:.3f}m  "
+       f"object_height={obj_before_lift[2]:.3f}m")
 
     pitch_start = data.ctrl[pitch_id]
     last_print[0] = -999.0
@@ -203,14 +240,14 @@ def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
         data.ctrl[pitch_id] = pitch_start + frac * (LIFT_SHOULDER_PITCH - pitch_start)
         for name, upper_range in GRIP_ACTUATORS.items():
             data.ctrl[grip_ids[name]] = last_grip[0] * GRIP_SCALE * upper_range
-        if t - last_print[0] >= print_every_seconds:
+        if verbose and t - last_print[0] >= print_every_seconds:
             c = fingertip_centroid(model, data)
             o = data.xpos[object_id]
             print(f"  [LIFT]  t={t:5.2f}s  object={o.round(3)}  "
                   f"dist_to_fingertips={float(_dist(c, o)):.3f}m")
             last_print[0] = t
 
-    print(f"\n[LIFT PHASE] raising shoulder_pitch to {LIFT_SHOULDER_PITCH:+.2f} over {lift_seconds:.1f}s...")
+    _p(f"\n[LIFT PHASE] raising shoulder_pitch to {LIFT_SHOULDER_PITCH:+.2f} over {lift_seconds:.1f}s...")
     step_and_sync(model, data, viewer, lift_seconds, on_tick=_on_tick_lift)
     step_and_sync(model, data, viewer, 1.0)  # settle after the lift finishes
 
@@ -220,11 +257,11 @@ def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
     height_drop = float(obj_before_lift[2] - obj_after[2])
 
     held = dist_after < 0.08 and height_drop < 0.05
-    print(f"\nAfter lift: dist_to_fingertips={dist_after:.3f}m  "
-          f"object_height={obj_after[2]:.3f}m  height_drop={height_drop:+.3f}m")
-    print(f"\nVERDICT: {'HELD' if held else 'DROPPED'} "
-          f"(dist_after={dist_after:.3f}m {'<' if dist_after < 0.08 else '>='} 0.08m, "
-          f"height_drop={height_drop:+.3f}m {'<' if height_drop < 0.05 else '>='} 0.05m)")
+    _p(f"\nAfter lift: dist_to_fingertips={dist_after:.3f}m  "
+       f"object_height={obj_after[2]:.3f}m  height_drop={height_drop:+.3f}m")
+    _p(f"\nVERDICT: {'HELD' if held else 'DROPPED'} "
+       f"(dist_after={dist_after:.3f}m {'<' if dist_after < 0.08 else '>='} 0.08m, "
+       f"height_drop={height_drop:+.3f}m {'<' if height_drop < 0.05 else '>='} 0.05m)")
 
     return {
         "object_start_dist": dist_before_lift,
