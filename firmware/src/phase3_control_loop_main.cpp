@@ -61,6 +61,34 @@ static constexpr bool kCalibrationEnabled = false;
 static constexpr float kFallbackThreshold = 2800.0f;
 static constexpr float kOnDuration = 0.15f;
 static constexpr float kOffDuration = 0.15f;
+
+// --- Which sensors THIS session's bench setup actually has wired up
+// (2026-09-07) ---
+// Originally both IMUs were unconditionally required: a failed wake write
+// (PWR_MGMT_1 write never ACKed) called blink_code() -- a real infinite
+// while(1), never returns -- which halted the WHOLE loop before EMG ever
+// ran, since the wake writes happen before the main loop starts. That was
+// fine when every bring-up session had both IMUs connected, but is wrong
+// the moment someone wants to bench-test just the EMG chain (exactly what
+// happened first: real hardware sat there printing nothing at all, for
+// ten seconds, with a perfectly good MyoWare connected, because neither
+// IMU was wired up and the firmware never got past its own boot gate to
+// find out). Set to false for a sensor genuinely absent this session; a
+// wake failure for a sensor still marked true still halts (blink_code) --
+// that's a real wiring fault worth catching loudly, not something to
+// silently downgrade to a warning. Edit + reflash to change which sensors
+// a given bench session needs, same reasoning/pattern as kCalibrationEnabled
+// above (this is bare-metal firmware -- there's no argv to make it a real
+// runtime flag the way tools/mujoco_bridge/run_demo_live.py's
+// --optional-sensors is).
+// Set false<->true here to match whatever's ACTUALLY wired up before each
+// reflash -- currently false/false because the real current bench setup
+// (2026-09-07) is MyoWare-only, neither IMU connected. Flip back to
+// true/true (and reflash) once both IMUs are back on the breadboard, so a
+// real future wiring fault still halts loudly instead of being silently
+// tolerated forever.
+static constexpr bool kRequireShoulderImu = false;
+static constexpr bool kRequireElbowImu = false;
 static constexpr float kSlewRate = 5.0f;
 static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
 static constexpr uint32_t kCalibrationSamples = 3000u;
@@ -650,14 +678,24 @@ int main(void) {
         usart2_send_string("shoulder MPU6050 (0x68) wake write FAILED, code=");
         usart2_send_int(g_wake_result_shoulder);
         usart2_send_string("\r\n");
-        blink_code(9);
+        if constexpr (kRequireShoulderImu) {
+            blink_code(9);
+        } else {
+            usart2_send_string("shoulder IMU marked optional (kRequireShoulderImu=false) "
+                                "-- continuing without it\r\n");
+        }
     }
     g_wake_result_elbow = mpu6050_write_reg_blocking(kElbowImuAddr, 0x6Bu, 0x01u);
     if (g_wake_result_elbow != 0) {
         usart2_send_string("elbow MPU6050 (0x69) wake write FAILED, code=");
         usart2_send_int(g_wake_result_elbow);
         usart2_send_string("\r\n");
-        blink_code(10);
+        if constexpr (kRequireElbowImu) {
+            blink_code(10);
+        } else {
+            usart2_send_string("elbow IMU marked optional (kRequireElbowImu=false) "
+                                "-- continuing without it\r\n");
+        }
     }
 
     float threshold = kFallbackThreshold;
