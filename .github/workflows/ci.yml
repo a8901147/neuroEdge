@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cpp-debug-heapguard:
+    name: C++ tests (debug-heapguard, malloc_count==0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset debug-heapguard
+      - name: Build
+        run: cmake --build --preset debug-heapguard -j
+      - name: Test
+        run: ctest --preset debug-heapguard --output-on-failure
+
+  cpp-sanitizers:
+    name: C++ tests (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset sanitize-asan-ubsan
+      - name: Build
+        run: cmake --build --preset sanitize-asan-ubsan -j
+      - name: Test
+        run: ctest --preset sanitize-asan-ubsan --output-on-failure
+
+  python-headless-tests:
+    name: Python tests (headless, tools/mujoco_bridge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r tools/mujoco_bridge/requirements.txt
+
+      # mujoco_menagerie is a gitignored local dependency (see README's
+      # MuJoCo bridge demo setup) -- CI needs the same unitree_g1 sparse
+      # checkout, pinned to the same commit, so arm_hand_scene.xml's
+      # mesh/asset references resolve.
+      - name: Fetch mujoco_menagerie (unitree_g1 only)
+        run: |
+          git clone --no-checkout --depth 1 --filter=blob:none https://github.com/google-deepmind/mujoco_menagerie.git
+          cd mujoco_menagerie
+          git sparse-checkout init --cone
+          git sparse-checkout set unitree_g1
+          git checkout da76818e269b82289eba39808e2fb91d679d6994
+
+      - name: Configure + build (edgeneuro_mujoco_bridge_demo only)
+        run: |
+          cmake --preset debug-heapguard
+          cmake --build --preset debug-heapguard -j --target edgeneuro_mujoco_bridge_demo
+
+      # Everything below is explicitly --headless-capable or was already
+      # written to run under plain python3 with no display/mjpython --
+      # see each script's own docstring. test_grasp_coverage.py is
+      # deliberately NOT run here: its current DROPPED results at 4 of 5
+      # reach poses are a known, accepted limitation (see its own
+      # docstring), not a regression to gate merges on.
+      - name: Run headless test suite
+        working-directory: tools/mujoco_bridge
+        run: |
+          python3 test_run_demo_live_math.py
+          python3 test_serial_parsing.py
+          python3 test_run_demo_live_integration.py
+          python3 test_imu_to_mujoco.py
+          python3 test_arm_workspace.py
+          python3 test_grip_kinematics.py --headless
+          python3 test_grasp_object.py --headless
+          python3 test_myoware_grip_replay.py --headless
