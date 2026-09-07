@@ -741,7 +741,32 @@ def main():
              "session (see the calibration comment below), so re-run without this flag after "
              "re-mounting or re-strapping either sensor.",
     )
+    parser.add_argument(
+        "--optional-sensors", default="",
+        help="comma-separated subset of {shoulder,elbow,emg} allowed to be absent this run "
+             "without crashing (default: empty -- every sensor required, this script's original "
+             "behavior). This is an opt-in relaxation, not real hardware detection: a sensor NOT "
+             "listed here is still assumed present, and this script may still hang/crash if it "
+             "actually isn't. 'shoulder' skips the FORWARD/LEFT_TWIST/RIGHT_TWIST calibration "
+             "poses (there's nothing real to calibrate) and holds pitch/roll fixed at 0 "
+             "(BASELINE/hang-down) for the whole session instead of live-tracking -- without this, "
+             "an absent shoulder IMU's raw reading stays the zero vector the firmware initializes "
+             "it to, and normalizing a zero vector during calibration is a real divide-by-zero, "
+             "not a hang (found 2026-09-07, testing MyoWare with neither IMU connected). 'elbow' "
+             "and 'emg' are accepted for a consistent vocabulary but need no special handling -- "
+             "both already degrade safely to a constant if their channel is silent (elbow_bend's "
+             "own shoulder_mag/elbow_mag>0.1 guard in firmware; GripStateMachine simply never "
+             "crosses threshold) -- listing them here doesn't change this script's behavior.",
+    )
     args = parser.parse_args()
+
+    VALID_OPTIONAL_SENSORS = {"shoulder", "elbow", "emg"}
+    optional_sensors = {s.strip() for s in args.optional_sensors.split(",") if s.strip()}
+    unknown_sensors = optional_sensors - VALID_OPTIONAL_SENSORS
+    if unknown_sensors:
+        sys.exit(f"--optional-sensors: unknown name(s) {sorted(unknown_sensors)} -- "
+                  f"choices are {sorted(VALID_OPTIONAL_SENSORS)}")
+    shoulder_optional = "shoulder" in optional_sensors
 
     if not SCENE_XML.exists():
         sys.exit(f"arm+hand scene not found: {SCENE_XML}")
@@ -888,7 +913,21 @@ def main():
 
     while not latest.is_ready():
         time.sleep(0.05)
+    # 5s bound only when shoulder is marked optional -- with a firmware
+    # build that still sends the full tick= line for an absent IMU (just
+    # zero-valued fields, see phase3_control_loop_main.cpp's
+    # kRequireShoulderImu), this wait would already pass quickly on its
+    # own; the timeout is defensive for an older/different firmware build
+    # that might not send shoulder_raw_* fields at all when the IMU never
+    # completes a read. Required (not optional) sensors keep the original
+    # unbounded wait -- if shoulder is genuinely required and never shows
+    # up, that SHOULD hang here rather than silently proceed.
+    _shoulder_wait_deadline = (time.time() + 5.0) if shoulder_optional else None
     while latest.snapshot_shoulder_raw()[0] is None:
+        if _shoulder_wait_deadline is not None and time.time() > _shoulder_wait_deadline:
+            print("警告:shoulder 標記為選配,5 秒內沒收到 shoulder_raw,略過等待——"
+                  "肩膀 pitch/roll 整個 session 都會固定在 BASELINE。")
+            break
         time.sleep(0.05)
 
     # 2026-09-05, second pass: calibration baseline moved back to "arm
@@ -940,54 +979,82 @@ def main():
               f"the current mount, only trusted at face value.")
     else:
         baseline_raw, zero_elbow = _calibrate_pose(
+            "Calibrating elbow zero (shoulder 標記為選配,肩膀姿勢不重要,只需要手肘打直): "
+            "請把手肘打直、手臂放鬆下垂。"
+            if shoulder_optional else
             "Calibrating shoulder -- BASELINE: 請把手臂自然垂下,手肘打直。")
 
-        forward_raw, _ = _calibrate_pose(
-            "FORWARD: 先回到 BASELINE(垂下),然後手肘打直,手臂往前伸直到底,手腕不要轉。",
-            ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
+        if shoulder_optional:
+            forward_raw = left_twist_raw = right_twist_raw = None
+            print("shoulder 標記為選配,跳過 FORWARD/LEFT_TWIST/RIGHT_TWIST 校正姿勢——"
+                  "肩膀 pitch/roll 整個 session 都會固定在 BASELINE,不會即時追蹤。\n")
+        else:
+            forward_raw, _ = _calibrate_pose(
+                "FORWARD: 先回到 BASELINE(垂下),然後手肘打直,手臂往前伸直到底,手腕不要轉。",
+                ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
 
-        left_twist_raw, _ = _calibrate_pose(
-            "LEFT_TWIST: 先回到 BASELINE(垂下),然後手肘打直,手臂往左甩到底,"
-            "同時大拇指轉朝上。",
-            ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
+            left_twist_raw, _ = _calibrate_pose(
+                "LEFT_TWIST: 先回到 BASELINE(垂下),然後手肘打直,手臂往左甩到底,"
+                "同時大拇指轉朝上。",
+                ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
 
-        right_twist_raw, _ = _calibrate_pose(
-            "RIGHT_TWIST(驗證用,不會進入校正基底): 先回到 BASELINE(垂下),然後手肘打直,"
-            "手臂往右甩到底,同時大拇指轉朝下。",
-            ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
+            right_twist_raw, _ = _calibrate_pose(
+                "RIGHT_TWIST(驗證用,不會進入校正基底): 先回到 BASELINE(垂下),然後手肘打直,"
+                "手臂往右甩到底,同時大拇指轉朝下。",
+                ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
 
-        args.calibration_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(args.calibration_file, "w") as f:
-            json.dump({
-                "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "baseline_raw": baseline_raw,
-                "forward_raw": forward_raw,
-                "left_twist_raw": left_twist_raw,
-                "right_twist_raw": right_twist_raw,
-                "zero_elbow": zero_elbow,
-            }, f, indent=2)
-        print(f"Calibration saved to {args.calibration_file} -- next run can pass "
-              f"--skip-calibration to reuse it instead of re-prompting.")
+        if shoulder_optional:
+            print("shoulder 選配模式下不存校正檔(沒有真正的肩膀校正資料可存)。")
+        else:
+            args.calibration_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(args.calibration_file, "w") as f:
+                json.dump({
+                    "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "baseline_raw": baseline_raw,
+                    "forward_raw": forward_raw,
+                    "left_twist_raw": left_twist_raw,
+                    "right_twist_raw": right_twist_raw,
+                    "zero_elbow": zero_elbow,
+                }, f, indent=2)
+            print(f"Calibration saved to {args.calibration_file} -- next run can pass "
+                  f"--skip-calibration to reuse it instead of re-prompting.")
 
-    shoulder_basis = make_oblique_basis(baseline_raw, forward_raw, left_twist_raw)
-    print(f"Shoulder calibrated: BASELINE=({baseline_raw[0]:+.3f},{baseline_raw[1]:+.3f},{baseline_raw[2]:+.3f}) "
-          f"FORWARD=({forward_raw[0]:+.3f},{forward_raw[1]:+.3f},{forward_raw[2]:+.3f}) "
-          f"[tilt={math.degrees(shoulder_basis['tilt_fwd']):.1f}deg] "
-          f"LEFT_TWIST=({left_twist_raw[0]:+.3f},{left_twist_raw[1]:+.3f},{left_twist_raw[2]:+.3f}) "
-          f"[tilt={math.degrees(shoulder_basis['tilt_abd']):.1f}deg]  elbow zero={zero_elbow:.3f}")
+    # shoulder_optional forces shoulder_basis=None unconditionally here,
+    # even on the --skip-calibration path above (which would otherwise
+    # have loaded real forward_raw/left_twist_raw from a past session's
+    # file) -- what matters isn't how the basis was built, it's that the
+    # LIVE shoulder_raw feeding oblique_decompose_scaled() every tick
+    # would be the zero vector all session if the IMU is genuinely absent
+    # now, and normalizing that is a real divide-by-zero regardless of a
+    # perfectly valid basis. See MAX_CTRL_RATE_RAD_PER_SEC's neighborhood
+    # in the main loop below for where pitch_equiv/roll_equiv fall back to
+    # a flat 0.0 instead of calling oblique_decompose_scaled at all.
+    if shoulder_optional:
+        shoulder_basis = None
+        print(f"Shoulder: 選配、未即時追蹤,pitch/roll 整個 session 固定為 0(BASELINE)。"
+              f"elbow zero={zero_elbow:.3f}")
+        forward_raw = left_twist_raw = right_twist_raw = None
+    else:
+        shoulder_basis = make_oblique_basis(baseline_raw, forward_raw, left_twist_raw)
+    if shoulder_basis is not None:
+        print(f"Shoulder calibrated: BASELINE=({baseline_raw[0]:+.3f},{baseline_raw[1]:+.3f},{baseline_raw[2]:+.3f}) "
+              f"FORWARD=({forward_raw[0]:+.3f},{forward_raw[1]:+.3f},{forward_raw[2]:+.3f}) "
+              f"[tilt={math.degrees(shoulder_basis['tilt_fwd']):.1f}deg] "
+              f"LEFT_TWIST=({left_twist_raw[0]:+.3f},{left_twist_raw[1]:+.3f},{left_twist_raw[2]:+.3f}) "
+              f"[tilt={math.degrees(shoulder_basis['tilt_abd']):.1f}deg]  elbow zero={zero_elbow:.3f}")
 
-    # Validation-only check (2026-09-05): RIGHT_TWIST was never fed into
-    # make_oblique_basis() above -- decode it through the resulting basis
-    # anyway and print the result. Expect roll_equiv here to come out
-    # negative (opposite side from LEFT_TWIST, which the basis defines as
-    # positive) and reasonably close in magnitude to tilt_abd -- if it
-    # doesn't, LEFT_TWIST/RIGHT_TWIST aren't as mirror-symmetric on this
-    # body as the log_raw_imu.py capture suggested, and the basis may need
-    # rebuilding from an average of both sides instead of LEFT_TWIST alone.
-    _right_pitch_check, _right_roll_check = oblique_decompose_scaled(shoulder_basis, right_twist_raw)
-    print(f"  (validation) RIGHT_TWIST decodes to pitch_equiv={_right_pitch_check:+.3f} "
-          f"roll_equiv={_right_roll_check:+.3f} rad -- expect roll_equiv negative, "
-          f"magnitude near {shoulder_basis['tilt_abd']:.3f} rad if left/right are symmetric")
+        # Validation-only check (2026-09-05): RIGHT_TWIST was never fed into
+        # make_oblique_basis() above -- decode it through the resulting basis
+        # anyway and print the result. Expect roll_equiv here to come out
+        # negative (opposite side from LEFT_TWIST, which the basis defines as
+        # positive) and reasonably close in magnitude to tilt_abd -- if it
+        # doesn't, LEFT_TWIST/RIGHT_TWIST aren't as mirror-symmetric on this
+        # body as the log_raw_imu.py capture suggested, and the basis may need
+        # rebuilding from an average of both sides instead of LEFT_TWIST alone.
+        _right_pitch_check, _right_roll_check = oblique_decompose_scaled(shoulder_basis, right_twist_raw)
+        print(f"  (validation) RIGHT_TWIST decodes to pitch_equiv={_right_pitch_check:+.3f} "
+              f"roll_equiv={_right_roll_check:+.3f} rad -- expect roll_equiv negative, "
+              f"magnitude near {shoulder_basis['tilt_abd']:.3f} rad if left/right are symmetric")
 
     model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
     data = mujoco.MjData(model)
@@ -1081,7 +1148,18 @@ def main():
                 # shoulder_raw can't still be None here: main() already
                 # blocked until the first raw reading arrived, before
                 # calibration, and LatestSample never resets it afterward.
-                pitch_equiv, roll_equiv = oblique_decompose_scaled(shoulder_basis, smoothed_shoulder_raw)
+                # shoulder_basis is None exactly when --optional-sensors
+                # included "shoulder" -- smoothed_shoulder_raw would be the
+                # zero vector all session in that case (the IMU never
+                # completes a real read), and oblique_decompose_scaled
+                # normalizes its input, so calling it would be a real
+                # divide-by-zero, not just a meaningless result. Falls back
+                # to flat 0.0 instead, matching the printed "fixed at
+                # BASELINE" promise from the calibration step above.
+                if shoulder_basis is not None:
+                    pitch_equiv, roll_equiv = oblique_decompose_scaled(shoulder_basis, smoothed_shoulder_raw)
+                else:
+                    pitch_equiv, roll_equiv = 0.0, 0.0
                 # pitch_equiv is FORWARD-direction again now that BASELINE
                 # is hang-down (see the calibration comment above):
                 # +pitch_equiv means tilting FROM hang-down TOWARD forward
