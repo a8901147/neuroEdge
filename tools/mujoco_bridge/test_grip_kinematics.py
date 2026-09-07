@@ -32,8 +32,9 @@ SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "arm_hand_scene.xml"
 # Identical to run_demo_live.py's GRIP_SCALE/GRIP_ACTUATORS -- kept in sync
 # by hand, same as that file's own copy of run_demo.py's constants. See
 # run_demo_live.py's comment for the sign/range provenance (from
-# unitree_g1/g1_with_hands.xml's own joint ranges, not guessed).
-GRIP_SCALE = 0.6
+# unitree_g1/g1_with_hands.xml's own joint ranges, not guessed) and the
+# 2026-09-07 long-settle sweep that changed this from 0.6 to 0.57.
+GRIP_SCALE = 0.57
 GRIP_ACTUATORS = {
     "left_hand_thumb_1_joint": 1.0472,
     "left_hand_thumb_2_joint": 1.74533,
