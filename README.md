@@ -13,7 +13,7 @@ tests/               Catch2 unit + integration tests
 benchmarks/          Google Benchmark suite (<1,6> wearable fusion, <32,0> HD-sEMG stress)
 data/                Synthetic CSV fixtures (not real Ninapro data — see tools/generate_sample_data.py)
 firmware/            Phase 1.5: STM32F401 feasibility spike (bare CMake + arm-none-eabi-gcc) — see firmware/README.md
-tools/mujoco_bridge/ Phase 2: Python + MuJoCo viewer that drives a Shadow Hand from mujoco_bridge_demo.cpp's stdout
+tools/mujoco_bridge/ Phase 2: Python + MuJoCo viewer that drives a unitree_g1 left arm+hand from mujoco_bridge_demo.cpp's stdout (or live hardware, see run_demo_live.py)
 ```
 
 ## Build

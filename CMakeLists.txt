@@ -101,7 +101,16 @@ if(EDGENEURO_BUILD_TESTS)
     target_link_libraries(edgeneuro_tests PRIVATE Threads::Threads)
 
     include(${catch2_SOURCE_DIR}/extras/Catch.cmake)
-    catch_discover_tests(edgeneuro_tests)
+    # PROPERTIES SKIP_RETURN_CODE 4 (2026-09-07): a Catch2 v3 test binary
+    # exits with code 4 specifically when EVERY test case in that run was
+    # skipped (Catch::Session::run(), catch_session.cpp) -- e.g.
+    # test_complementary_filter_real_data.cpp/test_real_data_integration.cpp
+    # SKIP()ping themselves when the real (gitignored, 5.48GB) EMG-EPN-612
+    # dataset isn't present, which is expected and correct on CI or any
+    # machine that hasn't downloaded it. Without this property CTest
+    # doesn't know 4 means "skipped" and reports it as a plain failure --
+    # caught by this project's own CI on its first run.
+    catch_discover_tests(edgeneuro_tests PROPERTIES SKIP_RETURN_CODE 4)
 endif()
 
 if(EDGENEURO_BUILD_BENCHMARKS)
