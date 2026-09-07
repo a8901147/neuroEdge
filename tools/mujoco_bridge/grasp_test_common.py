@@ -25,8 +25,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "arm_hand_scene.xml"
 
 # Identical to run_demo_live.py's GRIP_SCALE/GRIP_ACTUATORS -- kept in sync
-# by hand, see that file's comment for the sign/range provenance.
-GRIP_SCALE = 0.6
+# by hand, see that file's comment for the sign/range provenance and the
+# 2026-09-07 long-settle sweep that changed this from 0.6 to 0.57.
+GRIP_SCALE = 0.57
 GRIP_ACTUATORS = {
     "left_hand_thumb_1_joint": 1.0472,
     "left_hand_thumb_2_joint": 1.74533,
@@ -59,6 +60,12 @@ DEFAULT_PEDESTAL_POS = (0.051, 0.332, 0.935)
 DEFAULT_OBJECT_POS = (0.051, 0.332, 0.99)
 
 FINGERTIP_BODIES = ["left_hand_thumb_2_link", "left_hand_middle_1_link", "left_hand_index_1_link"]
+
+# How long, after the lift finishes, to hold before checking the verdict.
+# 10s matches the top of the real 6-step task's confirmed ~5-10s per-carry
+# hold requirement -- see run_grasp_scenario's own docstring for why this
+# replaced the original (too short, false-positive-prone) 1.0s.
+POST_LIFT_SETTLE_SECONDS = 10.0
 
 SYNC_EVERY_N_STEPS = 20
 
@@ -173,20 +180,36 @@ def step_and_sync(model, data, viewer, seconds, on_tick=None):
 
 def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
                         lift_seconds=2.0, print_every_seconds=0.3,
-                        reach_ctrl=None, verbose=True):
+                        reach_ctrl=None, verbose=True, post_lift_settle_seconds=POST_LIFT_SETTLE_SECONDS):
     """Runs: settle at `reach_ctrl` (defaults to module-level REACH_CTRL)
     with grip=0 -> drive grip from `grip_at_t(t)` (t in seconds since the
     grip phase started, returns a [0,1] scalar) for `grip_phase_seconds` ->
     lift (ramp shoulder_pitch to
     LIFT_SHOULDER_PITCH over `lift_seconds`, holding the last commanded grip
-    target) -> report.
+    target) -> hold at the lifted pose for `post_lift_settle_seconds` -> report.
 
     Returns a dict: object_start_dist, object_end_dist (fingertip-centroid
-    to object-center distance right before vs. after the lift), object_drop
-    (how much the object's own height fell during the lift), and held (bool
-    verdict: stayed within 0.08m of the fingertips AND didn't fall more than
-    0.05m -- both generous relative to the 0.025m default ball radius, so
-    "held" means genuinely still in the hand, not just technically nearby).
+    to object-center distance right before vs. after the lift+settle),
+    object_drop (how much the object's own height fell over that same
+    span), and held (bool verdict: stayed within 0.08m of the fingertips
+    AND didn't fall more than 0.05m -- both generous relative to the
+    0.025m default ball radius, so "held" means genuinely still in the
+    hand, not just technically nearby).
+
+    post_lift_settle_seconds default matters more than it looks: a 2026-
+    09-06 sweep found NO uniform-curl grip_scale on this object is a
+    permanently stable equilibrium -- every value tested eventually slips
+    given enough time, just at very different rates (some within 6s, some
+    not until 20+s). The ORIGINAL 1.0s default here produced real false
+    positives -- grip_scale=0.6 reported HELD because the object was still
+    mid-fall and hadn't yet crossed the distance/height thresholds, not
+    because it was actually stable. POST_LIFT_SETTLE_SECONDS is set to
+    match how long the real 6-step task actually needs the object held
+    (confirmed with the user: ~5-10s per carry), not "as long as possible"
+    -- there's no value that holds forever, so the only meaningful
+    question is whether a candidate holds for at least as long as the
+    real task needs, checked at a realistic settle time instead of an
+    arbitrarily short or arbitrarily long one.
     """
     reach_ctrl = REACH_CTRL if reach_ctrl is None else reach_ctrl
 
@@ -249,24 +272,41 @@ def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
 
     _p(f"\n[LIFT PHASE] raising shoulder_pitch to {LIFT_SHOULDER_PITCH:+.2f} over {lift_seconds:.1f}s...")
     step_and_sync(model, data, viewer, lift_seconds, on_tick=_on_tick_lift)
-    step_and_sync(model, data, viewer, 1.0)  # settle after the lift finishes
+    step_and_sync(model, data, viewer, post_lift_settle_seconds)  # settle after the lift finishes
 
     centroid_after = fingertip_centroid(model, data)
     obj_after = data.xpos[object_id].copy()
     dist_after = float(_dist(centroid_after, obj_after))
     height_drop = float(obj_before_lift[2] - obj_after[2])
 
-    held = dist_after < 0.08 and height_drop < 0.05
+    # 2026-09-07 fix: height_drop alone is NOT a slip signal -- LIFT_SHOULDER_PITCH
+    # moves to a commanded pose whose own fingertip height is itself lower
+    # than the pre-lift reach pose (confirmed directly: a real run showed
+    # the fingertip centroid itself dropping ~0.084m, almost exactly what
+    # the object dropped, ~0.082m -- the object was moving WITH the hand,
+    # not slipping out of it). The old `height_drop < 0.05` absolute
+    # threshold produced false DROPPED verdicts for a genuinely-held
+    # object whenever the commanded lift pose itself sat more than 5cm
+    # lower. `slip` -- how much MORE the object fell than the hand itself
+    # did -- is the actual "did it come loose" signal; small persistent
+    # dist_after already catches the object drifting away independently.
+    fingertip_drop = float(centroid_before_lift[2] - centroid_after[2])
+    slip = height_drop - fingertip_drop
+
+    held = dist_after < 0.08 and slip < 0.03
     _p(f"\nAfter lift: dist_to_fingertips={dist_after:.3f}m  "
-       f"object_height={obj_after[2]:.3f}m  height_drop={height_drop:+.3f}m")
+       f"object_height={obj_after[2]:.3f}m  height_drop={height_drop:+.3f}m  "
+       f"fingertip_drop={fingertip_drop:+.3f}m  slip={slip:+.3f}m")
     _p(f"\nVERDICT: {'HELD' if held else 'DROPPED'} "
        f"(dist_after={dist_after:.3f}m {'<' if dist_after < 0.08 else '>='} 0.08m, "
-       f"height_drop={height_drop:+.3f}m {'<' if height_drop < 0.05 else '>='} 0.05m)")
+       f"slip={slip:+.3f}m {'<' if slip < 0.03 else '>='} 0.03m -- "
+       f"object fell {height_drop:+.3f}m vs. the hand's own {fingertip_drop:+.3f}m)")
 
     return {
         "object_start_dist": dist_before_lift,
         "object_end_dist": dist_after,
         "object_drop": height_drop,
+        "slip": slip,
         "held": held,
     }
 

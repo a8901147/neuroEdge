@@ -15,26 +15,36 @@ slower sweep for building confidence before real-hardware time, and for
 answering "is GRIP_SCALE=0.6 enough everywhere, or did we just get lucky
 at the one pose we tested."
 
-2026-09-06 RESULT (important, not just a usage note): it was the latter.
-front_left is the only one of 5 tested poses that ever holds at all, and
-even there it's non-monotonic across grip scale -- HELD at 0.30 and 0.60,
-DROPPED at 0.45, 0.80, and 1.00 (confirmed deterministic: identical inputs
-reproduce the identical result every time, not simulation noise). The
-other 4 poses fail at every tested grip scale, two ways: front_center_low/
-deep_reach let the object fall all the way through (height_drop ~1.1-1.25m
--- the fingers never actually caught it during the grip phase, before the
-lift even starts); front_left_high/mild_adduction show ~zero height_drop
-but the object ends up 0.10-0.23m from the fingertips -- the object never
-left its pedestal at all while the hand moved away during the lift. The
+2026-09-06/07 RESULT (important, not just a usage note): it was the
+latter, though the first pass overstated how bad it was. Initially
+front_left looked non-monotonic across grip scale (HELD at 0.30/0.60,
+DROPPED at 0.45/0.80/1.00) -- two real bugs in the test itself turned out
+to be responsible, both fixed now (see grasp_test_common.py's
+POST_LIFT_SETTLE_SECONDS and the `slip` comment in run_grasp_scenario):
+the original 1.0s post-lift settle was too short to catch a slow ongoing
+fall, and the original `height_drop < 0.05` absolute threshold flagged a
+genuinely-held object as DROPPED whenever the commanded lift pose's own
+fingertip height sat more than 5cm below the reach pose (confirmed
+directly: the fingertip centroid itself drops by about as much as the
+object does when this happens -- the object is moving WITH the hand, not
+slipping out of it). With both fixed, front_left holds cleanly across
+GRIP_SCALE in [0.54, 0.60] and fails outside it (0.50, 0.65) -- a real,
+if narrow, working window, not a fragile knife-edge.
+
+What did NOT turn out to be a test bug: the other 4 poses still fail at
+every tested grip scale, the same two ways as before: front_center_low/
+deep_reach let the object fall all the way through during the grip phase
+itself (dist_after ~0.7-0.99m, well before the lift even starts);
+front_left_high/mild_adduction never actually pick the object up at all
+(dist_after ~0.10-0.23m, roughly constant regardless of grip scale). The
 "closed-fist fingertip centroid coincides with the object" search this
 project uses to place a pedestal only guarantees geometric reachability,
 not that the uniform-curl grip (all 6 GRIP_ACTUATORS scaled by the same
 fraction, see run_demo_live.py's GRIP_ACTUATORS comment) actually cups the
-object correctly from that approach angle. This is exactly the "uniform
-curl vs. per-finger targets" limitation the original README used to
-document before it got narrowed to "confirmed at one pose" -- this sweep
-is the evidence that narrowing was warranted, not the sweep proving the
-limitation is fixed.
+object correctly from that approach angle. Per the user's explicit
+direction, this is accepted scope, not something to fix with per-finger
+control -- the practical takeaway is to keep the real 6-step task's reach
+poses close to front_left, not to expect the grasp to generalize.
 
 Usage:
     python3 tools/mujoco_bridge/test_grasp_coverage.py
@@ -86,8 +96,12 @@ POSES = {
     },
 }
 
-DEFAULT_GRIP_SCALES = [0.30, 0.45, 0.60, 0.80, 1.00]
-PRODUCTION_GRIP_SCALE = 0.60  # matches run_demo_live.py's current GRIP_SCALE -- the one result that must hold
+# 2026-09-07: narrowed from [0.30,0.45,0.60,0.80,1.00] to bracket the real
+# stable-ish window a finer sweep found (see grasp_test_common.py's
+# POST_LIFT_SETTLE_SECONDS comment) instead of values spread across the
+# whole [0,1] range, most of which fail outright regardless of pose.
+DEFAULT_GRIP_SCALES = [0.50, 0.54, 0.57, 0.60, 0.65]
+PRODUCTION_GRIP_SCALE = 0.57  # matches run_demo_live.py's current GRIP_SCALE -- the one result that must hold
 
 
 def grip_ramp(t, ramp_seconds=1.0):
@@ -130,7 +144,7 @@ def main():
             rows.append((pose_name, grip_scale, result))
             mark = "HELD  " if result["held"] else "DROPPED"
             print(f"  {pose_name:18s} grip_scale={grip_scale:.2f}  {mark}  "
-                  f"dist_after={result['object_end_dist']:.3f}m  height_drop={result['object_drop']:+.3f}m")
+                  f"dist_after={result['object_end_dist']:.3f}m  slip={result['slip']:+.3f}m")
 
     print(f"\n{'pose':18s} " + "".join(f"{g:>9.2f}" for g in grip_scales))
     for pose_name in pose_names:

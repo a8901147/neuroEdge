@@ -104,7 +104,24 @@ MAX_CTRL_RATE_RAD_PER_SEC = 6.0
 # guard against two different kinds of bad signal.
 RAW_SMOOTHING_ALPHA = 0.03
 
-GRIP_SCALE = 0.6
+# 2026-09-07: was 0.6, changed after test_grasp_coverage.py's long-settle
+# sweep found NO uniform-curl grip_scale is a permanently stable
+# equilibrium on this object -- gravity + tiny contact-solver drift
+# eventually wins at every value tested, sooner or later. 0.6 itself
+# turned out to only hold for 6-10s before slipping (a too-short 1s
+# post-lift settle in the original test made it look stably held -- see
+# grasp_test_common.py's run_grasp_scenario). The user confirmed the real
+# 6-step task only needs the object held for ~5-10s at a time (reach,
+# carry to a point, release), not indefinitely, so the real question was
+# "which value holds longest within a realistic task window," not "which
+# value is eternally stable" (nothing is). A fine sweep at that longer,
+# realistic settle time found grip_scale in [0.54,0.59] all held through
+# ~11s and mostly through ~16s; 0.57 (this value) sits in the middle of
+# that range with margin on both sides, and held through ~16s before
+# failing around ~21s in the real test -- roughly double the ~10s the
+# task actually needs. Kept in sync by hand with grasp_test_common.py's
+# copy (which test_grip_kinematics.py also mirrors).
+GRIP_SCALE = 0.57
 GRIP_ACTUATORS = {
     "left_hand_thumb_1_joint": 1.0472,
     "left_hand_thumb_2_joint": 1.74533,
