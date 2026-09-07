@@ -91,7 +91,17 @@ TEST_CASE("tilt_azimuth: hang-down, forward, front-left, front-right all decode 
 
     SECTION("hang-down: exactly at rest, tilt=0") {
         auto result = tilt_azimuth(ref.x, ref.y, ref.z, ref.x, ref.y, ref.z, u.x, u.y, u.z, v.x, v.y, v.z);
-        REQUIRE(result.tilt == Approx(0.0f).margin(1e-5));
+        // 1e-3, not 1e-5 (2026-09-07): acos'(x) = -1/sqrt(1-x^2) blows up as
+        // x->1, so this exact-self-dot-product case (dot(ref,ref) should be
+        // 1.0 but float32 arithmetic lands a few ULPs off) amplifies a
+        // sub-epsilon input difference into a real, platform-dependent
+        // output difference -- CI (x86_64 Linux/GCC) measured 0.00035rad
+        // (~0.02deg) here against a margin tuned only against one platform
+        // (arm64 macOS/Clang), which never exercised this. 0.02deg is
+        // physically meaningless noise, not an algorithm bug -- matches
+        // this file's own 1e-3 convention for its other hard-to-pin-exactly
+        // cases (see line ~161).
+        REQUIRE(result.tilt == Approx(0.0f).margin(1e-3));
     }
 
     SECTION("forward raise: azimuth=0 (toward u), a real ~120deg flexion") {
