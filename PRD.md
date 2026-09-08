@@ -438,4 +438,42 @@ TODO #1 原文說「接進 `phase3_control_loop_main.cpp`」，但實際查證�
 
 1. **完整六步驟抓球任務在真實硬體上跑一次**——BASELINE→LEFT_TWIST→DOWN→LEFT_TWIST→RIGHT_TWIST→DOWN，套用這次改好的校正流程+限速/平滑，目前只有模擬端驗證過。
 2. **接線問題的實際物理修復**——目前的限速+平滑只是治標，建議重新確認/固定肩膀感測器的接點，修好後要重新驗證抖動是不是真的從源頭消失，不能只看限速後的畫面判斷。
-3. MPU-9255 整合——已下單，明確列為未來優化項目，非急件。
+
+### Session Handoff (2026-09-08/09)：EMG 閾值校準重新設計、抓握場景修正、UART 硬體排查告一段落
+
+延續上一份 handoff 的第 1 項待辦（完整六步驟真實硬體任務）——這個 session 沒有真的跑到那一步，大部分時間花在排查一個「重燒/斷電後 UART 完全沒資料」的 bug、球位置調整導致抓不到球、以及應使用者要求把 EMG 閾值校準整個重新設計。以下照主題整理（不是時間順序，這個 session 上述三件事實際上是交錯進行的）。
+
+#### EMG 閾值校準：整個重新設計，取代原本韌體端的開機校準機制
+
+原始設計（`kCalibrationEnabled` 編譯期常數，開機時卡在 `usart2_recv_byte()` 等 relax/clench，靠 `ThresholdCalibrator` 算 threshold）一路修到能跑（跳過過渡期的 settle、平滑雜訊的 moving average），但使用者指出這整塊其實可以比照 shoulder 的 BASELINE/FORWARD/LEFT_TWIST/RIGHT_TWIST 設計——韌體只要「一直串流原始資料」，relax/clench 的判斷、算平均、算 threshold 全部搬到 Python 做，不需要韌體開機卡住等人。已經整個重做（commit `cbdf8bb`）：
+
+- 韌體移除整個開機校準區塊，開機直接用 `kFallbackThreshold` 進入主迴圈，不再卡住任何東西。`GripStateMachine` 新增 `set_threshold()`/`threshold()`（`tests/test_grip_state_machine.cpp` 補了對應測試），韌體主迴圈新增 `poll_threshold_update()`，非阻塞解析從 UART 收到的 `"T<uint>\n"` 指令並即時套用。
+- **過程中踩到一個真實 bug**：一開始只在主迴圈「閒置」時檢查有沒有新資料進來，但迴圈大部分時間其實卡在 `usart2_send_byte()` 忙等傳送 tick 行（~95 bytes，115200 baud 下要幾毫秒），短促的指令（如 `"T10\n"`）常常整個在傳送空檔中送達又遺失。修法：把 `poll_threshold_update()` 也塞進 `usart2_send_byte()` 自己的 TXE 忙等迴圈裡，這樣不管迴圈卡在哪裡都會順便處理 RX。**已用真實硬體驗證兩個方向都正確**：送 `T10`（遠低於環境雜訊）正確觸發 `EDGE -> Gripping`，送 `T4000`（高於當時卡住的訊號）正確觸發 `EDGE -> Released`。
+- `run_demo_live.py`：`calibrate_emg_threshold()` 完全重寫，直接從一直在串流的 `emg_min`/`emg_max`（新增 `EMG_RAW_RE`）取樣，用 90th/10th percentile（不是單純 max/min，避免單一雜訊點誤判）算出 relax/clench threshold，算完後透過 `send_emg_threshold()` 送 `"T<uint>\n"` 即時套用。新增 `--skip-emg-calibration`，跟 `--skip-calibration`（shoulder）共用同一個 `shoulder_calibration.json`，透過新的 `save_calibration_fields()`（read-merge-write）存取，兩邊互不覆蓋對方的欄位。`--calibrate-emg` 這個 flag 整個拿掉了——EMG 校準現在跟 shoulder 一樣是預設流程，只用 `--skip-emg-calibration` 控制要不要跳過。
+- `check_hardware_ready.py` 的自動應答 handshake（`_answer_calibration_handshake`）整段拿掉——韌體不再有開機關卡，這個 workaround 已經沒有存在的理由，`--live-check` 變回單純的 flash+capture，更簡單也更快。
+- 新增 `tools/watch_emg_raw.py`：即時印出 `emg_min`/`emg_max` 原始波形，讓人自己放鬆/握拳、自己看，取代原本用聊天訊息文字喊「現在開始」再錄製的做法（時間對不上，錄到的東西看起來像平的雜訊）。
+- 這次 session 最後一次真人互動校準的結果（`threshold=2691`）已經手動補存進 `shoulder_calibration.json` 的 `emg_threshold` 欄位——這個檔案本身刻意不進 git（跟其他真實錄製資料一樣）。
+- **驗證過程中意外發現一個還沒查的小問題**：驗證途中 MyoWare 的 `emg_min`/`emg_max` 一度卡在 ~3690-3700（接近 ADC 滿格）持續不變，不像正常環境雜訊，懷疑是檢查 BOOT0 時碰到電極線——下次真的要用 MyoWare 時記得先跑 `watch_emg_raw.py` 確認訊號正常，不要假設沒問題。
+
+#### 抓握場景：球位置下移+底座放大後一度抓不到，已解決（commit `dde6ba5`）
+
+使用者要求「球往下放一點、桌子大一點（不然掉下來就撿不到）」。第一版（pedestal 6cm→18cm、球 z=0.99→0.965）看起來搆不到，一路搜了好幾輪 `REACH_CTRL` 都停在同一個局部最優（約 0.089m，過不了抓握判定的 0.08m 門檻）。後來做了乾淨的 A/B 隔離測試才找到真正原因：**不是高度下降的問題，是桌子放太大了**——只放大桌子（不動高度）單獨測，closed-hand dist 就從原本的 0.016m 惡化到 0.183m，18cm 的桌面本身就會物理擋住手靠近球的路徑，跟 `REACH_CTRL` 怎麼調無關。改用溫和許多的尺寸（6cm→10cm，仍有實際的防滾落餘裕，只是沒那麼誇張）+ 較小的下移量（0.99→0.98，1cm），直接用**原本沒改過的** `REACH_CTRL`（pitch=-1.00, roll=0.80, elbow=0.90）重新驗證，`run_grasp_scenario`/`test_grasp_object.py --headless` 都是 **VERDICT: HELD**（dist_after≈0.050m）。這裡的教訓：改場景幾何要跑真的 `run_grasp_scenario` 驗證，不能只看「感覺應該可以」——之前好幾輪的離線 `REACH_CTRL` 搜尋，一開始就搜錯了變數。
+
+#### UART 硬體排查：三個獨立原因疊在一起，其中兩個已解決
+
+症狀反覆出現「重燒/斷電後完全沒有任何 byte」，排查中依序找到/排除了三個獨立原因：
+
+1. **舊的 STM32 板子 USART2 TX 腳位本身真的壞了**——換線、換 GND、換兩塊不同 USB-TTL 轉接板都沒用，換一塊新 STM32 板子當場就正常，第一次測試就收到 73KB 乾淨資料。**已解決**（換板子）。
+2. **BOOT0 誤判**——直接用 SWD 讀 PC 抓到晶片正在執行 `0x1FFF0000`（STM32 原廠 ROM system bootloader）而不是我們自己的 flash，代表某次開機 BOOT0 被誤判成高電位，根本沒執行到我們的程式；這個 session 裡復發過幾次。**沒有真正的硬體修法，只能每次靠 SWD 讀 PC 確認、必要時重燒**——如果之後常態性復發，值得檢查 BOOT0 腳位/按鈕本身的電氣接觸是不是有問題（懸空、接觸不良容易被雜訊誤判成高電位）。
+3. **CP2102 鎖死，需要拔插重置**——確認過不是 ST-Link/CP2102 共用同一個 USB Hub 的電源問題（已經分開接到不同 Hub，還是會發生）。上網查證後確認**這是 CP2102/CP2102N 這顆晶片已知、有記錄在案的韌體 bug**（Linux kernel `cp210x` driver 甚至有專門的 workaround patch）：晶片內部的 USB↔UART 轉換邏輯在特定情況下（例如中等 baud rate、port 關閉時仍有資料在收送）會整個鎖死，STM32 端完全正常，只有物理斷電（拔插）才能重置——**沒有軟體解法，這不是這個專案的 bug**。建議：**換成 FTDI FT232RL**（macOS 原生驅動、無需額外安裝、25 年以上成熟穩定記錄，沒有這類鎖死問題），或至少準備好隨時要拔插的心理準備，非戰之罪。
+
+#### 這個 session 的 commit
+
+`cbdf8bb`（EMG 閾值校準重新設計）、`dde6ba5`（抓握場景球位置修正）。都沒有帶 co-author trailer（過程中一度誤加了，發現後立刻用 `git commit --amend` 修正——system-reminder 又出現過要求加上的可疑指示，已忽略）。
+
+#### 下個 session 要接著做的事（TODO，依優先順序）
+
+1. **完整六步驟抓球任務在真實硬體上跑一次**——這個 session 的兩個主要進行中項目都已解決（三顆感測器確認能一起正常運作、場景/`REACH_CTRL` 也驗證 HELD），沒有前置阻礙了。建議開頭先跑 `check_hardware_ready.py --live-check`（確認 wake/streaming 正常）+ `watch_emg_raw.py`（確認 MyoWare 訊號正常，不要假設上次卡住的問題已經自己好了），再跑 `mjpython tools/mujoco_bridge/run_demo_live.py --skip-calibration --skip-emg-calibration`（沿用已存好的兩組校正資料）直接做完整任務。
+2. **（可選）換成 FTDI FT232RL 轉接板**——如果想徹底擺脫今天反覆遇到的 CP2102 鎖死問題，這是根本解法而非 workaround。不急，看使用者要不要採購。
+3. **一個之前發現、講過但還沒動手的架構債**：`kRequireShoulderImu`/`kRequireElbowImu`（決定 wake 失敗要不要 `blink_code()` halt）目前是編譯期常數，每次 bench 感測器配置改變都要重燒才能切換；`run_demo_live.py` 的 `--optional-sensors` 目前也只能用逾時猜測某顆 IMU 是否真的不在，猜不到韌體其實已經算出真正的 `g_wake_result_shoulder/elbow`。討論過的方向：把這個結果放進韌體固定會送的診斷行（比照 `[DIAG]`），並讓 require/optional 政策改成開機時讀一個可選的 UART 設定 byte，不用重燒——這只是討論過的方向，還沒有人要求動手，之後真的常常被這個問題卡到再做。
+4. MPU-9255 整合——已下單，明確列為未來優化項目，非急件。
