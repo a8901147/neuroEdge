@@ -96,6 +96,32 @@ TEST_CASE("GripStateMachine ignores a brief below-threshold dip while Gripping",
     REQUIRE(gsm.is_gripping());
 }
 
+TEST_CASE("GripStateMachine::set_threshold changes future comparisons without resetting state", "[control]") {
+    GripStateMachine<float> gsm(100.0f, /*on_duration=*/0.05f, /*off_duration=*/0.1f);
+    for (int i = 0; i < 8; ++i) {
+        gsm.update(150.0f, 0.01f); // above the original threshold (100)
+    }
+    REQUIRE(gsm.is_gripping());
+
+    gsm.set_threshold(200.0f); // 150 is now BELOW the new threshold
+    REQUIRE(gsm.threshold() == 200.0f);
+    // Still gripping immediately after the change -- set_threshold alone
+    // doesn't force a re-evaluation or reset accumulated time.
+    REQUIRE(gsm.is_gripping());
+
+    // But now that 150 no longer counts as "above", holding it long enough
+    // releases via the normal off_duration path, proving the NEW threshold
+    // is what update() compares against, not the constructor's original one.
+    bool ever_released = false;
+    for (int i = 0; i < 12; ++i) {
+        if (gsm.update(150.0f, 0.01f)) {
+            ever_released = true;
+        }
+    }
+    REQUIRE(ever_released);
+    REQUIRE_FALSE(gsm.is_gripping());
+}
+
 TEST_CASE("GripStateMachine::reset clears accumulated time and returns to Released", "[control]") {
     GripStateMachine<float> gsm(100.0f, 0.05f, 0.1f);
     for (int i = 0; i < 8; ++i) {

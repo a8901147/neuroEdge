@@ -295,6 +295,13 @@ def run_live_check(port: str) -> bool:
         return False
     print(f"[OK  ] flashed {LIVE_TARGET}")
 
+    try:
+        import serial
+    except ImportError:
+        print("[FAIL] pyserial not installed (pip3 install pyserial) -- can't capture live data")
+        return False
+    ser = serial.Serial(port, 115200, timeout=1)
+
     import time
     time.sleep(1.0)  # let both wake-up writes (each blocking, at boot) complete
 
@@ -315,17 +322,10 @@ def run_live_check(port: str) -> bool:
             "stuck at boot -- check wiring before looking at anything downstream."
         )
 
-    print(f"capturing ~3s of live UART data on {port} @ 115200 baud...")
-    try:
-        import serial
-    except ImportError:
-        print("[FAIL] pyserial not installed (pip3 install pyserial) -- can't capture live data")
-        return False
-
     samples = []
     diag_samples = []
     try:
-        ser = serial.Serial(port, 115200, timeout=1)
+        print(f"capturing ~3s of live UART data on {port} @ 115200 baud...")
         buf = b""
         deadline = time.time() + 3.0
         while time.time() < deadline:

@@ -41,14 +41,37 @@
 
 #include "edgeneuro/control/grip_state_machine.hpp"
 #include "edgeneuro/control/slew_rate_limiter.hpp"
-#include "edgeneuro/control/threshold_calibrator.hpp"
 #include "edgeneuro/fusion/complementary_filter.hpp"
 #include "stm32f4xx.h"
 
 #define LED_PIN 13u
 
 // --- EMG side (unchanged constants from Stage 5a) ---
-static constexpr bool kCalibrationEnabled = false;
+// 2026-09-09: the boot-time interactive relax/clench calibration (compile-
+// time kCalibrationEnabled, a blocking usart2_recv_byte() gate before the
+// main loop could even start) is GONE -- see git history for the full
+// arc (2026-08-18 kFallbackThreshold=1220 -> 08-23 2037 -> 09-08 2800,
+// then a same-day detour through kCalibrationEnabled=true with a settle
+// skip + smoothing window to fight ADC jitter, all superseded by this).
+// Root problem with the boot-gate design: it blocked EVERYTHING (EMG AND
+// IMU streaming) on a human answering two prompts within one specific boot
+// window, and that window kept getting missed for reasons that had nothing
+// to do with EMG at all (a flaky UART link, a reflash landing before
+// anything was listening) -- which is exactly the kind of coupling
+// shoulder calibration never had, since raw_shoulder_ax/ay/az stream
+// unconditionally from boot and Python decides when to average a window,
+// completely independent of whether the main loop has started.
+// Same fix shape now applies to EMG: kFallbackThreshold below is what
+// GripStateMachine boots with (same value grip_state_machine uses at
+// startup regardless of anything Python does), and
+// tools/mujoco_bridge/run_demo_live.py computes a real relax/clench
+// threshold on the HOST from the emg_min/emg_max this loop already streams
+// every tick unconditionally, then pushes it live via the "T<uint>\n"
+// command parsed non-blockingly in the main loop below (see
+// g_pending_threshold_line/apply_pending_threshold_line()) --
+// GripStateMachine::set_threshold() applies it without any reset or
+// restart. No boot gate, nothing to hang on, no reflash required to
+// recalibrate.
 // Recalibrated 2026-08-23: the old 2037 was set against a baseline of ~450
 // (Stage 5a, 2026-08-18). The MyoWare's onboard gain trim pot has since
 // drifted/been bumped -- confirmed via adc_hello_main.c raw ADC readings
@@ -56,8 +79,8 @@ static constexpr bool kCalibrationEnabled = false;
 // signal, just a different gain setting), so the old threshold sat inside
 // the relaxed range and risked false-triggering "gripping" at rest. 2800
 // sits with margin above the new relaxed baseline and below sustained
-// contraction. Re-verify (same raw-ADC-value method, not guessed) if the
-// gain pot gets touched again.
+// contraction -- but is now only ever the BOOT default; a real session is
+// expected to immediately push a fresh live value from run_demo_live.py.
 static constexpr float kFallbackThreshold = 2800.0f;
 static constexpr float kOnDuration = 0.15f;
 static constexpr float kOffDuration = 0.15f;
@@ -77,10 +100,12 @@ static constexpr float kOffDuration = 0.15f;
 // wake failure for a sensor still marked true still halts (blink_code) --
 // that's a real wiring fault worth catching loudly, not something to
 // silently downgrade to a warning. Edit + reflash to change which sensors
-// a given bench session needs, same reasoning/pattern as kCalibrationEnabled
-// above (this is bare-metal firmware -- there's no argv to make it a real
-// runtime flag the way tools/mujoco_bridge/run_demo_live.py's
-// --optional-sensors is).
+// a given bench session needs (this is bare-metal firmware -- there's no
+// argv to make it a real runtime flag the way
+// tools/mujoco_bridge/run_demo_live.py's --optional-sensors is; unlike the
+// EMG threshold above, there's no live-streamed raw signal a host could use
+// to make this decision after the fact -- whether a wake write ACKs has to
+// be decided before the main loop exists at all).
 // Set false<->true here to match whatever's ACTUALLY wired up before each
 // reflash. Back to true/true (2026-09-08): both IMUs are back on the
 // breadboard alongside MyoWare, so a real wiring fault should halt loudly
@@ -90,7 +115,6 @@ static constexpr bool kRequireShoulderImu = true;
 static constexpr bool kRequireElbowImu = true;
 static constexpr float kSlewRate = 5.0f;
 static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
-static constexpr uint32_t kCalibrationSamples = 3000u;
 
 // --- IMU side ---
 // Stage 6: two real MPU6050 units share one I2C1 bus, distinguished by
@@ -172,14 +196,62 @@ static void usart2_init(void) {
     USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
 }
 
-static uint8_t usart2_recv_byte(void) {
-    while (!(USART2->SR & USART_SR_RXNE)) {
+// Live EMG threshold update: parses a "T<digits>\n" line arriving
+// asynchronously over UART and applies it via GripStateMachine::set_threshold()
+// -- see kFallbackThreshold's own comment (near the top of this file) for
+// the full design this replaces (a boot-time blocking calibration gate).
+// g_grip_for_threshold_update is set once, right after `grip` is
+// constructed in main() -- a raw pointer to a stack object is safe here
+// because main() never returns (this whole program is the one function
+// call), same reasoning as this file's other several volatile globals used
+// purely for cross-cutting diagnostics/state.
+static edgeneuro::GripStateMachine<float> *g_grip_for_threshold_update = nullptr;
+static bool g_threshold_line_active = false;
+static uint32_t g_threshold_line_value = 0;
+
+// Deliberately does NOT send any acknowledgment string: found the hard way
+// (2026-09-09) that this function is called from INSIDE usart2_send_byte's
+// own TXE busy-wait below (see that function) -- if applying a completed
+// "T<digits>\n" line tried to usart2_send_string() an ack right there, that
+// would recursively call usart2_send_byte while the OUTER call is still
+// mid-transmission, garbling whichever line was already in flight. Silent
+// apply is fine: the caller doesn't need a reply to know it landed (see
+// send_emg_threshold() in run_demo_live.py).
+static void poll_threshold_update(void) {
+    if (USART2->SR & USART_SR_RXNE) {
+        const uint8_t b = (uint8_t)USART2->DR;
+        if (b == (uint8_t)'T') {
+            g_threshold_line_active = true;
+            g_threshold_line_value = 0;
+        } else if (g_threshold_line_active) {
+            if (b >= (uint8_t)'0' && b <= (uint8_t)'9') {
+                g_threshold_line_value = g_threshold_line_value * 10u + (uint32_t)(b - (uint8_t)'0');
+            } else if (b == (uint8_t)'\n') {
+                if (g_grip_for_threshold_update != nullptr) {
+                    g_grip_for_threshold_update->set_threshold((float)g_threshold_line_value);
+                }
+                g_threshold_line_active = false;
+            }
+            // any other byte mid-line (e.g. a stray '\r') is ignored, not
+            // an error -- keeps this parser tiny.
+        }
     }
-    return (uint8_t)USART2->DR;
 }
 
 static void usart2_send_byte(uint8_t byte) {
+    // 2026-09-09: polls for an incoming threshold-update byte while
+    // otherwise just spinning here -- without this, a short RX burst
+    // (e.g. "T2691\n", ~52us at 115200 baud) arriving entirely during one
+    // of this loop's own ~95-byte line transmissions (~8ms at 115200 baud)
+    // would be silently lost: USART2->DR has no RX FIFO, so multiple bytes
+    // arriving before anything reads DR just overwrite each other. Found
+    // on real hardware: a threshold update sent while the tick=/[DIAG]
+    // stream was running never took effect, 100% of the time, until this
+    // fix -- polling only at the top of the main loop (this function's
+    // only caller besides poll_threshold_update itself) left RX starved
+    // for however long each print call blocked.
     while (!(USART2->SR & USART_SR_TXE)) {
+        poll_threshold_update();
     }
     USART2->DR = byte;
 }
@@ -697,42 +769,18 @@ int main(void) {
         }
     }
 
-    float threshold = kFallbackThreshold;
-    if constexpr (kCalibrationEnabled) {
-        edgeneuro::ThresholdCalibrator<float> calibrator;
-        usart2_send_string("CALIBRATE: relax, then send any byte to start sampling...\r\n");
-        usart2_recv_byte();
-        usart2_send_string("CALIBRATE: sampling relaxed...\r\n");
-        for (uint32_t i = 0; i < kCalibrationSamples;) {
-            if (ADC1->SR & ADC_SR_EOC) {
-                calibrator.observe_relaxed((float)(ADC1->DR & 0xFFFu));
-                ++i;
-            }
-        }
-        usart2_send_string("CALIBRATE: now clench and hold, then send any byte to start sampling...\r\n");
-        usart2_recv_byte();
-        usart2_send_string("CALIBRATE: sampling contracted...\r\n");
-        for (uint32_t i = 0; i < kCalibrationSamples;) {
-            if (ADC1->SR & ADC_SR_EOC) {
-                calibrator.observe_contracted((float)(ADC1->DR & 0xFFFu));
-                ++i;
-            }
-        }
-        if (!calibrator.is_valid()) {
-            usart2_send_string("CALIBRATE FAILED\r\n");
-            blink_code(9);
-        }
-        threshold = calibrator.threshold();
-        usart2_send_string("CALIBRATE OK, threshold=");
-        usart2_send_uint((uint32_t)threshold);
-        usart2_send_string("\r\n");
-    } else {
-        usart2_send_string("CALIBRATE skipped, fallback threshold=");
-        usart2_send_uint((uint32_t)threshold);
-        usart2_send_string("\r\n");
-    }
+    // 2026-09-09: no boot-time calibration block here anymore -- see
+    // kFallbackThreshold's own comment above for the full story. Starts
+    // with the fallback; tools/mujoco_bridge/run_demo_live.py pushes a
+    // real relax/clench-derived value live once it's connected and ready
+    // (see poll_threshold_update() above, polled both from inside
+    // usart2_send_byte's TXE wait and from the top of the main loop below).
+    usart2_send_string("EMG threshold: fallback=");
+    usart2_send_uint((uint32_t)kFallbackThreshold);
+    usart2_send_string(" (awaiting live update over UART)\r\n");
 
-    edgeneuro::GripStateMachine<float> grip(threshold, kOnDuration, kOffDuration);
+    edgeneuro::GripStateMachine<float> grip(kFallbackThreshold, kOnDuration, kOffDuration);
+    g_grip_for_threshold_update = &grip;
     edgeneuro::SlewRateLimiter<float> setpoint(kSlewRate);
     // Two independent filters, one per IMU -- ComplementaryFilter has no
     // static/global state (verified when this was first ported to the
@@ -826,6 +874,12 @@ int main(void) {
     float shoulder_raw_gz = 0.0f;
 
     while (1) {
+        // Also polled from inside usart2_send_byte's own TXE wait (see that
+        // function's comment for why that's the fix that actually matters
+        // -- this top-of-loop call covers the case where the loop is idle,
+        // between ADC/I2C activity, not currently blocked in a print).
+        poll_threshold_update();
+
         // --- IMU: advance whichever reader is currently active every pass
         // of this loop, not just once per EMG tick -- same throughput
         // rationale as Stage 5b (the CPU is otherwise idle between ADC

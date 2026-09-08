@@ -267,6 +267,17 @@ ELBOW_RAW_RE = re.compile(
     r"elbow_raw_az=(?P<elbow_raw_az>[-\d.eE+]+)"
 )
 
+# emg_min/emg_max: raw 12-bit ADC envelope window (0-4095), always sent
+# regardless of anything EMG-threshold-related -- this is what
+# calibrate_emg_threshold() below watches live to compute a relax/clench
+# threshold on the host (2026-09-09: replaced a firmware-side boot-time
+# calibration block entirely, see phase3_control_loop_main.cpp's
+# kFallbackThreshold comment for why), the same way SHOULDER_RAW_RE's
+# fields feed the shoulder calibration below it.
+EMG_RAW_RE = re.compile(
+    r"emg_min=(?P<emg_min>\d+) emg_max=(?P<emg_max>\d+)"
+)
+
 # The firmware's once-a-second diagnostic line (phase3_control_loop_main.cpp,
 # tick_count % 1000 block) -- shoulder_completions/elbow_completions count
 # real successful I2C reads (STOP reached after a full 14-byte transfer) in
@@ -482,6 +493,9 @@ class LatestSample:
         self.elbow_raw_ax = None
         self.elbow_raw_ay = None
         self.elbow_raw_az = None
+        # Raw EMG envelope window -- see EMG_RAW_RE's comment.
+        self.emg_min = None
+        self.emg_max = None
         self.last_update_monotonic = time.monotonic()
         self.has_received_data = False  # only True once update() has actually run at least once
         self.port_error = None  # set by the reader thread on a real port-level failure
@@ -533,6 +547,15 @@ class LatestSample:
     def snapshot_elbow_raw(self):
         with self._lock:
             return self.elbow_raw_ax, self.elbow_raw_ay, self.elbow_raw_az
+
+    def update_emg_raw(self, emg_min, emg_max):
+        with self._lock:
+            self.emg_min = emg_min
+            self.emg_max = emg_max
+
+    def snapshot_emg_raw(self):
+        with self._lock:
+            return self.emg_min, self.emg_max
 
     def mark_port_error(self, message):
         with self._lock:
@@ -664,6 +687,12 @@ def reader_thread_main(ser, latest):
                             float(elbow_raw_match.group("elbow_raw_ay")),
                             float(elbow_raw_match.group("elbow_raw_az")),
                         )
+                    emg_raw_match = EMG_RAW_RE.search(line)
+                    if emg_raw_match:
+                        latest.update_emg_raw(
+                            int(emg_raw_match.group("emg_min")),
+                            int(emg_raw_match.group("emg_max")),
+                        )
                     continue
                 diag_match = DIAG_LINE_RE.search(line)
                 if diag_match:
@@ -716,6 +745,151 @@ def reader_thread_main(ser, latest):
         latest.mark_port_error(str(exc))
 
 
+def emg_percentile(values, pct):
+    """Robust order-statistic helper: `values[round(pct/100 * (n-1))]` of
+    the sorted list. Used instead of plain max()/min() when picking
+    relaxed_max/contracted_min in calibrate_emg_threshold() below -- a
+    single outlier window (real ADC jitter, confirmed on real hardware,
+    see that function's docstring) shouldn't single-handedly decide the
+    whole calibration the way it did in the old firmware-side
+    ThresholdCalibrator.is_valid() (strict min/max, see git history).
+    Returns 0.0 for an empty list (caller's capture window found nothing,
+    already a distinct failure case checked earlier)."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = int(round((pct / 100.0) * (len(ordered) - 1)))
+    return ordered[idx]
+
+
+def capture_emg_window(latest, seconds, tail_seconds, label, verbose=True):
+    """Records (t, emg_min, emg_max) from the live stream (EMG_RAW_RE,
+    already flowing unconditionally -- no firmware cooperation needed to
+    capture this, same as shoulder calibration's raw_shoulder_ax/ay/az)
+    for `seconds`, printing progress like _calibrate_pose's
+    _capture_window does for shoulder, but only returns the samples within
+    the last `tail_seconds` -- a real relax->clench (or clench->relax)
+    transition takes real physical time, and the early part of the window
+    is that transition, not the settled state (same RECORD_SECONDS/
+    SETTLE_TAIL_SECONDS reasoning _calibrate_pose already uses)."""
+    samples = []
+    t_start = time.monotonic()
+    deadline = t_start + seconds
+    last_print_t = -1.0
+    while time.monotonic() < deadline:
+        emin, emax = latest.snapshot_emg_raw()
+        if emin is not None:
+            t = time.monotonic() - t_start
+            samples.append((t, emin, emax))
+            if verbose and t - last_print_t >= 0.3:
+                print(f"    t={t:4.1f}s {label} emg_min={emin:4d} emg_max={emax:4d}")
+                last_print_t = t
+        time.sleep(0.01)
+    if not samples:
+        return []
+    t_max = samples[-1][0]
+    tail = [s for s in samples if s[0] >= t_max - tail_seconds]
+    return tail if tail else samples[-5:]
+
+
+def send_emg_threshold(ser, threshold):
+    """Sends phase3_control_loop_main.cpp's live threshold-update command:
+    "T<uint>\\n", parsed non-blockingly (one byte per main-loop pass, never
+    stalling it) by that file's main loop and applied via
+    GripStateMachine::set_threshold() -- see that file's kFallbackThreshold
+    comment for the full design. Applies immediately; no reflash, no boot
+    gate, works whether the board just booted or has been streaming for an
+    hour."""
+    ser.write(f"T{int(threshold)}\n".encode("ascii"))
+
+
+EMG_RECORD_SECONDS = 3.5
+EMG_SETTLE_TAIL_SECONDS = 2.0
+
+
+def calibrate_emg_threshold(ser, latest, interactive=True):
+    """Computes a relax/clench EMG threshold entirely on the host from
+    emg_min/emg_max (EMG_RAW_RE) -- the firmware streams these
+    unconditionally from boot, so this needs no protocol/handshake to
+    CAPTURE, only to APPLY the result (send_emg_threshold's "T<uint>\\n").
+    Mirrors _calibrate_pose's approach (record for EMG_RECORD_SECONDS,
+    trust only the settled last EMG_SETTLE_TAIL_SECONDS) and uses
+    emg_percentile (90th of relaxed emg_max, 10th of contracted emg_min)
+    rather than plain max()/min() -- real hardware testing (2026-09-08,
+    when this lived in firmware as a strict-min/max ThresholdCalibrator)
+    found single-sample ADC jitter alone could fail a genuinely
+    well-separated signal; percentiles tolerate a handful of outlier
+    windows instead of being decided by the single worst one.
+
+    interactive=True (run_demo_live.py's normal use) pauses for a real
+    Enter press at each phase. interactive=False lets a caller (e.g. a
+    future automated check) skip the prompts -- but unlike the old
+    firmware-gated design, there's no way to fake a real relax/clench
+    signal without a real body, so interactive=False without real EMG
+    activity will just compute a threshold from whatever ambient noise is
+    on the line; only meaningful against a real, already-known-good signal.
+
+    Returns the threshold actually sent (int), or None if no emg_min/
+    emg_max has arrived yet (nothing to calibrate against -- check MyoWare
+    wiring first)."""
+    emin, _ = latest.snapshot_emg_raw()
+    if emin is None:
+        print("警告:還沒收到任何 emg_min/emg_max 資料,無法校準 EMG 閾值"
+              "(先確認 MyoWare 有連線、韌體有在跑)。")
+        return None
+
+    if interactive:
+        print("放鬆手臂,不要出力。準備好後按 Enter。")
+        input()
+    print(f"取樣中(約 {EMG_RECORD_SECONDS:.1f} 秒,请保持放鬆)...")
+    relaxed_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "放鬆")
+    relaxed_max = emg_percentile([s[2] for s in relaxed_tail], 90)
+
+    if interactive:
+        print("用力握拳並保持住。準備好後按 Enter。")
+        input()
+    print(f"取樣中(約 {EMG_RECORD_SECONDS:.1f} 秒,请保持用力)...")
+    contracted_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "用力")
+    contracted_min = emg_percentile([s[1] for s in contracted_tail], 10)
+
+    if contracted_min <= relaxed_max:
+        print(f"警告:放鬆/用力兩階段沒有分開(relaxed_max={relaxed_max:.0f} >= "
+              f"contracted_min={contracted_min:.0f})-- 可能沒有真的握拳,或 gain 需要調整。"
+              f"仍會用兩者中點當閾值,但建議調整後重新校準。")
+    threshold = int(round((relaxed_max + contracted_min) / 2))
+    print(f"EMG 閾值計算完成:relaxed_max={relaxed_max:.0f} contracted_min={contracted_min:.0f} "
+          f"threshold={threshold}")
+
+    send_emg_threshold(ser, threshold)
+    return threshold
+
+
+def load_calibration_file(path):
+    """Returns the calibration file's contents as a dict, or {} if it
+    doesn't exist yet. Shared by shoulder and EMG calibration -- both live
+    in the same file (see save_calibration_fields) so either one's
+    --skip-* flag can find its saved value regardless of whether the OTHER
+    one was ever captured in the same session."""
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+def save_calibration_fields(path, fields):
+    """Read-merge-write: loads any existing calibration file, updates just
+    `fields`, writes the merged result back. Plain overwrite would silently
+    drop whichever of {shoulder, EMG} calibration ISN'T being saved by this
+    particular call -- e.g. running --skip-calibration (shoulder) together
+    with a fresh EMG calibration would otherwise erase the shoulder data
+    this same run intentionally left untouched, and vice versa."""
+    data = load_calibration_file(path)
+    data.update(fields)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=DEFAULT_PORT)
@@ -742,6 +916,14 @@ def main():
              "re-mounting or re-strapping either sensor.",
     )
     parser.add_argument(
+        "--skip-emg-calibration", action="store_true",
+        help="skip the interactive relax/clench EMG threshold prompts and send a previously-"
+             "saved threshold (from --calibration-file) to the board instead -- same file, same "
+             "read-merge-write as --skip-calibration/shoulder above, just a different key. Unlike "
+             "shoulder, there's no physical-mount caveat: a saved threshold only goes stale if the "
+             "MyoWare gain trim pot gets touched, not from remounting anything.",
+    )
+    parser.add_argument(
         "--optional-sensors", default="",
         help="comma-separated subset of {shoulder,elbow,emg} allowed to be absent this run "
              "without crashing (default: empty -- every sensor required, this script's original "
@@ -753,10 +935,11 @@ def main():
              "an absent shoulder IMU's raw reading stays the zero vector the firmware initializes "
              "it to, and normalizing a zero vector during calibration is a real divide-by-zero, "
              "not a hang (found 2026-09-07, testing MyoWare with neither IMU connected). 'elbow' "
-             "and 'emg' are accepted for a consistent vocabulary but need no special handling -- "
-             "both already degrade safely to a constant if their channel is silent (elbow_bend's "
-             "own shoulder_mag/elbow_mag>0.1 guard in firmware; GripStateMachine simply never "
-             "crosses threshold) -- listing them here doesn't change this script's behavior.",
+             "needs no special handling -- already degrades safely to a constant if its channel "
+             "is silent (elbow_bend's own shoulder_mag/elbow_mag>0.1 guard in firmware). 'emg' "
+             "skips the interactive relax/clench EMG threshold calibration below (leaves "
+             "phase3_control_loop_main.cpp's kFallbackThreshold in effect) -- for a bench session "
+             "with no MyoWare connected at all, since there's no real signal to calibrate against.",
     )
     args = parser.parse_args()
 
@@ -930,6 +1113,36 @@ def main():
             break
         time.sleep(0.05)
 
+    # EMG threshold: same --skip-*/default-calibrates pattern as shoulder
+    # above, sharing the same calibration file (save_calibration_fields'
+    # read-merge-write means neither one clobbers the other). Placed here
+    # (after latest.is_ready(), so emg_min/emg_max is already flowing) --
+    # unlike shoulder, EMG calibration has no physical mount/strap
+    # dependency to invalidate a saved value, so --skip-emg-calibration
+    # doesn't need a "hasn't changed since" caveat the way
+    # --skip-calibration's docstring has -- it only goes stale if the
+    # MyoWare gain trim pot gets touched.
+    if "emg" in optional_sensors:
+        print("emg 標記為選配,跳過 EMG 閾值校準。")
+    elif args.skip_emg_calibration:
+        saved = load_calibration_file(args.calibration_file)
+        if "emg_threshold" not in saved:
+            sys.exit(f"--skip-emg-calibration passed but no saved emg_threshold in "
+                      f"{args.calibration_file} -- run once without this flag first.")
+        emg_threshold = saved["emg_threshold"]
+        print(f"--skip-emg-calibration: loaded threshold={emg_threshold} from "
+              f"{args.calibration_file} (captured {saved.get('emg_threshold_captured_at', 'unknown time')}).")
+        send_emg_threshold(ser, emg_threshold)
+    else:
+        emg_threshold = calibrate_emg_threshold(ser, latest, interactive=True)
+        if emg_threshold is not None:
+            save_calibration_fields(args.calibration_file, {
+                "emg_threshold": emg_threshold,
+                "emg_threshold_captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            print(f"EMG threshold saved to {args.calibration_file} -- next run can pass "
+                  f"--skip-emg-calibration to reuse it instead of re-prompting.")
+
     # 2026-09-05, second pass: calibration baseline moved back to "arm
     # hangs at side" (see SHOULDER_PITCH_FORWARD_OFFSET's comment above).
     # FORWARD takes the old fwd slot (pitch axis: hang-down <-> forward
@@ -967,8 +1180,7 @@ def main():
         if not args.calibration_file.exists():
             sys.exit(f"--skip-calibration passed but {args.calibration_file} doesn't exist -- "
                       f"run once without --skip-calibration first to create it.")
-        with open(args.calibration_file) as f:
-            saved = json.load(f)
+        saved = load_calibration_file(args.calibration_file)
         baseline_raw = tuple(saved["baseline_raw"])
         forward_raw = tuple(saved["forward_raw"])
         left_twist_raw = tuple(saved["left_twist_raw"])
@@ -1006,16 +1218,14 @@ def main():
         if shoulder_optional:
             print("shoulder 選配模式下不存校正檔(沒有真正的肩膀校正資料可存)。")
         else:
-            args.calibration_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(args.calibration_file, "w") as f:
-                json.dump({
-                    "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "baseline_raw": baseline_raw,
-                    "forward_raw": forward_raw,
-                    "left_twist_raw": left_twist_raw,
-                    "right_twist_raw": right_twist_raw,
-                    "zero_elbow": zero_elbow,
-                }, f, indent=2)
+            save_calibration_fields(args.calibration_file, {
+                "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "baseline_raw": baseline_raw,
+                "forward_raw": forward_raw,
+                "left_twist_raw": left_twist_raw,
+                "right_twist_raw": right_twist_raw,
+                "zero_elbow": zero_elbow,
+            })
             print(f"Calibration saved to {args.calibration_file} -- next run can pass "
                   f"--skip-calibration to reuse it instead of re-prompting.")
 
