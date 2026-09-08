@@ -82,13 +82,12 @@ static constexpr float kOffDuration = 0.15f;
 // runtime flag the way tools/mujoco_bridge/run_demo_live.py's
 // --optional-sensors is).
 // Set false<->true here to match whatever's ACTUALLY wired up before each
-// reflash -- currently false/false because the real current bench setup
-// (2026-09-07) is MyoWare-only, neither IMU connected. Flip back to
-// true/true (and reflash) once both IMUs are back on the breadboard, so a
-// real future wiring fault still halts loudly instead of being silently
-// tolerated forever.
-static constexpr bool kRequireShoulderImu = false;
-static constexpr bool kRequireElbowImu = false;
+// reflash. Back to true/true (2026-09-08): both IMUs are back on the
+// breadboard alongside MyoWare, so a real wiring fault should halt loudly
+// again instead of being silently tolerated -- was false/false for one
+// session (2026-09-07) while bench-testing MyoWare alone.
+static constexpr bool kRequireShoulderImu = true;
+static constexpr bool kRequireElbowImu = true;
 static constexpr float kSlewRate = 5.0f;
 static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
 static constexpr uint32_t kCalibrationSamples = 3000u;
