@@ -72,6 +72,17 @@ public:
     State state() const noexcept { return state_; }
     bool is_gripping() const noexcept { return state_ == State::Gripping; }
 
+    // Live threshold update -- added 2026-09-09 so a host-computed
+    // calibration (relax/clench captured and averaged on the Python side,
+    // from the envelope this class already streams every tick regardless)
+    // can be applied without reconstructing this object or restarting the
+    // main loop. Does NOT reset above_time_/below_time_/state_: an
+    // in-progress hold shouldn't be discarded just because a fresher
+    // threshold arrived -- only the comparison in the NEXT update() call
+    // uses the new value.
+    void set_threshold(ValueType threshold) noexcept { threshold_ = threshold; }
+    ValueType threshold() const noexcept { return threshold_; }
+
     void reset() noexcept {
         above_time_ = ValueType{0};
         below_time_ = ValueType{0};

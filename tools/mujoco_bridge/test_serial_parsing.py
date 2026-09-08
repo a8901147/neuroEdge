@@ -32,6 +32,7 @@ FULL_LINE = (
 DIAG_LINE = (
     "diag shoulder_completions=250 elbow_completions=248 shoulder_nacks=0 "
     "shoulder_timeouts=0 elbow_nacks=0 elbow_timeouts=2 active_reader_state=1 "
+    "shoulder_wake_result=0 elbow_wake_result=0 shoulder_required=1 elbow_required=1 "
     "bus_recovery_attempts=0 bus_recovery_freed=0"
 )
 
