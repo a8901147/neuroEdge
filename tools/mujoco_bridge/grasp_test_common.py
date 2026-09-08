@@ -56,8 +56,13 @@ LIFT_SHOULDER_PITCH = -0.40
 
 DEFAULT_BALL_RADIUS = 0.025
 DEFAULT_BALL_FRICTION = "1.0 0.02 0.005"
-DEFAULT_PEDESTAL_POS = (0.051, 0.332, 0.935)
-DEFAULT_OBJECT_POS = (0.051, 0.332, 0.99)
+# 2026-09-08: kept in sync with arm_hand_scene.xml's pedestal/object body
+# pos -- see that file's comment for the full story (a first, much bigger
+# pedestal made the object unreachable -- the width itself blocked the
+# hand's approach, not the height drop; re-picked smaller and re-verified
+# HELD via a real run_grasp_scenario call with the unmodified REACH_CTRL).
+DEFAULT_PEDESTAL_POS = (0.051, 0.332, 0.930)
+DEFAULT_OBJECT_POS = (0.051, 0.332, 0.98)
 
 FINGERTIP_BODIES = ["left_hand_thumb_2_link", "left_hand_middle_1_link", "left_hand_index_1_link"]
 

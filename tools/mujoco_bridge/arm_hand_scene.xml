@@ -492,12 +492,31 @@
          spot, still fully within real ROM. REACH_CTRL in
          grasp_test_common.py / test_grip_kinematics.py was updated to this
          same (pitch=-1.00, roll=+0.80, elbow=0.90) pose -- keep both in
-         sync if either changes again. -->
-    <body name="pedestal" pos="0.051 0.332 0.935">
-      <geom type="box" size="0.03 0.03 0.03" rgba="0.6 0.5 0.4 1"/>
+         sync if either changes again.
+
+         2026-09-08: widened footprint 0.03->0.09 (half-size, so 6cm->18cm
+         square) and lowered top surface ~2.5cm (ball dropped 0.99->0.965)
+         per the user's real-hardware request -- a slipped/rolled object was
+         landing on the floor, out of reach, instead of staying on the
+         pedestal. FOUND BROKEN via run_grasp_scenario: the 18cm pedestal
+         made the object completely unreachable with the existing
+         REACH_CTRL (closed-hand dist 0.183m vs. the original setup's
+         0.016m) -- isolated via a clean A/B (same height, footprint only)
+         that the WIDTH itself, not the height drop, was the problem: a
+         pedestal that size physically occupies the space the hand needs to
+         close around the object from this approach angle. Re-picked with a
+         much more modest size (0.05 half-size, so 6cm->10cm square -- still
+         a real safety margin against rolling off, not the ~2.5cm original)
+         and a smaller 1cm height drop (0.99->0.98); re-verified via a real
+         run_grasp_scenario call with the SAME unmodified REACH_CTRL
+         (pitch=-1.00, roll=0.80, elbow=0.90) -- VERDICT: HELD
+         (dist_after=0.051m). Kept in sync with grasp_test_common.py's
+         DEFAULT_PEDESTAL_POS/DEFAULT_OBJECT_POS. -->
+    <body name="pedestal" pos="0.051 0.332 0.930">
+      <geom type="box" size="0.05 0.05 0.025" rgba="0.6 0.5 0.4 1"/>
     </body>
 
-    <body name="object" pos="0.051 0.332 0.99">
+    <body name="object" pos="0.051 0.332 0.98">
       <freejoint/>
       <geom type="sphere" size="0.025" rgba="0.5 0.7 0.5 1" condim="6" priority="1"
         friction="1.0 0.02 0.005" mass="0.05"/>
