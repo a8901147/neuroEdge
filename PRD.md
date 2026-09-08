@@ -474,6 +474,7 @@ TODO #1 原文說「接進 `phase3_control_loop_main.cpp`」，但實際查證�
 #### 下個 session 要接著做的事（TODO，依優先順序）
 
 1. **完整六步驟抓球任務在真實硬體上跑一次**——這個 session 的兩個主要進行中項目都已解決（三顆感測器確認能一起正常運作、場景/`REACH_CTRL` 也驗證 HELD），沒有前置阻礙了。建議開頭先跑 `check_hardware_ready.py --live-check`（確認 wake/streaming 正常）+ `watch_emg_raw.py`（確認 MyoWare 訊號正常，不要假設上次卡住的問題已經自己好了），再跑 `mjpython tools/mujoco_bridge/run_demo_live.py --skip-calibration --skip-emg-calibration`（沿用已存好的兩組校正資料）直接做完整任務。
-2. **（可選）換成 FTDI FT232RL 轉接板**——如果想徹底擺脫今天反覆遇到的 CP2102 鎖死問題，這是根本解法而非 workaround。不急，看使用者要不要採購。
-3. **一個之前發現、講過但還沒動手的架構債**：`kRequireShoulderImu`/`kRequireElbowImu`（決定 wake 失敗要不要 `blink_code()` halt）目前是編譯期常數，每次 bench 感測器配置改變都要重燒才能切換；`run_demo_live.py` 的 `--optional-sensors` 目前也只能用逾時猜測某顆 IMU 是否真的不在，猜不到韌體其實已經算出真正的 `g_wake_result_shoulder/elbow`。討論過的方向：把這個結果放進韌體固定會送的診斷行（比照 `[DIAG]`），並讓 require/optional 政策改成開機時讀一個可選的 UART 設定 byte，不用重燒——這只是討論過的方向，還沒有人要求動手，之後真的常常被這個問題卡到再做。
-4. MPU-9255 整合——已下單，明確列為未來優化項目，非急件。
+2. **FT232RL 轉接板已下單（2026-09-09）**——到貨後換上，應該能徹底解決今天反覆遇到的 CP2102 鎖死問題。
+3. **`kRequireShoulderImu`/`kRequireElbowImu` 架構債——已重做，還沒用真實硬體驗證**。改成 `read_optional_sensors_config()`：開機時 ~300ms 有界等待，讀 `run_demo_live.py` 送來的 `"O<bits>\n"`（bit0=shoulder 選配、bit1=elbow 選配），逾時就維持原本「兩者都必須」的安全預設，不用再為了切換感測器配置編輯常數+重燒。`[DIAG]` 行也新增 `shoulder_wake_result=`/`elbow_wake_result=`/`shoulder_required=`/`elbow_required=`，`run_demo_live.py` 不用再靠「等 5 秒猜」這種弱訊號，直接讀韌體算好的真實 wake 結果。**這個 O\<bits\> 指令是一次性、開機時的有界等待，不像 EMG 的 `T<uint>` 可以隨時線上更新**——只有 Python 端剛好在板子那 300ms 開機窗口內送出才會生效，所以主要用在「剛重燒/重置後馬上執行」的場景；平常單純連線不受影響（照樣維持該次開機時已經生效的政策）。韌體端已編譯通過，C++/Python 測試全過，**但這整套改動完全還沒在真實硬體上測過**，下次有硬體時第一件事應該是驗證這個。
+
+**MPU-9255 整合：使用者 2026-09-09 決定不需要了，從計畫中移除。**

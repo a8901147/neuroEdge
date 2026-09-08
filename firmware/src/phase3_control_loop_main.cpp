@@ -85,34 +85,27 @@ static constexpr float kFallbackThreshold = 2800.0f;
 static constexpr float kOnDuration = 0.15f;
 static constexpr float kOffDuration = 0.15f;
 
-// --- Which sensors THIS session's bench setup actually has wired up
-// (2026-09-07) ---
-// Originally both IMUs were unconditionally required: a failed wake write
-// (PWR_MGMT_1 write never ACKed) called blink_code() -- a real infinite
-// while(1), never returns -- which halted the WHOLE loop before EMG ever
-// ran, since the wake writes happen before the main loop starts. That was
-// fine when every bring-up session had both IMUs connected, but is wrong
-// the moment someone wants to bench-test just the EMG chain (exactly what
-// happened first: real hardware sat there printing nothing at all, for
-// ten seconds, with a perfectly good MyoWare connected, because neither
-// IMU was wired up and the firmware never got past its own boot gate to
-// find out). Set to false for a sensor genuinely absent this session; a
-// wake failure for a sensor still marked true still halts (blink_code) --
-// that's a real wiring fault worth catching loudly, not something to
-// silently downgrade to a warning. Edit + reflash to change which sensors
-// a given bench session needs (this is bare-metal firmware -- there's no
-// argv to make it a real runtime flag the way
-// tools/mujoco_bridge/run_demo_live.py's --optional-sensors is; unlike the
-// EMG threshold above, there's no live-streamed raw signal a host could use
-// to make this decision after the fact -- whether a wake write ACKs has to
-// be decided before the main loop exists at all).
-// Set false<->true here to match whatever's ACTUALLY wired up before each
-// reflash. Back to true/true (2026-09-08): both IMUs are back on the
-// breadboard alongside MyoWare, so a real wiring fault should halt loudly
-// again instead of being silently tolerated -- was false/false for one
-// session (2026-09-07) while bench-testing MyoWare alone.
-static constexpr bool kRequireShoulderImu = true;
-static constexpr bool kRequireElbowImu = true;
+// --- Which sensors THIS session's bench setup actually has wired up ---
+// 2026-09-09: was a pair of compile-time constants (kRequireShoulderImu/
+// kRequireElbowImu, see git history) requiring an edit+reflash every time
+// the bench sensor configuration changed -- same class of problem the EMG
+// threshold's old boot-gated calibration had (see kFallbackThreshold's
+// comment above), and same fix shape: moved to a runtime UART command
+// instead. read_optional_sensors_config() below waits a short bounded
+// window at boot for the host to send "O<bits>\n" (bit0=shoulder optional,
+// bit1=elbow optional); if nothing arrives in time, defaults to requiring
+// BOTH (fail-safe -- matches the old default, and matches "a board with
+// nobody driving it should halt loudly on a real wiring fault, not
+// silently tolerate one"). Unlike the EMG threshold, this can't be a
+// live-anytime update the way "T<uint>\n" is: whether a wake failure halts
+// has to be decided before the main loop (and its wake attempts) even
+// exist, so this is a one-shot bounded wait at the very start of main(),
+// not something polled continuously afterward.
+static bool g_require_shoulder_imu = true;
+static bool g_require_elbow_imu = true;
+// read_optional_sensors_config() (applies the above from a boot-time UART
+// command) is defined further down, after the usart2_send_* helpers it
+// needs -- see that function's own comment for the full design.
 static constexpr float kSlewRate = 5.0f;
 static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
 
@@ -285,6 +278,48 @@ static void usart2_send_int(int32_t value) {
     } else {
         usart2_send_uint((uint32_t)value);
     }
+}
+
+// Sets g_require_shoulder_imu/g_require_elbow_imu from a boot-time
+// "O<bits>\n" UART command (bit0=shoulder optional, bit1=elbow optional) --
+// see those globals' own comment (near the top of this file) for the full
+// design/history. ~300ms bounded wait, measured via ADC EOC ticks (already
+// running at 1kHz from adc1_init_timer_triggered()/tim2_init_1khz_trgo(),
+// called just before this in main()) rather than a separate timer.
+// Consuming ADC1->DR here is safe: nothing else reads it until the main
+// loop starts, well after this returns. Leaves both required (the safe
+// default already set on those globals) if nothing arrives in time.
+static void read_optional_sensors_config(void) {
+    uint32_t ticks = 0;
+    bool have_o = false;
+    uint32_t bits = 0;
+    while (ticks < 300u) {
+        if (USART2->SR & USART_SR_RXNE) {
+            const uint8_t b = (uint8_t)USART2->DR;
+            if (b == (uint8_t)'O') {
+                have_o = true;
+                bits = 0;
+            } else if (have_o) {
+                if (b >= (uint8_t)'0' && b <= (uint8_t)'9') {
+                    bits = bits * 10u + (uint32_t)(b - (uint8_t)'0');
+                } else if (b == (uint8_t)'\n') {
+                    g_require_shoulder_imu = (bits & 0x1u) == 0u;
+                    g_require_elbow_imu = (bits & 0x2u) == 0u;
+                    usart2_send_string("OPTIONAL_SENSORS_OK bits=");
+                    usart2_send_uint(bits);
+                    usart2_send_string("\r\n");
+                    return;
+                }
+                // any other byte mid-line is ignored, not an error.
+            }
+        }
+        if (ADC1->SR & ADC_SR_EOC) {
+            (void)ADC1->DR;
+            ++ticks;
+        }
+    }
+    // Timeout: no config arrived in time -- stays at the safe default
+    // (both required) set on the globals above.
 }
 
 // Stage 6: real decimal-point printing (e.g. "-0.123456"), replacing the
@@ -735,6 +770,12 @@ int main(void) {
     i2c1_init();
     usart2_send_string("Stage 5b: combined EMG+IMU 1kHz loop, non-blocking I2C\r\n");
 
+    // See read_optional_sensors_config()'s own comment -- must run before
+    // the wake attempts below, since it decides whether a failure there is
+    // fatal. ~300ms bounded wait; defaults to requiring both IMUs if
+    // nothing arrives in time.
+    read_optional_sensors_config();
+
     // Wake both sensors: PWR_MGMT_1 (0x6B) defaults to SLEEP=1 on power-up,
     // where accel/gyro registers don't update -- without this, ImuReader
     // reads complete "successfully" (real ACKs, real protocol) but return
@@ -749,10 +790,10 @@ int main(void) {
         usart2_send_string("shoulder MPU6050 (0x68) wake write FAILED, code=");
         usart2_send_int(g_wake_result_shoulder);
         usart2_send_string("\r\n");
-        if constexpr (kRequireShoulderImu) {
+        if (g_require_shoulder_imu) {
             blink_code(9);
         } else {
-            usart2_send_string("shoulder IMU marked optional (kRequireShoulderImu=false) "
+            usart2_send_string("shoulder IMU marked optional via O<bits> "
                                 "-- continuing without it\r\n");
         }
     }
@@ -761,10 +802,10 @@ int main(void) {
         usart2_send_string("elbow MPU6050 (0x69) wake write FAILED, code=");
         usart2_send_int(g_wake_result_elbow);
         usart2_send_string("\r\n");
-        if constexpr (kRequireElbowImu) {
+        if (g_require_elbow_imu) {
             blink_code(10);
         } else {
-            usart2_send_string("elbow IMU marked optional (kRequireElbowImu=false) "
+            usart2_send_string("elbow IMU marked optional via O<bits> "
                                 "-- continuing without it\r\n");
         }
     }
@@ -1172,6 +1213,24 @@ int main(void) {
                     usart2_send_uint(elbow_reader.timeout_count());
                     usart2_send_string(" active_reader_state=");
                     usart2_send_uint((uint32_t)active_reader.state_as_int());
+                    // 2026-09-09: the actual ground-truth wake result and
+                    // current required/optional policy for each IMU, added
+                    // so a host tool can know these directly instead of
+                    // guessing via a timeout on shoulder_raw_* arriving (see
+                    // run_demo_live.py's old --optional-sensors comment) or
+                    // reading g_wake_result_shoulder/elbow over SWD by hand.
+                    // shoulder/elbow_wake_result: 0=success, nonzero=the
+                    // real mpu6050_write_reg_blocking() failure code.
+                    // shoulder/elbow_required: 1 means a wake failure halts
+                    // via blink_code() (see read_optional_sensors_config()).
+                    usart2_send_string(" shoulder_wake_result=");
+                    usart2_send_int(g_wake_result_shoulder);
+                    usart2_send_string(" elbow_wake_result=");
+                    usart2_send_int(g_wake_result_elbow);
+                    usart2_send_string(" shoulder_required=");
+                    usart2_send_uint(g_require_shoulder_imu ? 1u : 0u);
+                    usart2_send_string(" elbow_required=");
+                    usart2_send_uint(g_require_elbow_imu ? 1u : 0u);
                     // Cumulative since boot, unlike the per-window counters
                     // above -- these fire rarely enough that "since boot"
                     // is more useful than resetting every window.

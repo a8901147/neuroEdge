@@ -306,6 +306,10 @@ DIAG_LINE_RE = re.compile(
     r"shoulder_nacks=(?P<shoulder_nacks>\d+) shoulder_timeouts=(?P<shoulder_timeouts>\d+) "
     r"elbow_nacks=(?P<elbow_nacks>\d+) elbow_timeouts=(?P<elbow_timeouts>\d+) "
     r"active_reader_state=(?P<active_reader_state>\d+) "
+    r"shoulder_wake_result=(?P<shoulder_wake_result>-?\d+) "
+    r"elbow_wake_result=(?P<elbow_wake_result>-?\d+) "
+    r"shoulder_required=(?P<shoulder_required>\d) "
+    r"elbow_required=(?P<elbow_required>\d) "
     r"bus_recovery_attempts=(?P<bus_recovery_attempts>\d+) "
     r"bus_recovery_freed=(?P<bus_recovery_freed>\d+)"
 )
@@ -508,6 +512,17 @@ class LatestSample:
         # this is "how many retries since it went offline", not "since boot".
         self.shoulder_retry_attempts = 0
         self.elbow_retry_attempts = 0
+        # Ground-truth wake result (0=success) and current require/optional
+        # policy for each IMU -- from the diag line's shoulder_wake_result=/
+        # elbow_wake_result=/shoulder_required=/elbow_required= fields
+        # (2026-09-09, see phase3_control_loop_main.cpp's
+        # read_optional_sensors_config() comment). None until the first diag
+        # line arrives. Replaces the old approach of guessing whether an
+        # IMU is present via a timeout on shoulder_raw_* ever arriving.
+        self.shoulder_wake_result = None
+        self.elbow_wake_result = None
+        self.shoulder_required = None
+        self.elbow_required = None
 
     def update(self, grip, shoulder_pitch, shoulder_roll, elbow):
         with self._lock:
@@ -562,7 +577,9 @@ class LatestSample:
             self.port_error = message
 
     def update_diag(self, shoulder_completions, elbow_completions,
-                     shoulder_nacks, shoulder_timeouts, elbow_nacks, elbow_timeouts):
+                     shoulder_nacks, shoulder_timeouts, elbow_nacks, elbow_timeouts,
+                     shoulder_wake_result=None, elbow_wake_result=None,
+                     shoulder_required=None, elbow_required=None):
         with self._lock:
             self.shoulder_completions = shoulder_completions
             self.elbow_completions = elbow_completions
@@ -574,6 +591,21 @@ class LatestSample:
                 self.elbow_retry_attempts = 0
             else:
                 self.elbow_retry_attempts += elbow_nacks + elbow_timeouts
+            if shoulder_wake_result is not None:
+                self.shoulder_wake_result = shoulder_wake_result
+                self.elbow_wake_result = elbow_wake_result
+                self.shoulder_required = shoulder_required
+                self.elbow_required = elbow_required
+
+    def snapshot_wake_status(self):
+        """(shoulder_wake_result, elbow_wake_result, shoulder_required,
+        elbow_required) -- each None until the first diag line (~1s after
+        boot) arrives. wake_result==0 means that IMU's wake write
+        succeeded; required==False means a failed wake there was tolerated
+        (see read_optional_sensors_config() in the firmware)."""
+        with self._lock:
+            return (self.shoulder_wake_result, self.elbow_wake_result,
+                    self.shoulder_required, self.elbow_required)
 
     def imu_retry_attempts(self):
         with self._lock:
@@ -703,6 +735,10 @@ def reader_thread_main(ser, latest):
                         int(diag_match.group("shoulder_timeouts")),
                         int(diag_match.group("elbow_nacks")),
                         int(diag_match.group("elbow_timeouts")),
+                        int(diag_match.group("shoulder_wake_result")),
+                        int(diag_match.group("elbow_wake_result")),
+                        diag_match.group("shoulder_required") == "1",
+                        diag_match.group("elbow_required") == "1",
                     )
                     diag_key = (
                         diag_match.group("shoulder_nacks"), diag_match.group("shoulder_timeouts"),
@@ -929,14 +965,19 @@ def main():
              "without crashing (default: empty -- every sensor required, this script's original "
              "behavior). This is an opt-in relaxation, not real hardware detection: a sensor NOT "
              "listed here is still assumed present, and this script may still hang/crash if it "
-             "actually isn't. 'shoulder' skips the FORWARD/LEFT_TWIST/RIGHT_TWIST calibration "
-             "poses (there's nothing real to calibrate) and holds pitch/roll fixed at 0 "
-             "(BASELINE/hang-down) for the whole session instead of live-tracking -- without this, "
-             "an absent shoulder IMU's raw reading stays the zero vector the firmware initializes "
-             "it to, and normalizing a zero vector during calibration is a real divide-by-zero, "
-             "not a hang (found 2026-09-07, testing MyoWare with neither IMU connected). 'elbow' "
-             "needs no special handling -- already degrades safely to a constant if its channel "
-             "is silent (elbow_bend's own shoulder_mag/elbow_mag>0.1 guard in firmware). 'emg' "
+             "actually isn't. 'shoulder' also tells the firmware not to halt on a shoulder wake "
+             "failure (same boot-time O<bits> command 'elbow' below uses), AND skips the FORWARD/"
+             "LEFT_TWIST/RIGHT_TWIST calibration poses (there's nothing real to calibrate) and "
+             "holds pitch/roll fixed at 0 (BASELINE/hang-down) for the whole session instead of "
+             "live-tracking -- without that second part, an absent shoulder IMU's raw reading "
+             "stays the zero vector the firmware initializes it to, and normalizing a zero vector "
+             "during calibration is a real divide-by-zero, not a hang (found 2026-09-07, testing "
+             "MyoWare with neither IMU connected). 'elbow' "
+             "tells the firmware (via the boot-time O<bits> command, see "
+             "read_optional_sensors_config() in phase3_control_loop_main.cpp) not to halt if the "
+             "elbow IMU's wake write fails -- its decoded value already degrades safely to a "
+             "constant when silent either way (elbow_bend's own shoulder_mag/elbow_mag>0.1 guard "
+             "in firmware), this only affects whether a genuine wake failure is fatal. 'emg' "
              "skips the interactive relax/clench EMG threshold calibration below (leaves "
              "phase3_control_loop_main.cpp's kFallbackThreshold in effect) -- for a bench session "
              "with no MyoWare connected at all, since there's no real signal to calibrate against.",
@@ -965,6 +1006,20 @@ def main():
     latest = LatestSample()
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
     reader.start()
+
+    # 2026-09-09: tells the firmware which IMUs are allowed to fail their
+    # wake write without halting (read_optional_sensors_config() in
+    # phase3_control_loop_main.cpp) -- replaces the old kRequireShoulderImu/
+    # kRequireElbowImu compile-time constants, which needed an edit+reflash
+    # every time the bench sensor configuration changed. Best-effort: only
+    # takes effect if the board happens to be within its ~300ms boot window
+    # right now (e.g. was just reflashed/reset); otherwise it's a silent
+    # no-op and the board keeps whatever policy it already booted with
+    # (defaults to requiring both if nobody answered in time). bit0=
+    # shoulder, bit1=elbow -- 'emg' has no bit, see --optional-sensors' own
+    # help text for why.
+    optional_bits = (1 if shoulder_optional else 0) | (2 if "elbow" in optional_sensors else 0)
+    ser.write(f"O{optional_bits}\n".encode("ascii"))
 
     # Shoulder calibration: 3 poses feed the oblique basis, each averaged
     # over a settle+hold window -- replaces the old single-pose "zero"
@@ -1096,22 +1151,36 @@ def main():
 
     while not latest.is_ready():
         time.sleep(0.05)
-    # 5s bound only when shoulder is marked optional -- with a firmware
-    # build that still sends the full tick= line for an absent IMU (just
-    # zero-valued fields, see phase3_control_loop_main.cpp's
-    # kRequireShoulderImu), this wait would already pass quickly on its
-    # own; the timeout is defensive for an older/different firmware build
-    # that might not send shoulder_raw_* fields at all when the IMU never
-    # completes a read. Required (not optional) sensors keep the original
-    # unbounded wait -- if shoulder is genuinely required and never shows
-    # up, that SHOULD hang here rather than silently proceed.
-    _shoulder_wait_deadline = (time.time() + 5.0) if shoulder_optional else None
-    while latest.snapshot_shoulder_raw()[0] is None:
-        if _shoulder_wait_deadline is not None and time.time() > _shoulder_wait_deadline:
-            print("警告:shoulder 標記為選配,5 秒內沒收到 shoulder_raw,略過等待——"
+
+    if shoulder_optional:
+        # 2026-09-09: previously guessed absence via a 5s timeout on
+        # shoulder_raw_* ever arriving -- but that field is always present
+        # on every tick line regardless of wake success (firmware sends it
+        # unconditionally, just zero-valued if the IMU never completed a
+        # read), so that wait never actually detected anything; it just
+        # waited for the first tick line, already covered by is_ready()
+        # above. Uses the diag line's real shoulder_wake_result= field
+        # instead (see DIAG_LINE_RE) -- bounded 2s wait in case an older
+        # firmware build never sends it. Note this only changes the
+        # DIAGNOSTIC MESSAGE's accuracy, not the behavior below: shoulder
+        # stays untracked/BASELINE-only for the rest of this session either
+        # way (--optional-sensors=shoulder means "don't track", not
+        # "auto-detect and adapt") -- see shoulder_basis's own comment
+        # further down for where that's enforced.
+        _wake_status_deadline = time.time() + 2.0
+        while latest.snapshot_wake_status()[0] is None and time.time() < _wake_status_deadline:
+            time.sleep(0.05)
+        shoulder_wake_result = latest.snapshot_wake_status()[0]
+        if shoulder_wake_result is None:
+            print("警告:shoulder 標記為選配,2 秒內沒收到韌體的 wake 診斷資料——"
                   "肩膀 pitch/roll 整個 session 都會固定在 BASELINE。")
-            break
-        time.sleep(0.05)
+        elif shoulder_wake_result != 0:
+            print(f"shoulder 標記為選配,韌體確認 wake 真的失敗了(code={shoulder_wake_result})"
+                  f"——肩膀 pitch/roll 整個 session 都會固定在 BASELINE。")
+        else:
+            print("shoulder 標記為選配,但韌體回報 wake 其實成功了(IMU 有連線)——"
+                  "仍會固定在 BASELINE,不會即時追蹤(--optional-sensors 是「不追蹤」,"
+                  "不是「偵測不到才不追蹤」)。")
 
     # EMG threshold: same --skip-*/default-calibrates pattern as shoulder
     # above, sharing the same calibration file (save_calibration_fields'
