@@ -475,6 +475,48 @@ TODO #1 原文說「接進 `phase3_control_loop_main.cpp`」，但實際查證�
 
 1. **完整六步驟抓球任務在真實硬體上跑一次**——這個 session 的兩個主要進行中項目都已解決（三顆感測器確認能一起正常運作、場景/`REACH_CTRL` 也驗證 HELD），沒有前置阻礙了。建議開頭先跑 `check_hardware_ready.py --live-check`（確認 wake/streaming 正常）+ `watch_emg_raw.py`（確認 MyoWare 訊號正常，不要假設上次卡住的問題已經自己好了），再跑 `mjpython tools/mujoco_bridge/run_demo_live.py --skip-calibration --skip-emg-calibration`（沿用已存好的兩組校正資料）直接做完整任務。
 2. **FT232RL 轉接板已下單（2026-09-09）**——到貨後換上，應該能徹底解決今天反覆遇到的 CP2102 鎖死問題。
-3. **`kRequireShoulderImu`/`kRequireElbowImu` 架構債——已重做，還沒用真實硬體驗證**。改成 `read_optional_sensors_config()`：開機時 ~300ms 有界等待，讀 `run_demo_live.py` 送來的 `"O<bits>\n"`（bit0=shoulder 選配、bit1=elbow 選配），逾時就維持原本「兩者都必須」的安全預設，不用再為了切換感測器配置編輯常數+重燒。`[DIAG]` 行也新增 `shoulder_wake_result=`/`elbow_wake_result=`/`shoulder_required=`/`elbow_required=`，`run_demo_live.py` 不用再靠「等 5 秒猜」這種弱訊號，直接讀韌體算好的真實 wake 結果。**這個 O\<bits\> 指令是一次性、開機時的有界等待，不像 EMG 的 `T<uint>` 可以隨時線上更新**——只有 Python 端剛好在板子那 300ms 開機窗口內送出才會生效，所以主要用在「剛重燒/重置後馬上執行」的場景；平常單純連線不受影響（照樣維持該次開機時已經生效的政策）。韌體端已編譯通過，C++/Python 測試全過，**但這整套改動完全還沒在真實硬體上測過**，下次有硬體時第一件事應該是驗證這個。
+3. ~~`kRequireShoulderImu`/`kRequireElbowImu` 架構債——已重做，還沒用真實硬體驗證~~ → **2026-09-10 已在真實硬體上驗證通過，見下方新 session handoff。**
 
 **MPU-9255 整合：使用者 2026-09-09 決定不需要了，從計畫中移除。**
+
+### Session Handoff (2026-09-10)：sensor-optional 真實硬體驗證、意外挖出 bootloader 電源循環的坑、MPU6050 接線問題
+
+延續上一份 handoff 的第 3 項待辦——驗證 `O<bits>` sensor-optional 指令。過程中意外撞見一個完全跟 UART/CP2102 無關的新坑：**這顆 WeAct bootloader 只有真正斷電重開才會跳到 app，單純 SWD/軟體 reset 永遠留在 bootloader**，花了大半個 session 才用 SWD 讀 PC 一步步排除掉兩個錯誤假說才找到。另外也真的抓到一次 MPU6050 接線鬆脫的案例。
+
+#### 排查過程：兩個被 raw data 推翻的假說，第三個才是真的
+
+症狀：重燒後 UART 完全沒有任何 byte，跟上次 session 記錄的三個已知原因（壞 TX 腳位、CP2102 鎖死、BOOT0 誤判）症狀一模一樣，但這次都對不上：
+
+1. 先懷疑又是 CP2102 鎖死——拔插、換 USB 孔都沒用。
+2. 改用 SWD 直接讀 PC，抓到 PC 停在 `0x08000000`-`0x08003fff`（WeAct bootloader 自己的 16KB 區，不是 app 的 `0x08004000+`，也不是 BOOT0 誤判會落到的 `0x1fff0000` ROM bootloader）。當時 board 自己的原生 USB 孔正好接著電腦，猜測是 bootloader 偵測到 USB host 在，不放行——**這個假說後來被直接推翻**：把那條線改接到電源供應器（不是電腦）之後，PC 還是卡在同一個區域。
+3. 多次觀察 PC 在 bootloader 區內游走（`0x080001ac`→`0x080005ce`→`0x080009d4`…都在同一個 16KB 範圍內，從未越過 `0x08004000`），且無論等多久都不會自己跳轉，只有一次**真正整條電源線拔掉又插回**之後 PC 立刻讀到 `0x08004182`（app 區內）。反覆驗證後確認：**bootloader 刻意區分「真斷電重開」跟「NRST/SWD 軟 reset」，只有前者才跳到 app**——這是這類 HID bootloader 常見的設計，方便開發時重燒不用每次拔插電源，但也代表 `flash_<target>`（`program ... reset exit`，openocd 的 `reset` 只是軟 reset）flash 完之後，app 不會馬上執行，一定要手動斷電重插一次。
+
+這個發現已經寫入持久記憶（`project_bootloader_requires_power_cycle`），下次不用再重新排查一次。
+
+#### 新增獨立的 boot-sanity 檢查（commit `7031b1a`）
+
+`tools/check_hardware_ready.py` 新增 `check_boot_reached_app()`：純粹用 SWD 讀 PC，跟 UART/I2C 完全無關，把「執行有沒有真的到 app」獨立成一個不會被下游任何邏輯（例如 `blink_code()` 卡死）掩蓋的檢查，分三種結果回報（app 內／ROM bootloader／WeAct bootloader）。已自動接在 `--i2c-scan`、`--live-check` 兩邊 flash 完之後，並額外開一個 `--boot-check` 獨立入口（不重新 flash，單純針對「剛手動斷電重插完」這個時機點驗證，會 poll 到 25 秒讓斷電重插的動作來得及發生）。
+
+#### 意外抓到一次真的 MPU6050 接線鬆脫
+
+排查 bootloader 問題的過程中，`g_wake_result_shoulder` 一度讀到 `2`（I2C 位址階段 NACK，真實的失敗代碼，不是猜的），對應 `g_require_shoulder_imu=1`，導致韌體卡進 `blink_code(9)` 無限迴圈——這正是 EMG 那次 session 設計 sensor-optional 機制原本要處理的情境。使用者重新插拔 shoulder MPU6050 的接線後解決。
+
+#### `O<bits>` 真實硬體驗證通過
+
+board 確認正常開機、跑進 app 之後，連續送 `O2\n`（bit1=elbow 選配）涵蓋一次斷電重開的視窗，驗證結果：
+
+- `[DIAG]` 行讀到 `elbow_required=0`——指令確實在開機 300ms 視窗內生效。
+- 同一行 `elbow_wake_result=2`（elbow 喚醒當次真的 NACK 失敗）——但因為 `elbow_required=0`，韌體**沒有**卡進 `blink_code(10)`，繼續正常串流。
+- 額外抓了幾十行 `elbow_raw_ax/ay/az` 確認數值持續在雜訊量級變化（不是凍結的舊資料），代表 elbow 讀取後續仍是活的即時資料，不是 `PWR_MGMT_1` 沒設好、卡在 SLEEP 模式回傳固定值。
+
+**結論：`4ea66a7`（sensor-optional 重新設計）已經是真實硬體驗證過的，不再是「只過了單元測試」的狀態。**
+
+#### 這個 session 的 commit
+
+`4ea66a7`（上個 session 寫好、這個 session 驗證通過，見上）、`7031b1a`（boot-sanity 檢查工具）。都沒有帶 co-author trailer。
+
+#### 下個 session 要接著做的事（TODO，依優先順序）
+
+1. **完整六步驟抓球任務在真實硬體上跑一次**——目前沒有已知阻礙了（三顆感測器都驗證過能正常運作，sensor-optional 機制也驗證過）。建議開頭先跑 `check_hardware_ready.py --i2c-scan --live-check`，flash 完記得手動斷電重插一次（新學到的坑），再跑 `run_demo_live.py --skip-calibration --skip-emg-calibration`。
+2. **elbow MPU6050 那次 wake NACK 沒有深究原因**——只驗證了「即使 NACK，sensor-optional 機制正常擋住不讓它變成致命錯誤」，但沒有確認這次 NACK 是接線鬆動的個案還是會復發，下次如果又出現同樣情況，先當作 elbow 接線問題檢查。
+3. **FT232RL 轉接板已下單（2026-09-09），到貨後換上**，應該能解決 CP2102 鎖死問題（這個 session 沒有再遇到 CP2102 鎖死症狀，但也沒有刻意去驗證是否還會發生）。
