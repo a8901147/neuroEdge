@@ -481,7 +481,7 @@ TODO #1 原文說「接進 `phase3_control_loop_main.cpp`」，但實際查證�
 
 ### Session Handoff (2026-09-10)：sensor-optional 真實硬體驗證、意外挖出 bootloader 電源循環的坑、MPU6050 接線問題
 
-延續上一份 handoff 的第 3 項待辦——驗證 `O<bits>` sensor-optional 指令。過程中意外撞見一個完全跟 UART/CP2102 無關的新坑：**這顆 WeAct bootloader 只有真正斷電重開才會跳到 app，單純 SWD/軟體 reset 永遠留在 bootloader**，花了大半個 session 才用 SWD 讀 PC 一步步排除掉兩個錯誤假說才找到。另外也真的抓到一次 MPU6050 接線鬆脫的案例。
+延續上一份 handoff 的第 3 項待辦——驗證 `O<bits>` sensor-optional 指令。過程中意外撞見一個完全跟 UART/CP2102 無關的新坑：**flash 完之後，只有真正斷電重開才會讓 app 跑起來，單純 SWD/軟體 reset 永遠留在 bootloader**（這是重複實測驗證過的操作規則，但背後真正的機制沒有查證到，見下方 2026-09-11 的更正），花了大半個 session 才用 SWD 讀 PC 一步步排除掉兩個錯誤假說才找到。另外也真的抓到一次 MPU6050 接線鬆脫的案例。
 
 #### 排查過程：兩個被 raw data 推翻的假說，第三個才是真的
 
@@ -489,9 +489,9 @@ TODO #1 原文說「接進 `phase3_control_loop_main.cpp`」，但實際查證�
 
 1. 先懷疑又是 CP2102 鎖死——拔插、換 USB 孔都沒用。
 2. 改用 SWD 直接讀 PC，抓到 PC 停在 `0x08000000`-`0x08003fff`（WeAct bootloader 自己的 16KB 區，不是 app 的 `0x08004000+`，也不是 BOOT0 誤判會落到的 `0x1fff0000` ROM bootloader）。當時 board 自己的原生 USB 孔正好接著電腦，猜測是 bootloader 偵測到 USB host 在，不放行——**這個假說後來被直接推翻**：把那條線改接到電源供應器（不是電腦）之後，PC 還是卡在同一個區域。
-3. 多次觀察 PC 在 bootloader 區內游走（`0x080001ac`→`0x080005ce`→`0x080009d4`…都在同一個 16KB 範圍內，從未越過 `0x08004000`），且無論等多久都不會自己跳轉，只有一次**真正整條電源線拔掉又插回**之後 PC 立刻讀到 `0x08004182`（app 區內）。反覆驗證後確認：**bootloader 刻意區分「真斷電重開」跟「NRST/SWD 軟 reset」，只有前者才跳到 app**——這是這類 HID bootloader 常見的設計，方便開發時重燒不用每次拔插電源，但也代表 `flash_<target>`（`program ... reset exit`，openocd 的 `reset` 只是軟 reset）flash 完之後，app 不會馬上執行，一定要手動斷電重插一次。
+3. 多次觀察 PC 在 bootloader 區內游走（`0x080001ac`→`0x080005ce`→`0x080009d4`…都在同一個 16KB 範圍內，從未越過 `0x08004000`），且無論等多久都不會自己跳轉，只有一次**真正整條電源線拔掉又插回**之後 PC 立刻讀到 `0x08004182`（app 區內）。反覆驗證後確認操作規則：**flash 完（`flash_<target>` 用的 `program ... reset exit`，openocd 的 `reset` 只是軟 reset）之後，app 不會馬上執行，一定要手動斷電重插一次才會跑起來**。
 
-這個發現已經寫入持久記憶（`project_bootloader_requires_power_cycle`），下次不用再重新排查一次。
+**2026-09-11 更正**：上面這個操作規則本身是重複實測過的，可靠。但原本這裡寫「bootloader 刻意區分真斷電跟軟 reset，這是常見設計」這句話——查證後發現是**沒有根據、事後編出來的解釋**，應該收回。查了 WeAct 這顆 bootloader 的來源，它自己編譯的部分沒有公開原始碼（官方 README 明講），而它基於的上游開源專案（`STM32_HID_Bootloader`）文件講的判斷機制其實是 **BOOT1 接腳電位**，不是 POR 跟軟 reset 的差別。所以「flash 完要斷電重插」這個操作規則繼續適用（已經反覆驗證），但**背後真正的機制目前是未知的**，不要再引用「這是設計好的行為」這個說法。已同步更正持久記憶（`project_bootloader_requires_power_cycle`）。
 
 #### 新增獨立的 boot-sanity 檢查（commit `7031b1a`）
 
@@ -515,8 +515,16 @@ board 確認正常開機、跑進 app 之後，連續送 `O2\n`（bit1=elbow 選
 
 `4ea66a7`（上個 session 寫好、這個 session 驗證通過，見上）、`7031b1a`（boot-sanity 檢查工具）。都沒有帶 co-author trailer。
 
+#### FT232RL 換上了，UART 這條路已驗證健康（2026-09-11）
+
+`check_hardware_ready.py` 原本 `check_usb_device("Silicon Labs")` 寫死找 CP2102，換 FT232RL 之後會誤報失敗，已改成 `check_usb_device("Silicon Labs", "FTDI")` 兩種都認。實測 FT232RL 在 macOS 上原生驅動直接可用（`/dev/cu.usbserial-A73C97JW` 開啟正常，`check_hardware_ready.py` 基本檢查全過），TXD/RXD 交叉接法跟 CP2102 時期一樣不用改。**UART 這條路目前是健康的，不是下面新問題的原因。**
+
+#### 新問題：I2C 匯流排卡死（未解決，需要人在現場）
+
+在 FT232RL 驗證過程中換出一個新問題：`check_hardware_ready.py --i2c-scan` 顯示 **I2C1 匯流排在掃描開始前就已經 BUSY**（`raw=0x00000002`），`--live-check` 則是 shoulder 喚醒在最一開始的 START 訊號階段就逾時（`code=1`，不是上次那種位址階段 NACK 的 `code=2`）——症狀比上次「單一顆感測器沒回應」更嚴重，比較像 SDA 或 SCL 被什麼東西拉低卡住整條線，不是單一裝置的問題。目前懷疑是接 ST-Link 的 RST 線時，麵包板上鄰近排線被碰動，但**還沒有實際檢查**（使用者當時不在電腦旁邊，只能先做非硬體的部分）。
+
 #### 下個 session 要接著做的事（TODO，依優先順序）
 
-1. **完整六步驟抓球任務在真實硬體上跑一次**——目前沒有已知阻礙了（三顆感測器都驗證過能正常運作，sensor-optional 機制也驗證過）。建議開頭先跑 `check_hardware_ready.py --i2c-scan --live-check`，flash 完記得手動斷電重插一次（新學到的坑），再跑 `run_demo_live.py --skip-calibration --skip-emg-calibration`。
-2. **elbow MPU6050 那次 wake NACK 沒有深究原因**——只驗證了「即使 NACK，sensor-optional 機制正常擋住不讓它變成致命錯誤」，但沒有確認這次 NACK 是接線鬆動的個案還是會復發，下次如果又出現同樣情況，先當作 elbow 接線問題檢查。
-3. **FT232RL 轉接板已下單（2026-09-09），到貨後換上**，應該能解決 CP2102 鎖死問題（這個 session 沒有再遇到 CP2102 鎖死症狀，但也沒有刻意去驗證是否還會發生）。
+1. **檢查 shoulder/elbow 這兩顆 MPU6050 的 SDA/SCL 接線**——這是目前唯一的已知阻礙，需要人在現場才能做。檢查完用 `check_hardware_ready.py --i2c-scan` 確認匯流排不再是 BUSY 狀態。
+2. **完整六步驟抓球任務在真實硬體上跑一次**——I2C 問題解決後應該就沒有已知阻礙了。建議開頭先跑 `check_hardware_ready.py --i2c-scan --live-check`，flash 完記得手動斷電重插一次，再跑 `run_demo_live.py --skip-calibration --skip-emg-calibration`。
+3. **elbow MPU6050 上次那次 wake NACK 沒有深究原因**——只驗證了「即使 NACK，sensor-optional 機制正常擋住不讓它變成致命錯誤」，這次 I2C 完全卡死可能是同一條接線問題惡化，一起檢查。

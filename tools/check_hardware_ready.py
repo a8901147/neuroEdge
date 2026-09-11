@@ -97,14 +97,15 @@ DIAG_LINE_RE = re.compile(
 )
 
 
-def check_usb_device(vendor_substr: str) -> bool:
+def check_usb_device(*vendor_substrs: str) -> bool:
     try:
         out = subprocess.run(
             ["system_profiler", "SPUSBDataType"], capture_output=True, text=True, timeout=15
         ).stdout
     except Exception:
         return False
-    return vendor_substr.lower() in out.lower()
+    out = out.lower()
+    return any(v.lower() in out for v in vendor_substrs)
 
 
 def check_serial_port():
@@ -140,8 +141,12 @@ def run_basic_checks() -> tuple:
     print(f"[{'OK  ' if stlink_ok else 'FAIL'}] ST-Link enumerated over USB")
     all_ok = all_ok and stlink_ok
 
-    ttl_ok = check_usb_device("Silicon Labs")
-    print(f"[{'OK  ' if ttl_ok else 'FAIL'}] USB-TTL (CP2102/Silicon Labs) enumerated over USB")
+    # FTDI (FT232RL) replaced the CP2102 2026-09-11 -- see
+    # project_bootloader_requires_power_cycle memory / PRD.md's 2026-09-10
+    # handoff for why (CP2102's known firmware lockup bug). Both substrings
+    # kept so this still works if a CP2102 is ever plugged in again.
+    ttl_ok = check_usb_device("Silicon Labs", "FTDI")
+    print(f"[{'OK  ' if ttl_ok else 'FAIL'}] USB-TTL (FT232RL/FTDI or CP2102/Silicon Labs) enumerated over USB")
     all_ok = all_ok and ttl_ok
 
     port_ok, port, err = check_serial_port()
@@ -217,18 +222,22 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
     function isolates (c) via SWD alone, with no dependency on anything the
     app itself does, so it can't be masked by an earlier app-level failure.
 
-    Also confirmed 2026-09-10: this board's bootloader only jumps to the app
-    on a genuine power-on reset, and deliberately stays resident on a warm/
-    pin reset -- which is all SWD's `reset halt`/`reset run`, and this
-    project's `flash_<target>` CMake targets via `program ... reset exit`,
-    can ever produce (by design, so a dev can re-flash without power-
-    cycling). A tested-and-disproven earlier theory blamed the board's
-    native USB port being plugged into a computer host -- moving that cable
-    to a plain power adapter changed nothing, so that is NOT the mechanism.
-    That means right after a flash, this check is EXPECTED to read "stuck in
-    bootloader" until a human physically power-cycles the board -- so this
-    polls for up to poll_seconds (prompting once) instead of a single
-    immediate read, giving that a real window to happen.
+    Also empirically confirmed 2026-09-10, repeatedly: right after any SWD
+    flash (`flash_<target>` via `program ... reset exit` -- openocd's own
+    `reset` is a warm/pin reset), PC reliably reads stuck inside the
+    bootloader no matter how long you poll, and only a genuine physical
+    unplug-wait-replug of the board's power makes it jump to the app. Why
+    this is true is NOT confirmed -- two guesses (a "board's native USB
+    plugged into a host" theory, and later a "bootloader deliberately
+    distinguishes POR from pin reset" theory) were both written down here
+    at different points and neither held up to checking (see
+    project_bootloader_requires_power_cycle memory for the walk-back and
+    what's actually known: WeAct's bootloader binary is closed-source, so
+    the real mechanism is unverified). Treat this purely as an operating
+    rule, not an explained one: right after a flash, this check is EXPECTED
+    to read "stuck in bootloader" until a human physically power-cycles the
+    board -- so this polls for up to poll_seconds (prompting once) instead
+    of a single immediate read, giving that a real window to happen.
     """
     print("\n--- Boot sanity check (does execution actually reach the app?) ---")
     print(
