@@ -519,12 +519,15 @@ board 確認正常開機、跑進 app 之後，連續送 `O2\n`（bit1=elbow 選
 
 `check_hardware_ready.py` 原本 `check_usb_device("Silicon Labs")` 寫死找 CP2102，換 FT232RL 之後會誤報失敗，已改成 `check_usb_device("Silicon Labs", "FTDI")` 兩種都認。實測 FT232RL 在 macOS 上原生驅動直接可用（`/dev/cu.usbserial-A73C97JW` 開啟正常，`check_hardware_ready.py` 基本檢查全過），TXD/RXD 交叉接法跟 CP2102 時期一樣不用改。**UART 這條路目前是健康的，不是下面新問題的原因。**
 
-#### 新問題：I2C 匯流排卡死（未解決，需要人在現場）
+#### I2C 匯流排卡死——找到真正原因，不是接線問題，已修好（commit `6106f86`）
 
-在 FT232RL 驗證過程中換出一個新問題：`check_hardware_ready.py --i2c-scan` 顯示 **I2C1 匯流排在掃描開始前就已經 BUSY**（`raw=0x00000002`），`--live-check` 則是 shoulder 喚醒在最一開始的 START 訊號階段就逾時（`code=1`，不是上次那種位址階段 NACK 的 `code=2`）——症狀比上次「單一顆感測器沒回應」更嚴重，比較像 SDA 或 SCL 被什麼東西拉低卡住整條線，不是單一裝置的問題。目前懷疑是接 ST-Link 的 RST 線時，麵包板上鄰近排線被碰動，但**還沒有實際檢查**（使用者當時不在電腦旁邊，只能先做非硬體的部分）。
+在 FT232RL 驗證過程中換出一個新問題：`check_hardware_ready.py --i2c-scan` 顯示 **I2C1 匯流排在掃描開始前就已經 BUSY**（`raw=0x00000002`），`--live-check` 則是 shoulder 喚醒在最一開始的 START 訊號階段就逾時（`code=1`，不是上次那種位址階段 NACK 的 `code=2`）。一開始懷疑是接 ST-Link 的 RST 線時碰動了麵包板排線，但**使用者提出關鍵觀察**：平常使用中完全沒問題，只有開機那個瞬間會出錯——這個模式跟接觸不良（會隨機、間歇性發生）對不上，比較像開機當下的時序問題。
+
+順著這個方向查程式碼，發現：`i2c1_bus_recovery()`（9 個手動 SCL 時脈把卡住的 SDA 拉回來的救援程序）已經存在、也在主迴圈運作中偵測到卡住時會被呼叫，但**開機第一次嘗試喚醒感測器之前，從來沒有主動呼叫過**——只有 `i2c1_swrst_recover()`（純軟體重置 I2C1 周邊，不處理外部裝置真的把線拉低的情況）。上網查證確認這是已知現象，兩個可能原因剛好都對應同一個修法：(1) MPU6050 電源還沒完全穩定、STM32 已經開始講話，裝置輸出級卡在傳輸中間；(2) ST 官方論壇證實的 STM32 I2C 周邊硬體 errata——電源雜訊會讓內部類比濾波器鎖死在錯誤的 BUSY 狀態，此時單純 SWRST 沒用。兩種原因的標準修法都是手動 clock SCL 幾次、發 STOP、重新初始化——正是 `i2c1_bus_recovery()` 已經在做的事。
+
+**修法**：在 `main()` 裡 `i2c1_init()` 之後、第一次嘗試喚醒感測器之前，主動呼叫一次 `i2c1_bus_recovery()`。真實硬體驗證：`check_hardware_ready.py --i2c-scan --live-check` 全綠——I2C1 開機時不再 BUSY、shoulder(0x68)/elbow(0x69) 都掃描到、兩顆 wake write 都成功、即時資料 110 行、兩顆 IMU 各 247 completions/s。**不需要重插 MPU6050 接線，這條路已經走完，不用再懷疑接觸不良。**
 
 #### 下個 session 要接著做的事（TODO，依優先順序）
 
-1. **檢查 shoulder/elbow 這兩顆 MPU6050 的 SDA/SCL 接線**——這是目前唯一的已知阻礙，需要人在現場才能做。檢查完用 `check_hardware_ready.py --i2c-scan` 確認匯流排不再是 BUSY 狀態。
-2. **完整六步驟抓球任務在真實硬體上跑一次**——I2C 問題解決後應該就沒有已知阻礙了。建議開頭先跑 `check_hardware_ready.py --i2c-scan --live-check`，flash 完記得手動斷電重插一次，再跑 `run_demo_live.py --skip-calibration --skip-emg-calibration`。
-3. **elbow MPU6050 上次那次 wake NACK 沒有深究原因**——只驗證了「即使 NACK，sensor-optional 機制正常擋住不讓它變成致命錯誤」，這次 I2C 完全卡死可能是同一條接線問題惡化，一起檢查。
+1. **完整六步驟抓球任務在真實硬體上跑一次**——目前沒有已知阻礙了（I2C、UART、bootloader 三個今天處理過的問題都已解決/驗證）。建議開頭先跑 `check_hardware_ready.py --i2c-scan --live-check`，flash 完記得手動斷電重插一次，再跑 `run_demo_live.py --skip-calibration --skip-emg-calibration`。
+2. `PRD.md` 累積了 5 份 Session Handoff、超過 500 行，考慮整理（拆檔或精簡舊記錄），這個 session 還沒決定要怎麼做。
