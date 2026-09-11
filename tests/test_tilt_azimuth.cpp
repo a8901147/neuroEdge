@@ -1,6 +1,6 @@
 // Verifies the tilt/azimuth replacement for complementary_filter.hpp's
 // accel_pitch_angle, which a real hardware session (2026-09-04, see git
-// history / PRD.md) showed folding back past +-90deg -- two genuinely
+// history / SESSION_LOG.md) showed folding back past +-90deg -- two genuinely
 // different real rotations (e.g. a forward-raise and a backward-extension)
 // could decode to the identical pitch. Tested purely against known physics
 // (synthetic unit vectors at known tilt/azimuth), the same
@@ -233,7 +233,7 @@ TEST_CASE("oblique_decompose recovers exact coordinates in a non-orthogonal basi
 
 // Sanity-checks oblique_decompose against the real shoulder capture this
 // was built from (tools/mujoco_bridge/raw_imu_calibration.json, 6-pose x
-// 5-repeat capture averaged per pose, 2026-09-05 -- see PRD.md's Session
+// 5-repeat capture averaged per pose, 2026-09-05 -- see SESSION_LOG.md's Session
 // Handoff). Wide margins on purpose: unlike the synthetic test above, these
 // aren't exact by construction -- BACKWARD_EXTENSION and ADDUCTION_RIGHT
 // were never part of building the basis, so what matters here is the

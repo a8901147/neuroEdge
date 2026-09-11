@@ -241,7 +241,7 @@ def main():
     # --- BACKWARD_EXTENSION: pitch down (opposite sign from forward). NOT
     # one of the 2 calibration poses, so unlike FORWARD_RAISE/
     # ABDUCTION_LEFT above/below, real (and large, ~0.67rad) roll cross-
-    # talk is EXPECTED here, not a bug -- see SESSION_LOG.md 2026-09-04
+    # talk is EXPECTED here, not a bug -- see SESSION_LOG.md 2026-09-04's
     # oblique-basis analysis (real shoulder motion at these poses isn't
     # confined to 2 orthogonal planes). Only the pitch sign/magnitude and
     # the MuJoCo front position (the actual thing 2026-09-03's bug #1

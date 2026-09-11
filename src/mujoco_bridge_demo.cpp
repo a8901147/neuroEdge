@@ -67,7 +67,7 @@ constexpr float kSlewRate = 1.5f;
 
 // Real shoulder calibration basis (REST/FORWARD_RAISE/ABDUCTION_LEFT unit
 // vectors, this project's real mount -- see
-// tools/mujoco_bridge/raw_imu_calibration.json and SESSION_LOG.md 2026-09-04/05
+// tools/mujoco_bridge/raw_imu_calibration.json and SESSION_LOG.md's 2026-09-04/05
 // entry). Replaces ComplementaryFilter::pitch()/roll() for the
 // shoulder: that decode has two independent real problems (gyro-
 // integration drift with zero corresponding accel change, and an

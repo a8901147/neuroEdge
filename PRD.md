@@ -301,3 +301,7 @@ Once Phase 1.5 answers its four questions, its results set how much goes into Mu
   * Practical issues: separate supplies for motors and sensors, supply noise, electrode contact.
 
 ---
+
+## 7. Session Log
+
+The dated development notes are in [SESSION_LOG.md](SESSION_LOG.md); this document keeps the requirements, the architecture and the roadmap.

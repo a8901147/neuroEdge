@@ -152,8 +152,8 @@ volatile uint32_t g_sr2_at_timeout = 0xFFFFFFFFu;
 volatile uint32_t g_timeout_count = 0;
 // Stage 6: one wake-write result and one completion counter per IMU,
 // replacing the single-IMU g_wake_result/imu_completions -- needed to
-// confirm both addresses actually ACK independently (see PRD.md Stage 6
-// verification notes) rather than assuming a single passing check covers
+// confirm both addresses actually ACK independently (see SESSION_LOG.md's
+// Stage 6 verification notes) rather than assuming a single passing check covers
 // both physical units.
 volatile int g_wake_result_shoulder = -1;
 volatile int g_wake_result_elbow = -1;
@@ -768,6 +768,22 @@ int main(void) {
     adc1_init_timer_triggered();
     tim2_init_1khz_trgo();
     i2c1_init();
+
+    // Proactive bus-clear before the very first transaction, not just the
+    // reactive one in the main loop (i2c1_bus_recovery()'s call site below)
+    // -- observed 2026-09-11: the wake write can fail (timeout waiting for
+    // I2C_SR1_SB, i.e. the bus already reads BUSY before we've sent a
+    // single bit) on a fresh power-up despite the exact same wiring working
+    // fine once the loop is running. STM32 and the MPU6050s aren't
+    // guaranteed to leave their own power-on reset at the same instant; if
+    // an MPU6050 is still mid-power-up when STM32 starts driving I2C1, its
+    // I2C output stage can be caught holding SDA/SCL in an indeterminate
+    // state, which looks identical to the already-documented "device
+    // unplugged mid-transaction" bus-wedge case above -- and needs the same
+    // fix (9 manual SCL clocks), not just SWRST (i2c1_init() already does
+    // SWRST via i2c1_swrst_recover(), which wasn't sufficient on its own).
+    i2c1_bus_recovery();
+
     usart2_send_string("Stage 5b: combined EMG+IMU 1kHz loop, non-blocking I2C\r\n");
 
     // See read_optional_sensors_config()'s own comment -- must run before
@@ -1187,7 +1203,7 @@ int main(void) {
                 if (tick_count % 1000u == 0u) {
                     // Slower diagnostic-only line, same cadence Stage 5b
                     // used -- per-IMU completion counts for the
-                    // verification checks in PRD.md's Stage 6 section
+                    // verification checks in SESSION_LOG.md's Stage 6 section
                     // (confirms the alternator is actually alternating,
                     // not stuck on one device). nack/timeout counts added
                     // 2026-08-23 to tell apart "this device's address

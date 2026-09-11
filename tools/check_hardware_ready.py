@@ -59,6 +59,15 @@ OPENOCD_CFG = FIRMWARE_DIR / "openocd.cfg"
 SCAN_TARGET = "i2c_bus_scan"
 LIVE_TARGET = "phase3_control_loop"
 
+# firmware/CMakeLists.txt's APP_FLASH_ADDRESS -- every real target (scanner
+# or phase3) links here. The first 16KB below it (0x08000000-0x08003fff) is
+# the WeAct HID bootloader's own flash, and 0x1fff0000+ is the STM32's
+# factory ROM bootloader -- three completely different "why is there no
+# UART output" causes that all look identical from a UART capture alone,
+# see check_boot_reached_app()'s own comment.
+APP_FLASH_ADDRESS = 0x08004000
+ROM_BOOTLOADER_BASE = 0x1FFF0000
+
 # Same pattern tools/mujoco_bridge/run_demo_live.py parses -- kept in sync
 # by hand since one lives in Python tooling and the other's authoritative
 # copy is the firmware's own usart2 print statements; a format drift here
@@ -88,14 +97,15 @@ DIAG_LINE_RE = re.compile(
 )
 
 
-def check_usb_device(vendor_substr: str) -> bool:
+def check_usb_device(*vendor_substrs: str) -> bool:
     try:
         out = subprocess.run(
             ["system_profiler", "SPUSBDataType"], capture_output=True, text=True, timeout=15
         ).stdout
     except Exception:
         return False
-    return vendor_substr.lower() in out.lower()
+    out = out.lower()
+    return any(v.lower() in out for v in vendor_substrs)
 
 
 def check_serial_port():
@@ -131,8 +141,12 @@ def run_basic_checks() -> tuple:
     print(f"[{'OK  ' if stlink_ok else 'FAIL'}] ST-Link enumerated over USB")
     all_ok = all_ok and stlink_ok
 
-    ttl_ok = check_usb_device("Silicon Labs")
-    print(f"[{'OK  ' if ttl_ok else 'FAIL'}] USB-TTL (CP2102/Silicon Labs) enumerated over USB")
+    # FTDI (FT232RL) replaced the CP2102 2026-09-11 -- see
+    # project_bootloader_requires_power_cycle memory / SESSION_LOG.md's 2026-09-10
+    # handoff for why (CP2102's known firmware lockup bug). Both substrings
+    # kept so this still works if a CP2102 is ever plugged in again.
+    ttl_ok = check_usb_device("Silicon Labs", "FTDI")
+    print(f"[{'OK  ' if ttl_ok else 'FAIL'}] USB-TTL (FT232RL/FTDI or CP2102/Silicon Labs) enumerated over USB")
     all_ok = all_ok and ttl_ok
 
     port_ok, port, err = check_serial_port()
@@ -181,6 +195,84 @@ def _mdw_read(addr: int, count: int = 1) -> list:
     return [int(w, 16) for w in m.group(1).split()]
 
 
+def _read_pc() -> int:
+    result = subprocess.run(
+        [
+            "openocd", "-f", str(OPENOCD_CFG),
+            "-c", "init", "-c", "halt", "-c", "reg pc", "-c", "resume", "-c", "shutdown",
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    text = result.stdout + result.stderr
+    m = re.search(r"pc:\s*0x([0-9a-fA-F]+)", text)
+    if not m:
+        raise RuntimeError(f"could not parse `reg pc` output:\n{text}")
+    return int(m.group(1), 16)
+
+
+def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
+    """Ground-truth, application-independent check: does execution actually
+    reach the flashed app at all? Found 2026-09-10 the hard way -- both
+    run_i2c_scan()'s "scan did not complete" and run_live_check()'s "0
+    valid lines parsed" look identical whether the real cause is (a) a UART/
+    CP2102 problem, (b) an I2C device (e.g. MPU6050) not answering and the
+    app's own fail-safe hanging in blink_code() before ever reaching the
+    UART prints, or (c) execution never reaching the app's main() at all --
+    three unrelated failure classes that all present as "no output". This
+    function isolates (c) via SWD alone, with no dependency on anything the
+    app itself does, so it can't be masked by an earlier app-level failure.
+
+    Also empirically confirmed 2026-09-10, repeatedly: right after any SWD
+    flash (`flash_<target>` via `program ... reset exit` -- openocd's own
+    `reset` is a warm/pin reset), PC reliably reads stuck inside the
+    bootloader no matter how long you poll, and only a genuine physical
+    unplug-wait-replug of the board's power makes it jump to the app. Why
+    this is true is NOT confirmed -- two guesses (a "board's native USB
+    plugged into a host" theory, and later a "bootloader deliberately
+    distinguishes POR from pin reset" theory) were both written down here
+    at different points and neither held up to checking (see
+    project_bootloader_requires_power_cycle memory for the walk-back and
+    what's actually known: WeAct's bootloader binary is closed-source, so
+    the real mechanism is unverified). Treat this purely as an operating
+    rule, not an explained one: right after a flash, this check is EXPECTED
+    to read "stuck in bootloader" until a human physically power-cycles the
+    board -- so this polls for up to poll_seconds (prompting once) instead
+    of a single immediate read, giving that a real window to happen.
+    """
+    print("\n--- Boot sanity check (does execution actually reach the app?) ---")
+    print(
+        f"    If this was just flashed: fully unplug the board's power cable, wait a "
+        f"couple seconds, then plug it back in. Polling for up to {poll_seconds:.0f}s..."
+    )
+    import time
+    deadline = time.time() + poll_seconds
+    last_pc = None
+    while True:
+        pc = _read_pc()
+        last_pc = pc
+        if pc >= APP_FLASH_ADDRESS:
+            print(f"[OK  ] PC=0x{pc:08x} is inside the app (>= 0x{APP_FLASH_ADDRESS:08x}) -- execution reached main()")
+            return True
+        if time.time() >= deadline:
+            break
+        time.sleep(1.5)
+
+    pc = last_pc
+    if ROM_BOOTLOADER_BASE <= pc < ROM_BOOTLOADER_BASE + 0x8000:
+        print(
+            f"[FAIL] PC=0x{pc:08x} is in the STM32's factory ROM bootloader (0x{ROM_BOOTLOADER_BASE:08x}+) -- "
+            "BOOT0 was read high at the last reset. Check the BOOT0 pin/jumper is low, then "
+            "power-cycle again."
+        )
+        return False
+    print(
+        f"[FAIL] PC=0x{pc:08x} is still inside the WeAct HID bootloader (0x08000000-0x08003fff) "
+        f"after {poll_seconds:.0f}s -- a power-cycle either didn't happen or didn't take. Try a "
+        "slower, more deliberate unplug/wait/replug cycle."
+    )
+    return False
+
+
 def run_i2c_scan() -> bool:
     print("\n--- I2C1 bus scan (flashes firmware/src/i2c_bus_scan_main.c) ---")
     if not BUILD_DIR.exists():
@@ -215,6 +307,9 @@ def run_i2c_scan() -> bool:
         print("[FAIL] flash failed:\n" + flash_out[-2000:])
         return False
     print("[OK  ] flashed i2c_bus_scan")
+
+    if not check_boot_reached_app():
+        return False
 
     import time
     time.sleep(1.5)  # 126-address scan completes well within this
@@ -295,6 +390,9 @@ def run_live_check(port: str) -> bool:
         return False
     print(f"[OK  ] flashed {LIVE_TARGET}")
 
+    if not check_boot_reached_app():
+        return False
+
     try:
         import serial
     except ImportError:
@@ -309,17 +407,28 @@ def run_live_check(port: str) -> bool:
     wake_elbow = _mdw_read(addrs["g_wake_result_elbow"])[0]
     # Both are `int`, so a nonzero mdw word IS the failure code already
     # (no BUSY-style raw-vs-normalized bit-mask gotcha here, unlike
-    # g_bus_busy_before_scan above).
+    # g_bus_busy_before_scan above). 0xffffffff (still the linker's -1
+    # initializer) means this specific write was never even attempted --
+    # e.g. the shoulder write NACKed and, if required, the app is now
+    # hanging in blink_code() before ever reaching the elbow write. Each
+    # code is mpu6050_write_reg_blocking()'s own return value: 1/2/3/4 =
+    # timed out waiting for SB/ADDR-or-NACK/TXE-or-BTF/BTF respectively.
     wake_ok = wake_shoulder == 0 and wake_elbow == 0
     if wake_ok:
         print("[OK  ] both MPU6050 wake-up writes succeeded (g_wake_result_shoulder/elbow == 0)")
     else:
+        def _describe(name, code):
+            if code == 0xFFFFFFFF or code == -1:
+                return f"{name}: never attempted (an earlier required sensor likely hung the boot in blink_code())"
+            if code == 0:
+                return f"{name}: OK"
+            return f"{name}: FAILED, code={code} (1/2=NACK/timeout on I2C address phase, 3/4=timeout writing register/value)"
         print(
-            f"[FAIL] wake-up write failed -- g_wake_result_shoulder={wake_shoulder} "
-            f"g_wake_result_elbow={wake_elbow} (0 == success; see "
-            "mpu6050_write_reg_blocking()'s return codes in phase3_control_loop_main.cpp "
-            "for what each nonzero value means). This means the I2C bus was already "
-            "stuck at boot -- check wiring before looking at anything downstream."
+            "[FAIL] wake-up write failed -- "
+            f"{_describe('shoulder', wake_shoulder)}; {_describe('elbow', wake_elbow)}. "
+            "This is a per-device I2C result, independent of UART -- check that specific "
+            "sensor's VCC/GND/SDA/SCL wiring. Use --i2c-scan to test both devices' presence "
+            "without depending on either one's wake write succeeding first."
         )
 
     samples = []
@@ -420,7 +529,7 @@ def run_live_check(port: str) -> bool:
             "\nA frozen shoulder_pitch/roll field, or an IMU showing 0 completions above, "
             "means that IMU's reads have never completed successfully since boot, even "
             "though the port is open and other fields are updating -- re-check that "
-            "specific sensor's wiring (see PRD.md Stage 6), not the STM32 side, which the "
+            "specific sensor's wiring (see SESSION_LOG.md's Stage 6), not the STM32 side, which the "
             "above wake/tick checks already confirmed is healthy."
         )
 
@@ -437,7 +546,15 @@ def main() -> None:
         "--live-check", action="store_true",
         help="flash the real Stage 6 firmware and verify live shoulder/roll/elbow data actually changes",
     )
+    parser.add_argument(
+        "--boot-check", action="store_true",
+        help="standalone: poll (no reflash) for execution to reach whatever is currently "
+             "flashed -- run this right after you've manually power-cycled the board",
+    )
     args = parser.parse_args()
+
+    if args.boot_check:
+        sys.exit(0 if check_boot_reached_app() else 1)
 
     basic_ok, stlink_ok = run_basic_checks()
 

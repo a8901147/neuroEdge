@@ -25,3 +25,5 @@ comments that cite "SESSION_LOG <date>" refer to the dated entries below.
 - **09-01 → 09-05: angles that hold at any pose.** Elbow = angle between the two gravity vectors; shoulder =
   tilt/azimuth. Both replace Euler angles, which fold back past ±90°. Calibration from four natural poses. Rule set: judge
   an algorithm only by raw sensor data, never by its own output.
+- **09-08 → 09-11: calibration moves to the PC.** Thresholds are sent live over UART, with no reflashing and no boot
+  gate. UART dropouts were traced to three separate hardware causes, each fixed.
