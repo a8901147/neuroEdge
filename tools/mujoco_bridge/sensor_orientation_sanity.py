@@ -11,7 +11,7 @@ shape in MuJoCo tilts the same way.
 This answers ONE question only: can a physical sensor's raw tilt be
 faithfully reflected as a MuJoCo orientation at all? It does NOT attempt
 to resolve the "twist about the sensor's own axis" ambiguity a single
-accelerometer can't see (see PRD.md's Session Handoff) -- the shape's
+accelerometer can't see (see SESSION_LOG.md's Session Handoff) -- the shape's
 rotation about its own down-pointing axis is arbitrary (whatever the
 shortest-rotation construction happens to pick), not meaningful. Only the
 TILT (which way "down" points) is meaningful here.

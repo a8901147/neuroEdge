@@ -142,7 +142,7 @@ def run_basic_checks() -> tuple:
     all_ok = all_ok and stlink_ok
 
     # FTDI (FT232RL) replaced the CP2102 2026-09-11 -- see
-    # project_bootloader_requires_power_cycle memory / PRD.md's 2026-09-10
+    # project_bootloader_requires_power_cycle memory / SESSION_LOG.md's 2026-09-10
     # handoff for why (CP2102's known firmware lockup bug). Both substrings
     # kept so this still works if a CP2102 is ever plugged in again.
     ttl_ok = check_usb_device("Silicon Labs", "FTDI")
@@ -529,7 +529,7 @@ def run_live_check(port: str) -> bool:
             "\nA frozen shoulder_pitch/roll field, or an IMU showing 0 completions above, "
             "means that IMU's reads have never completed successfully since boot, even "
             "though the port is open and other fields are updating -- re-check that "
-            "specific sensor's wiring (see PRD.md Stage 6), not the STM32 side, which the "
+            "specific sensor's wiring (see SESSION_LOG.md's Stage 6), not the STM32 side, which the "
             "above wake/tick checks already confirmed is healthy."
         )
 

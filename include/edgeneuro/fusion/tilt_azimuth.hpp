@@ -14,7 +14,7 @@ namespace edgeneuro {
 // anatomically unreachable (opposite rest -- a shoulder folded completely
 // backward on itself) instead of wherever a fixed-frame formula happens to
 // land, which a real mount can sit uncomfortably close to. See git
-// history / PRD.md 2026-09-04 for the real hardware session (a forward-
+// history / SESSION_LOG.md 2026-09-04 for the real hardware session (a forward-
 // raise and backward-extension decoding to the wrong relative sign) this
 // was found from, and the biomechanics literature (ISB's YXY Euler
 // sequence for the shoulder gimbal-locking at 90deg elevation; the
@@ -110,7 +110,7 @@ void orthonormal_basis_perpendicular_to(
 // tilt_azimuth()'s azimuth assumes whatever two directions the caller cares
 // about are perpendicular (basis_u/basis_v built via
 // orthonormal_basis_perpendicular_to). Real captured shoulder data
-// (PRD.md, 2026-09-04 "FORWARD_RAISE/ABDUCTION_LEFT cross-talk" finding)
+// (SESSION_LOG.md, 2026-09-04 "FORWARD_RAISE/ABDUCTION_LEFT cross-talk" finding)
 // shows that assumption doesn't hold: two independent 5-repeat capture
 // sessions both measured only ~29deg of azimuth separation between a real
 // FORWARD_RAISE and a real ABDUCTION_LEFT reading, not 90deg -- and the
@@ -210,7 +210,7 @@ ObliqueCoeffs<ValueType> oblique_decompose(
 // real angle -- see make_oblique_basis), but for a direction OFF either
 // calibration axis, that same "coefficient times the calibration's own
 // (generally large) tilt" scaling can overshoot the real angle by a
-// wide margin: found on real captured data (PRD.md, 2026-09-04) where a
+// wide margin: found on real captured data (SESSION_LOG.md, 2026-09-04) where a
 // real ~16deg shoulder drift during ELBOW_FLEXION (a pose that plays no
 // part in building the basis) scaled out to a ~35deg pitch_equiv --
 // more than double the real tilt -- because that drift's direction, while

@@ -187,7 +187,7 @@ def main():
           f"got {data.ctrl[elbow_id]:+.3f}")
 
     # --- Glitch resilience: this session's real "flick the wire and
-    # MuJoCo shakes" finding (PRD.md 2026-09-05) was fixed with
+    # MuJoCo shakes" finding (SESSION_LOG.md 2026-09-05) was fixed with
     # MAX_CTRL_RATE_RAD_PER_SEC + RAW_SMOOTHING_ALPHA, but nothing had
     # actually injected a bad sample and checked the result -- the
     # existing unit tests only prove rate_limit_step's own math never

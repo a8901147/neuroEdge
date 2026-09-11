@@ -355,7 +355,7 @@ def calibration_tilt_deg(ref_raw, raw):
 # zero-pose reading from firmware's ComplementaryFilter-decoded
 # shoulder_pitch/shoulder_roll, see the removed wrap_angle_delta and its
 # comment in git history) because that decode has two independent real
-# problems found 2026-09-03/04 (PRD.md Session Handoff): the gyro
+# problems found 2026-09-03/04 (SESSION_LOG.md Session Handoff): the gyro
 # integration it depends on drifts multiple radians with zero corresponding
 # accelerometer change, and its accel-only formula folds back past +-90deg
 # so two genuinely different poses (e.g. forward-raise vs backward-
@@ -365,7 +365,7 @@ def calibration_tilt_deg(ref_raw, raw):
 # back) -- but the further step of splitting that into two independent
 # pitch/roll-like numbers can't assume FORWARD_RAISE and ABDUCTION_LEFT are
 # perpendicular (real capture, 2026-09-04: only ~29deg apart, confirmed
-# reproducible, not measurement noise -- see PRD.md), hence solving against
+# reproducible, not measurement noise -- see SESSION_LOG.md), hence solving against
 # the two REAL calibration directions (oblique, not assumed-orthogonal)
 # below instead of a fixed cos/sin split.
 def _normalize3(v):
@@ -465,7 +465,7 @@ class Tee:
 # stale and warns -- deliberately much larger than the firmware's own 100Hz
 # (10ms) output interval, so normal jitter never trips it, but small enough
 # to notice a real problem (e.g. the I2C bus getting stuck again, which this
-# project has hit repeatedly -- see PRD.md Stage 6) within about half a
+# project has hit repeatedly -- see SESSION_LOG.md) within about half a
 # second instead of only when you happen to notice the arm isn't moving.
 STALE_AFTER_SECONDS = 0.5
 
@@ -1406,7 +1406,7 @@ def main():
                     print(f"\n[STALE] no valid line from the STM32 in >{STALE_AFTER_SECONDS}s "
                           f"(last good data {latest.seconds_since_update():.1f}s ago) -- holding last pose. "
                           f"Port is still open, so this is the board/firmware going quiet (e.g. a stuck "
-                          f"I2C bus, see PRD.md Stage 6), not a USB disconnect. No restart needed once "
+                          f"I2C bus, see SESSION_LOG.md), not a USB disconnect. No restart needed once "
                           f"it's fixed -- ImuReader's own SWRST recovery + this script should both "
                           f"resume on their own.")
                 elif was_stale and not is_stale:

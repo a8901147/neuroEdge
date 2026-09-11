@@ -241,7 +241,7 @@ def main():
     # --- BACKWARD_EXTENSION: pitch down (opposite sign from forward). NOT
     # one of the 2 calibration poses, so unlike FORWARD_RAISE/
     # ABDUCTION_LEFT above/below, real (and large, ~0.67rad) roll cross-
-    # talk is EXPECTED here, not a bug -- see PRD.md 2026-09-04's
+    # talk is EXPECTED here, not a bug -- see SESSION_LOG.md 2026-09-04's
     # oblique-basis analysis (real shoulder motion at these poses isn't
     # confined to 2 orthogonal planes). Only the pitch sign/magnitude and
     # the MuJoCo front position (the actual thing 2026-09-03's bug #1
@@ -278,7 +278,7 @@ def main():
           f"(positive roll should swing the wrist to the wearer's own left).")
 
     # --- ADDUCTION_RIGHT: roll changes the OPPOSITE way from abduction.
-    # NOT a calibration pose -- and its real azimuth (PRD.md 2026-09-04)
+    # NOT a calibration pose -- and its real azimuth (SESSION_LOG.md 2026-09-04)
     # leans toward FORWARD_RAISE's direction rather than being ABDUCTION_
     # LEFT's clean opposite, so only a modest negative roll is expected
     # here, not a large one (an earlier version of this test asserted
@@ -311,7 +311,7 @@ def main():
     # 0.3rad margin: the real shoulder drift here is ~16deg (0.28rad) raw
     # tilt (a real person's upper arm isn't perfectly still while flexing
     # the elbow) -- oblique_decompose_scaled bounds pitch_equiv/roll_equiv's
-    # combined magnitude to that same real tilt (PRD.md 2026-09-04; the
+    # combined magnitude to that same real tilt (SESSION_LOG.md 2026-09-04; the
     # unscaled oblique_decompose this replaced let it overshoot to ~35deg,
     # which this check would NOT have passed).
     check(abs(pitch_equiv) < 0.3 and abs(roll_equiv) < 0.3,

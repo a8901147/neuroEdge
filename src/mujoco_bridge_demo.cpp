@@ -67,7 +67,7 @@ constexpr float kSlewRate = 1.5f;
 
 // Real shoulder calibration basis (REST/FORWARD_RAISE/ABDUCTION_LEFT unit
 // vectors, this project's real mount -- see
-// tools/mujoco_bridge/raw_imu_calibration.json and PRD.md's 2026-09-04/05
+// tools/mujoco_bridge/raw_imu_calibration.json and SESSION_LOG.md's 2026-09-04/05
 // Session Handoff). Replaces ComplementaryFilter::pitch()/roll() for the
 // shoulder: that decode has two independent real problems (gyro-
 // integration drift with zero corresponding accel change, and an
@@ -89,7 +89,7 @@ constexpr float kSlewRate = 1.5f;
 // tools/mujoco_bridge/test_imu_to_mujoco.py's fixtures matters: comparing
 // against a calibration basis from a DIFFERENT session reintroduces
 // exactly the cross-session REST mismatch this project already hit once
-// (PRD.md 2026-09-04).
+// (SESSION_LOG.md 2026-09-04).
 constexpr float kShoulderRefX = 0.96756683f, kShoulderRefY = -0.24536111f, kShoulderRefZ = -0.06010292f;
 constexpr float kShoulderFwdX = 0.23614663f, kShoulderFwdY = -0.53617526f, kShoulderFwdZ = 0.81040166f;
 constexpr float kShoulderAbdX = 0.11104646f, kShoulderAbdY = -0.91944181f, kShoulderAbdZ = 0.37722067f;

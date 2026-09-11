@@ -1,7 +1,7 @@
 """Tests run_demo_live.py's serial-stream parsing: split_lines()'s buffer/
 chunk handling, and LINE_RE/SHOULDER_RAW_RE/ELBOW_RAW_RE/DIAG_LINE_RE's
 robustness against malformed input. Real serial reads never land neatly on
-line boundaries, and a real wire glitch (see PRD.md's 2026-09-05 loose-
+line boundaries, and a real wire glitch (see SESSION_LOG.md's 2026-09-05 loose-
 connection finding) can corrupt or truncate bytes -- none of that was
 tested before this file. test_imu_to_mujoco.py exercises these same
 regexes, but only against known-good output from a real subprocess

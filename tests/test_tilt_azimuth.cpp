@@ -1,6 +1,6 @@
 // Verifies the tilt/azimuth replacement for complementary_filter.hpp's
 // accel_pitch_angle, which a real hardware session (2026-09-04, see git
-// history / PRD.md) showed folding back past +-90deg -- two genuinely
+// history / SESSION_LOG.md) showed folding back past +-90deg -- two genuinely
 // different real rotations (e.g. a forward-raise and a backward-extension)
 // could decode to the identical pitch. Tested purely against known physics
 // (synthetic unit vectors at known tilt/azimuth), the same
@@ -233,7 +233,7 @@ TEST_CASE("oblique_decompose recovers exact coordinates in a non-orthogonal basi
 
 // Sanity-checks oblique_decompose against the real shoulder capture this
 // was built from (tools/mujoco_bridge/raw_imu_calibration.json, 6-pose x
-// 5-repeat capture averaged per pose, 2026-09-05 -- see PRD.md's Session
+// 5-repeat capture averaged per pose, 2026-09-05 -- see SESSION_LOG.md's Session
 // Handoff). Wide margins on purpose: unlike the synthetic test above, these
 // aren't exact by construction -- BACKWARD_EXTENSION and ADDUCTION_RIGHT
 // were never part of building the basis, so what matters here is the
@@ -273,7 +273,7 @@ TEST_CASE("oblique_decompose against real captured shoulder data: signs match an
 }
 
 // oblique_decompose_scaled fixes oblique_decompose's real overshoot problem
-// (PRD.md 2026-09-04): scaling the raw coefficient by its calibration
+// (SESSION_LOG.md 2026-09-04): scaling the raw coefficient by its calibration
 // pose's own (large) tilt can more than double the real angle for an
 // off-axis direction. This uses the same non-orthogonal synthetic fixture
 // as the anchor test above (fwd at tilt=70deg/azimuth=0deg, abd at
@@ -317,7 +317,7 @@ TEST_CASE("oblique_decompose_scaled preserves the real tilt magnitude", "[fusion
 }
 
 // Regression check against the real ELBOW_FLEXION overshoot this function
-// was built to fix (PRD.md 2026-09-04, first found against an earlier
+// was built to fix (SESSION_LOG.md 2026-09-04, first found against an earlier
 // single-shot capture where a real ~16.2deg shoulder drift blew up to a
 // ~35deg pitch_equiv under plain oblique_decompose scaled by the
 // calibration poses' own tilt). Same real calibration basis as
