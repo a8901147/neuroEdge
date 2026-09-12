@@ -904,14 +904,17 @@ EMG_SETTLE_TAIL_SECONDS = 2.0
 # within the commonly-cited 1-3 SD range from the literature this approach
 # was based on -- but real-hardware testing 2026-09-12 found that too
 # sensitive in practice (grip stuck "on" almost constantly), well outside
-# that range's normal operating assumptions. Raised to 20 per that real
-# result, not the literature's range -- this is now tuned against this
-# specific MyoWare unit/placement's actual behavior, not a textbook
-# starting point. Higher = fewer false triggers from baseline noise, but
-# needs a stronger contraction to cross; lower = more sensitive, more
-# prone to false triggers. Not yet tuned against a real coverage sweep the
-# way GRIP_SCALE was.
-EMG_THRESHOLD_K = 20.0
+# that range's normal operating assumptions. Raised to 20, then brought
+# back down to 15 per user request -- this is tuned against this specific
+# MyoWare unit/placement's actual behavior, not a textbook starting point,
+# and not yet re-verified against a fresh capture since
+# phase3_control_loop_main.cpp's EMA smoothing (kEmgSmoothingAlpha) was
+# added, which changes the relaxed baseline's std this K multiplies.
+# Higher = fewer false triggers from baseline noise, but needs a stronger
+# contraction to cross; lower = more sensitive, more prone to false
+# triggers. Not yet tuned against a real coverage sweep the way GRIP_SCALE
+# was.
+EMG_THRESHOLD_K = 15.0
 
 
 def calibrate_emg_threshold(ser, latest, interactive=True):
