@@ -14,6 +14,7 @@ Not a standalone script -- import from a `mjpython`-run test file.
 """
 
 import math
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -79,6 +80,34 @@ def _xyz_str(pos):
     return f"{pos[0]:g} {pos[1]:g} {pos[2]:g}"
 
 
+def _replace_body_pos(xml_text, body_name, expected_default_pos, new_pos):
+    """Finds <body name="{body_name}" pos="..."/> via regex and replaces
+    just the pos value -- NOT a literal string search for
+    f'pos="{_xyz_str(expected_default_pos)}"' the way this used to work.
+    That broke 2026-09-12: `:g` formatting strips trailing zeros (0.930 ->
+    "0.93"), but arm_hand_scene.xml's pedestal is hand-written as
+    pos="0.051 0.332 0.930" (kept the trailing zero) -- the generated
+    "old" string and the file's actual text silently never matched,
+    raising "expected exactly one ... in {SCENE_XML}" for every
+    non-default pedestal_pos (i.e. every pose test_grasp_coverage.py
+    sweeps except the front_left default). Parsing the actual attribute
+    and comparing the resulting FLOATS (not strings) is immune to
+    whatever decimal formatting the XML happens to use."""
+    pattern = re.compile(rf'(<body name="{re.escape(body_name)}" pos=")([^"]+)(")')
+    match = pattern.search(xml_text)
+    if not match:
+        raise ValueError(f'no <body name="{body_name}" pos="..."> found in {SCENE_XML} -- '
+                          f'file may have changed, update this override logic')
+    actual_pos = tuple(float(v) for v in match.group(2).split())
+    if actual_pos != tuple(expected_default_pos):
+        raise ValueError(
+            f'<body name="{body_name}"> in {SCENE_XML} has pos={actual_pos}, but this '
+            f'function\'s DEFAULT_*_POS says {tuple(expected_default_pos)} -- the XML has '
+            f'changed since that default was set; update the default before relying on overrides.'
+        )
+    return xml_text[:match.start(2)] + _xyz_str(new_pos) + xml_text[match.end(2):]
+
+
 def load_model(ball_radius=DEFAULT_BALL_RADIUS, ball_friction=DEFAULT_BALL_FRICTION,
                 pedestal_pos=DEFAULT_PEDESTAL_POS, object_pos=DEFAULT_OBJECT_POS):
     """Loads arm_hand_scene.xml, optionally with the grasp object's radius/
@@ -117,20 +146,10 @@ def load_model(ball_radius=DEFAULT_BALL_RADIUS, ball_friction=DEFAULT_BALL_FRICT
         xml_text = xml_text.replace(old, new)
         changed = True
     if pedestal_pos != DEFAULT_PEDESTAL_POS:
-        old = f'name="pedestal" pos="{_xyz_str(DEFAULT_PEDESTAL_POS)}"'
-        new = f'name="pedestal" pos="{_xyz_str(pedestal_pos)}"'
-        if old not in xml_text:
-            raise ValueError(f"expected exactly one {old!r} in {SCENE_XML} -- "
-                              f"file may have changed, update this override logic")
-        xml_text = xml_text.replace(old, new)
+        xml_text = _replace_body_pos(xml_text, "pedestal", DEFAULT_PEDESTAL_POS, pedestal_pos)
         changed = True
     if object_pos != DEFAULT_OBJECT_POS:
-        old = f'name="object" pos="{_xyz_str(DEFAULT_OBJECT_POS)}"'
-        new = f'name="object" pos="{_xyz_str(object_pos)}"'
-        if old not in xml_text:
-            raise ValueError(f"expected exactly one {old!r} in {SCENE_XML} -- "
-                              f"file may have changed, update this override logic")
-        xml_text = xml_text.replace(old, new)
+        xml_text = _replace_body_pos(xml_text, "object", DEFAULT_OBJECT_POS, object_pos)
         changed = True
 
     if not changed:
