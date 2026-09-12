@@ -900,13 +900,18 @@ EMG_SETTLE_TAIL_SECONDS = 2.0
 
 # Multiples of the relaxed baseline's own standard deviation, added to its
 # mean, to get the threshold -- see calibrate_emg_threshold's docstring for
-# why this replaced a relaxed/contracted percentile split. 2.0 is a
-# starting point within the commonly-cited 1-3 SD range for this kind of
-# threshold (higher = fewer false triggers from baseline noise, but needs
-# a stronger contraction to cross; lower = more sensitive, more prone to
-# false triggers) -- not yet tuned against a real coverage sweep the way
-# GRIP_SCALE was.
-EMG_THRESHOLD_K = 2.0
+# why this replaced a relaxed/contracted percentile split. Started at 2.0,
+# within the commonly-cited 1-3 SD range from the literature this approach
+# was based on -- but real-hardware testing 2026-09-12 found that too
+# sensitive in practice (grip stuck "on" almost constantly), well outside
+# that range's normal operating assumptions. Raised to 20 per that real
+# result, not the literature's range -- this is now tuned against this
+# specific MyoWare unit/placement's actual behavior, not a textbook
+# starting point. Higher = fewer false triggers from baseline noise, but
+# needs a stronger contraction to cross; lower = more sensitive, more
+# prone to false triggers. Not yet tuned against a real coverage sweep the
+# way GRIP_SCALE was.
+EMG_THRESHOLD_K = 20.0
 
 
 def calibrate_emg_threshold(ser, latest, interactive=True):

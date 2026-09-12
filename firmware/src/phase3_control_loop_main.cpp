@@ -108,12 +108,19 @@ static bool g_require_elbow_imu = true;
 // needs -- see that function's own comment for the full design.
 // SlewRateLimiter's max rate for the grip setpoint (units/sec over a 0..1
 // range), so a full open<->close ramp takes 1/kSlewRate seconds -- 0.2s at
-// the original 5.0. 2026-09-12: doubled to 10.0 (0.1s) per user request
-// for a faster grasp motion. Doesn't affect test_grasp_object.py/
-// test_grasp_coverage.py -- those replay a separate, hand-authored
-// Python-side ramp (--grip-ramp-seconds) against src/mujoco_bridge_demo.cpp,
-// not this firmware constant.
-static constexpr float kSlewRate = 10.0f;
+// the original 5.0. 2026-09-12: doubled to 10.0 (0.1s), then doubled again
+// to 20.0 (0.05s) per user request for a faster grasp motion -- the second
+// doubling was requested before the first had actually been observed live
+// (blocked on the board being stuck post-flash pending a real power-cycle
+// at the time), so this hasn't been watched in MuJoCo yet either; at 0.05s
+// full-stroke this is getting close to an instant snap rather than a
+// visible motion, and fast enough that MuJoCo's own contact/joint
+// dynamics (not just this setpoint) could start being the limiting
+// factor on how fast the grasp actually looks. Doesn't affect
+// test_grasp_object.py/test_grasp_coverage.py -- those replay a separate,
+// hand-authored Python-side ramp (--grip-ramp-seconds) against
+// src/mujoco_bridge_demo.cpp, not this firmware constant.
+static constexpr float kSlewRate = 20.0f;
 static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
 
 // --- IMU side ---
