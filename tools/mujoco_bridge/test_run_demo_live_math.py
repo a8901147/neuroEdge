@@ -69,6 +69,50 @@ class ClampTest(unittest.TestCase):
         self.assertEqual(rdl.clamp(5.0, 0.0, 1.0), 1.0)
 
 
+class EmgPercentileTest(unittest.TestCase):
+    def test_empty_list_returns_zero(self):
+        self.assertEqual(rdl.emg_percentile([], 90), 0.0)
+
+    def test_median_of_odd_length_list(self):
+        self.assertEqual(rdl.emg_percentile([1, 2, 3, 4, 5], 50), 3)
+
+    def test_90th_percentile_picks_high_order_statistic(self):
+        # 10 sorted values 0..9 -- 90th percentile lands on index
+        # round(0.9*9)=8, i.e. value 8, not the max (9).
+        self.assertEqual(rdl.emg_percentile(list(range(10)), 90), 8)
+
+    def test_unsorted_input_is_sorted_first(self):
+        self.assertEqual(rdl.emg_percentile([5, 1, 3, 2, 4], 0), 1)
+
+
+class EmgMeanStdTest(unittest.TestCase):
+    """2026-09-12: backs calibrate_emg_threshold()'s mean+k*SD threshold,
+    which replaced a relaxed/contracted percentile split after real
+    hardware testing found that split could invert (relaxed_max >=
+    contracted_min) whenever a real contraction was weak or inconsistent,
+    not just from ADC jitter -- see emg_mean_std's own docstring."""
+
+    def test_empty_list_returns_zero_zero(self):
+        self.assertEqual(rdl.emg_mean_std([]), (0.0, 0.0))
+
+    def test_constant_values_have_zero_std(self):
+        mean, std = rdl.emg_mean_std([5.0, 5.0, 5.0, 5.0])
+        self.assertEqual(mean, 5.0)
+        self.assertEqual(std, 0.0)
+
+    def test_known_mean_and_population_std(self):
+        # [2, 4, 4, 4, 5, 5, 7, 9] is a textbook population-SD example:
+        # mean=5, population variance=4, SD=2.
+        mean, std = rdl.emg_mean_std([2, 4, 4, 4, 5, 5, 7, 9])
+        self.assertAlmostEqual(mean, 5.0)
+        self.assertAlmostEqual(std, 2.0)
+
+    def test_wider_spread_gives_larger_std(self):
+        _, tight_std = rdl.emg_mean_std([100, 101, 99, 100, 100])
+        _, wide_std = rdl.emg_mean_std([50, 150, 60, 140, 100])
+        self.assertLess(tight_std, wide_std)
+
+
 class EmaStepTest(unittest.TestCase):
     def test_alpha_zero_never_moves(self):
         self.assertEqual(rdl.ema_step(1.0, 5.0, 0.0), 1.0)
