@@ -820,19 +820,38 @@ def reader_thread_main(ser, latest):
 
 def emg_percentile(values, pct):
     """Robust order-statistic helper: `values[round(pct/100 * (n-1))]` of
-    the sorted list. Used instead of plain max()/min() when picking
-    relaxed_max/contracted_min in calibrate_emg_threshold() below -- a
-    single outlier window (real ADC jitter, confirmed on real hardware,
-    see that function's docstring) shouldn't single-handedly decide the
-    whole calibration the way it did in the old firmware-side
-    ThresholdCalibrator.is_valid() (strict min/max, see git history).
-    Returns 0.0 for an empty list (caller's capture window found nothing,
-    already a distinct failure case checked earlier)."""
+    the sorted list. Returns 0.0 for an empty list. Superseded by
+    emg_mean_std() for calibrate_emg_threshold() itself (2026-09-12, see
+    that function's docstring) but kept since it's a reasonable general-
+    purpose helper, not something specifically wrong."""
     if not values:
         return 0.0
     ordered = sorted(values)
     idx = int(round((pct / 100.0) * (len(ordered) - 1)))
     return ordered[idx]
+
+
+def emg_mean_std(values):
+    """Mean and population standard deviation of a list of raw window
+    values. Used for calibrate_emg_threshold()'s baseline statistics
+    instead of a percentile of relaxed/contracted min/max (2026-09-12,
+    after a real failure: a held "clench" swung between 2300 and 3519
+    within the same 3.5s window on real hardware, entirely overlapping
+    the relaxed baseline's range -- relaxed_max ended up >= contracted_min,
+    the exact inversion emg_percentile's docstring warned single-outlier
+    windows could cause, just from genuine contraction-strength variance
+    this time, not ADC jitter). mean + k*SD anchors the threshold to the
+    resting baseline's own noise statistics instead of trying to
+    interpolate between two independently-noisy, potentially-overlapping
+    samples -- standard practice in sEMG onset detection (e.g. Shewhart-
+    style control-chart thresholds at 1-3 SD above baseline; see
+    EMG_THRESHOLD_K's own comment). Returns (0.0, 0.0) for an empty list."""
+    if not values:
+        return 0.0, 0.0
+    n = len(values)
+    mean = sum(values) / n
+    variance = sum((v - mean) ** 2 for v in values) / n
+    return mean, math.sqrt(variance)
 
 
 def capture_emg_window(latest, seconds, tail_seconds, label, verbose=True):
@@ -879,20 +898,48 @@ def send_emg_threshold(ser, threshold):
 EMG_RECORD_SECONDS = 3.5
 EMG_SETTLE_TAIL_SECONDS = 2.0
 
+# Multiples of the relaxed baseline's own standard deviation, added to its
+# mean, to get the threshold -- see calibrate_emg_threshold's docstring for
+# why this replaced a relaxed/contracted percentile split. History: 2.0
+# (the commonly-cited 1-3 SD literature range this approach was based on)
+# -> real-hardware testing 2026-09-12 found that too sensitive (grip stuck
+# "on" almost constantly) -> 20 -> 15 -> back to 20, the last three moves
+# made in quick succession without a live re-test confirming any of them
+# in between. Only the "2.0 is too sensitive" finding is actually verified
+# against real hardware; the choice among {15, 20} is not, and neither is
+# whether this still holds now that phase3_control_loop_main.cpp's EMA
+# smoothing (kEmgSmoothingAlpha, added the same session) has changed the
+# relaxed baseline's std that K multiplies. Higher = fewer false triggers
+# from baseline noise, but needs a stronger contraction to cross; lower =
+# more sensitive, more prone to false triggers. Not yet tuned against a
+# real coverage sweep the way GRIP_SCALE was.
+EMG_THRESHOLD_K = 20.0
+
 
 def calibrate_emg_threshold(ser, latest, interactive=True):
-    """Computes a relax/clench EMG threshold entirely on the host from
-    emg_min/emg_max (EMG_RAW_RE) -- the firmware streams these
-    unconditionally from boot, so this needs no protocol/handshake to
-    CAPTURE, only to APPLY the result (send_emg_threshold's "T<uint>\\n").
-    Mirrors _calibrate_pose's approach (record for EMG_RECORD_SECONDS,
-    trust only the settled last EMG_SETTLE_TAIL_SECONDS) and uses
-    emg_percentile (90th of relaxed emg_max, 10th of contracted emg_min)
-    rather than plain max()/min() -- real hardware testing (2026-09-08,
-    when this lived in firmware as a strict-min/max ThresholdCalibrator)
-    found single-sample ADC jitter alone could fail a genuinely
-    well-separated signal; percentiles tolerate a handful of outlier
-    windows instead of being decided by the single worst one.
+    """Computes an EMG threshold entirely on the host from emg_min/emg_max
+    (EMG_RAW_RE) -- the firmware streams these unconditionally from boot,
+    so this needs no protocol/handshake to CAPTURE, only to APPLY the
+    result (send_emg_threshold's "T<uint>\\n"). Mirrors _calibrate_pose's
+    approach (record for EMG_RECORD_SECONDS, trust only the settled last
+    EMG_SETTLE_TAIL_SECONDS).
+
+    threshold = relaxed_mean + EMG_THRESHOLD_K * relaxed_std (see
+    emg_mean_std's docstring for the full reasoning) -- replaced an
+    earlier relaxed-90th-percentile/contracted-10th-percentile split
+    (2026-09-08 design) after real hardware testing 2026-09-12 found a
+    held "clench" swinging between 2300 and 3519 within the same 3.5s
+    window, entirely overlapping the relaxed baseline -- the exact
+    relaxed>=contracted inversion that split-based approach could produce
+    whenever a real contraction is weak or inconsistent, not just from
+    ADC jitter. Anchoring to the relaxed baseline's own noise statistics
+    sidesteps that: it never needs the contracted phase to be cleanly
+    separated from the relaxed one to produce a well-defined answer.
+
+    The contracted-phase recording is kept, but only as a post-hoc sanity
+    check against the threshold just computed -- printed as a warning if
+    the contraction didn't clearly cross it, not fed into the threshold
+    calculation itself.
 
     interactive=True (run_demo_live.py's normal use) pauses for a real
     Enter press at each phase. interactive=False lets a caller (e.g. a
@@ -916,22 +963,27 @@ def calibrate_emg_threshold(ser, latest, interactive=True):
         input()
     print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, stay relaxed)...")
     relaxed_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "relaxed")
-    relaxed_max = emg_percentile([s[2] for s in relaxed_tail], 90)
+    relaxed_mean, relaxed_std = emg_mean_std([s[2] for s in relaxed_tail])
+    threshold = int(round(relaxed_mean + EMG_THRESHOLD_K * relaxed_std))
 
     if interactive:
         print("Make a firm fist and hold it. Press Enter when ready.")
         input()
     print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, keep gripping)...")
     contracted_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "gripping")
-    contracted_min = emg_percentile([s[1] for s in contracted_tail], 10)
+    contracted_mean, contracted_std = emg_mean_std([s[2] for s in contracted_tail])
 
-    if contracted_min <= relaxed_max:
-        print(f"Warning: the relaxed and clenched phases do not separate (relaxed_max={relaxed_max:.0f} >= "
-              f"contracted_min={contracted_min:.0f}): maybe no real fist was made, or the gain needs adjusting. "
-              f"The midpoint is still used as the threshold, but recalibrating after adjusting is recommended.")
-    threshold = int(round((relaxed_max + contracted_min) / 2))
-    print(f"EMG threshold computed: relaxed_max={relaxed_max:.0f} contracted_min={contracted_min:.0f} "
-          f"threshold={threshold}")
+    print(f"EMG threshold computed: relaxed_mean={relaxed_mean:.0f} relaxed_std={relaxed_std:.1f} "
+          f"threshold={threshold}(= mean + {EMG_THRESHOLD_K:.1f} * std)")
+    if contracted_mean <= threshold:
+        print(f"Warning: the gripping phase's mean ({contracted_mean:.0f}, std={contracted_std:.1f}) "
+              f"did not exceed the computed threshold ({threshold}). The grip may have been too weak, an electrode "
+              f"may have poor contact, or EMG_THRESHOLD_K is too high for you: grip harder or check the electrodes "
+              f"and recalibrate; failing that, consider lowering EMG_THRESHOLD_K.")
+    else:
+        margin = contracted_mean - threshold
+        print(f"Check: the gripping phase's mean ({contracted_mean:.0f}, std={contracted_std:.1f}) is above the "
+              f"threshold, margin={margin:.0f} ({'uneven grip' if contracted_std > relaxed_std * 3 else 'steady'}).")
 
     send_emg_threshold(ser, threshold)
     return threshold
