@@ -261,8 +261,13 @@ CP2102 換成 FT232RL 之後，原本寫死的 `DEFAULT_PORT = "/dev/tty.usbseri
 1. **清空serial buffer**：`--live-check` 在 `check_boot_reached_app()` 的最長25秒等待期間完全沒有人在讀serial port，累積的舊資料可能跟flash前的殘留資料混在一起，導致tick counter「看起來」倒退，誤判一顆健康的板子壞掉。已加 `ser.reset_input_buffer()`。
 2. **一個還沒查清楚的殘留問題**：修完上面那個之後，還是偶爾看到tick小幅度「倒退」（例如1150→1100，不像原本那種跨session的巨大跳動）。用一個獨立、不呼叫任何SWD指令的乾淨腳本重測，tick序列完全正常遞增——證實韌體本身沒問題，問題出在 `run_live_check()` 裡兩次 `_mdw_read()`（各自開一個新的openocd連線讀wake結果）之間，但確切機制沒有查清楚。已經在程式碼裡用註解記下來，避免以後被誤認為是已解決或被忽略。
 
+#### DLPF=6 實機驗證通過，且補上了這個 session 唯一缺的測試
+
+`--i2c-scan --live-check` 全過（I2C不BUSY、兩顆都ACK、wake成功、資料正常流動）。靜止雜訊：陀螺儀0.002-0.014 rad/s、加速度計0.002-0.005g，比CFG=3那版還更乾淨。**用力顫抖的實測改善很明顯**：陀螺儀跳動幅度從CFG=3的0.5 rad/s降到CFG=6的0.02 rad/s（約26-90倍），估計頻率也從9-10Hz降到~3.5Hz，符合預期（5Hz頻寬濾掉了大部分顫抖頻段的成分）。
+
+使用者指出這次改動完全沒有測試。把`select_raw_smoothing_alpha()`從`main()`迴圈裡抽出來（跟`ema_step`/`rate_limit_step`當初被抽出來的理由一樣，讓「選哪個alpha」這個判斷本身可以被單獨測試），補了3個測試涵蓋這個判斷邏輯，另外也補了2個測試涵蓋`LINE_RE`解析`gripping`欄位跟`LatestSample`的round-trip——這個欄位其實從一開始就被regex解析出來，只是完全沒被使用、也沒人測過。全部Python(40)+C++(77)測試通過。
+
 #### 下個 session 要接著做的事（TODO，依優先順序）
 
-1. **實機重新驗證 DLPF=6**：目前只驗證過 CFG=3 那版的靜止雜訊量級，CFG=6 這版還沒有實機測過（連基本的 `--i2c-scan --live-check` 都還沒跑），也還沒有拿使用者實際握拳出力的原始資料重新測一次，確認顫抖真的被壓下去、且正常動作沒有變遲鈍。
-2. **完整六步驟抓球任務**——上一份 handoff 的待辦，這個 session 因為使用者提出晃動問題而暫時中斷，DLPF=6驗證過後應該就可以直接跑。
-3. **`_mdw_read()` 造成的tick順序異常**——已記錄但未查清楚根本原因，不影響目前的判斷（真正重要的wake/completions/pitch-roll檢查都正常），但值得有空時查一下，可能反映serial buffer處理或openocd互動上一個更普遍的小問題。
+1. **完整六步驟抓球任務**——上一份 handoff 的待辦，這個 session 因為使用者提出晃動問題而暫時中斷，DLPF=6跟抓握加強平滑都已經驗證過，現在應該可以直接跑。
+2. **`_mdw_read()` 造成的tick順序異常**——已記錄但未查清楚根本原因，不影響目前的判斷（真正重要的wake/completions/pitch-roll檢查都正常），但值得有空時查一下，可能反映serial buffer處理或openocd互動上一個更普遍的小問題。
