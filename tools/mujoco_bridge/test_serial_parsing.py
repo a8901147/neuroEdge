@@ -148,5 +148,28 @@ class LineRegexRobustnessTest(unittest.TestCase):
             self.assertEqual(match.group("tick"), "12345")
 
 
+class GrippingFieldTest(unittest.TestCase):
+    """gripping=0/1 was parsed by LINE_RE from the start but silently
+    discarded until 2026-09-12 (see GRIPPING_SMOOTHING_ALPHA's comment) --
+    nothing checked it actually threads through LatestSample correctly."""
+
+    def test_line_re_captures_gripping_1(self):
+        match = rdl.LINE_RE.search(FULL_LINE)
+        self.assertEqual(match.group("gripping"), "1")
+
+    def test_line_re_captures_gripping_0(self):
+        line = FULL_LINE.replace("gripping=1", "gripping=0")
+        match = rdl.LINE_RE.search(line)
+        self.assertEqual(match.group("gripping"), "0")
+
+    def test_latest_sample_round_trips_gripping(self):
+        latest = rdl.LatestSample()
+        self.assertFalse(latest.snapshot_gripping())  # default before any update()
+        latest.update(0.5, True, 0.1, 0.2, 0.3)
+        self.assertTrue(latest.snapshot_gripping())
+        latest.update(0.5, False, 0.1, 0.2, 0.3)
+        self.assertFalse(latest.snapshot_gripping())
+
+
 if __name__ == "__main__":
     unittest.main()

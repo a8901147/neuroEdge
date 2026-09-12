@@ -399,6 +399,17 @@ def run_live_check(port: str) -> bool:
         print("[FAIL] pyserial not installed (pip3 install pyserial) -- can't capture live data")
         return False
     ser = serial.Serial(port, 115200, timeout=1)
+    # check_boot_reached_app() above can spend up to ~25s polling while the
+    # OS-level receive buffer keeps silently filling with whatever the board
+    # streams during that wait (nothing has read the port yet) -- on top of
+    # that, this port may not be freshly opened at the OS level either, so
+    # bytes from BEFORE this flash can still be sitting in the buffer too.
+    # Without clearing it, the first bytes read here can be stale/pre-flash
+    # data ahead of fresh post-flash data in the same read, which looks like
+    # the tick counter running backward (observed 2026-09-12: ticks[0]
+    # =218990, a leftover high count from the previous boot, then ticks[-1]
+    # =1100 from the fresh one) and fails a perfectly healthy board.
+    ser.reset_input_buffer()
 
     import time
     time.sleep(1.0)  # let both wake-up writes (each blocking, at boot) complete
@@ -469,9 +480,31 @@ def run_live_check(port: str) -> bool:
     print(f"[OK  ] {len(samples)} lines parsed")
 
     ticks = [s["tick"] for s in samples]
-    tick_alive = ticks[-1] > ticks[0] if len(ticks) > 1 else False
+    # tick_count is a plain free-running uint32_t in firmware, never reset --
+    # any decrease within one capture is necessarily a bad sample, not the
+    # counter itself going backward. A single corrupted/reordered line right
+    # at the start or end of the capture (the buffer-boundary right after
+    # check_boot_reached_app()'s own SWD access, or the general dropped-byte
+    # class test_serial_parsing.py's LineRegexRobustnessTest documents) can
+    # make a naive ticks[0] vs ticks[-1] comparison fail on an otherwise
+    # perfectly healthy board (observed 2026-09-12). Trim one sample off
+    # each end before comparing -- cheap insurance against exactly that,
+    # without hiding a real problem (a genuinely stuck/restarting board
+    # would still fail this over dozens of interior samples too).
+    trimmed = ticks[1:-1] if len(ticks) > 4 else ticks
+    tick_alive = trimmed[-1] > trimmed[0] if len(trimmed) > 1 else False
     print(f"[{'OK  ' if tick_alive else 'FAIL'}] tick counter advancing "
           f"({ticks[0]} -> {ticks[-1]})" if ticks else "[FAIL] no tick values")
+    if not tick_alive:
+        print(
+            "    NOTE (2026-09-12, unresolved): a standalone capture with no SWD access "
+            "in between showed tick_count -- a plain never-reset uint32_t in firmware -- "
+            "increasing perfectly throughout. The two _mdw_read() calls just above this "
+            "(each opens its own openocd session) are the only difference from that clean "
+            "capture, and are suspected of somehow disturbing sample ordering, but the "
+            "actual mechanism hasn't been confirmed. Before assuming the board is broken, "
+            "try `python3 -m serial.tools.miniterm` directly, which doesn't touch SWD at all."
+        )
 
     # shoulder_pitch/shoulder_roll are raw ComplementaryFilter output (not
     # derived/clamped like `elbow`, see DIAG_LINE_RE's comment above), so a

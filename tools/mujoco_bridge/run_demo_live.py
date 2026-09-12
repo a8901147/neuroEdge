@@ -1,9 +1,9 @@
 """Phase 2 / Stage 6: drive the same MuJoCo whole-arm + hand simulation as
 run_demo.py, but from REAL hardware instead of a CSV replay -- the actual
 point of this project, not the CSV-replay prototype. Reads decoded
-grip/shoulder/elbow state live over USART2 from the STM32 (via the CP2102
-USB-to-TTL adapter), streamed by firmware/src/phase3_control_loop_main.cpp's
-Stage 6 dual-MPU6050 + EMG loop.
+grip/shoulder/elbow state live over USART2 from the STM32 (via a USB-to-TTL
+adapter -- FT232RL by default, see autodetect_port()), streamed by
+firmware/src/phase3_control_loop_main.cpp's Stage 6 dual-MPU6050 + EMG loop.
 
 A separate script from run_demo.py, not a --serial flag on it: a live
 serial port and a CSV-replaying subprocess have different lifecycle/error
@@ -24,13 +24,15 @@ script's baud default against older/simpler firmware stages.
 Usage:
     python3 -m pip install -r tools/mujoco_bridge/requirements.txt
     mjpython tools/mujoco_bridge/run_demo_live.py
-    mjpython tools/mujoco_bridge/run_demo_live.py --port /dev/tty.usbserial-0001 --baud 115200
+    mjpython tools/mujoco_bridge/run_demo_live.py --cp2102 --baud 115200
+    mjpython tools/mujoco_bridge/run_demo_live.py --port /dev/tty.usbserial-XXXXXXXX
 
 Must run as `mjpython`, not plain `python3` -- launch_passive raises
 RuntimeError under plain CPython on macOS.
 """
 
 import argparse
+import glob
 import json
 import math
 import re
@@ -46,8 +48,41 @@ import serial
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "arm_hand_scene.xml"
 
-DEFAULT_PORT = "/dev/tty.usbserial-0001"
+# CP2102's macOS device path is fixed (no per-unit serial suffix), so it can
+# be hardcoded; FT232RL's isn't (macOS names it after the chip's own USB
+# serial string, e.g. /dev/tty.usbserial-A73C97JW -- a different string per
+# physical unit). 2026-09-11 replaced CP2102 as the project's adapter (see
+# SESSION_LOG.md's known firmware lockup bug), so the default now
+# auto-detects whatever's plugged in instead of hardcoding either path --
+# hardcoding the new adapter's path would just recreate the same fragility
+# this replaces (breaks again the next time the unit or port changes).
+CP2102_PORT = "/dev/tty.usbserial-0001"
 DEFAULT_BAUD = 115200
+
+
+def autodetect_port(prefer_cp2102: bool = False) -> str:
+    """Returns the port to use, resolved at call time (not import time) so
+    a port that appears/disappears between script start and this call is
+    handled correctly. Raises SystemExit with an actionable message rather
+    than pyserial's raw FileNotFoundError if nothing is found."""
+    if prefer_cp2102:
+        if Path(CP2102_PORT).exists():
+            return CP2102_PORT
+        sys.exit(
+            f"--cp2102 given but {CP2102_PORT} doesn't exist -- is the CP2102 adapter "
+            "actually plugged in? (`ls /dev/cu.usbserial-*` to check what's connected)"
+        )
+    candidates = sorted(glob.glob("/dev/tty.usbserial-*"))
+    if not candidates:
+        sys.exit(
+            "no /dev/tty.usbserial-* device found -- plug in the USB-TTL adapter "
+            "(FT232RL or CP2102), or pass --port explicitly if it enumerates under a "
+            "different name."
+        )
+    if len(candidates) > 1:
+        print(f"[warn] multiple usbserial ports found ({candidates}), using {candidates[0]} "
+              "-- pass --port explicitly to pick a different one.")
+    return candidates[0]
 
 # Same mapping/scale as run_demo.py -- see that file for the empirical
 # tuning notes (palm-down quat fix, joint damping, GRIP_SCALE).
@@ -103,6 +138,19 @@ MAX_CTRL_RATE_RAD_PER_SEC = 6.0
 # noise source. Runs alongside the rate limiter, not instead of it: they
 # guard against two different kinds of bad signal.
 RAW_SMOOTHING_ALPHA = 0.03
+
+# 2026-09-12: separate, stronger smoothing applied only while gripping==1.
+# Real-hardware capture during a sustained grip found gyro spread ~100x the
+# measured resting noise floor (0.5 rad/s vs 0.005 rad/s), with a zero-
+# crossing estimate putting the dominant frequency at ~9-10Hz -- physiological
+# tremor from muscle exertion (see phase3_control_loop_main.cpp's kDlpfCfg6
+# comment for the same finding and the firmware-side DLPF response), not the
+# wire-glitch jitter RAW_SMOOTHING_ALPHA above was tuned against. Applying it
+# only during an active grip (not uniformly) costs no responsiveness during
+# real arm movement, since gripping is when the arm is deliberately being
+# held still anyway. Picked as a starting point (3x stronger than
+# RAW_SMOOTHING_ALPHA); not yet tuned against a real post-DLPF-CFG-6 capture.
+GRIPPING_SMOOTHING_ALPHA = 0.01
 
 # 2026-09-07: was 0.6, changed after test_grasp_coverage.py's long-settle
 # sweep found NO uniform-curl grip_scale is a permanently stable
@@ -329,6 +377,15 @@ def ema_step(current, target, alpha):
     return current + alpha * (target - current)
 
 
+def select_raw_smoothing_alpha(gripping):
+    """Which EMA alpha main()'s loop should use this tick -- extracted so
+    the actual decision (not just its inputs/outputs) is unit-testable,
+    same reasoning as ema_step/rate_limit_step below. See
+    GRIPPING_SMOOTHING_ALPHA's comment for why gripping gets its own,
+    stronger value."""
+    return GRIPPING_SMOOTHING_ALPHA if gripping else RAW_SMOOTHING_ALPHA
+
+
 def rate_limit_step(current, target, max_step):
     """Steps `current` toward `target` by at most `max_step`, never
     overshooting -- lands exactly on `target` if it's already within one
@@ -483,6 +540,7 @@ class LatestSample:
     def __init__(self):
         self._lock = threading.Lock()
         self.grip = 0.0
+        self.gripping = False
         self.shoulder_pitch = 0.0
         self.shoulder_roll = 0.0
         self.elbow = 0.0
@@ -524,14 +582,19 @@ class LatestSample:
         self.shoulder_required = None
         self.elbow_required = None
 
-    def update(self, grip, shoulder_pitch, shoulder_roll, elbow):
+    def update(self, grip, gripping, shoulder_pitch, shoulder_roll, elbow):
         with self._lock:
             self.grip = grip
+            self.gripping = gripping
             self.shoulder_pitch = shoulder_pitch
             self.shoulder_roll = shoulder_roll
             self.elbow = elbow
             self.last_update_monotonic = time.monotonic()
             self.has_received_data = True
+
+    def snapshot_gripping(self):
+        with self._lock:
+            return self.gripping
 
     def update_shoulder_raw(self, ax, ay, az):
         with self._lock:
@@ -637,7 +700,7 @@ class LatestSample:
 
     def status(self):
         """(is_stale, port_error) -- port_error is a hard failure (the OS-level
-        port itself broke, e.g. the CP2102 was unplugged); is_stale just means
+        port itself broke, e.g. the USB-serial adapter was unplugged); is_stale just means
         no valid line has arrived recently, which is what you see when the
         STM32 is still connected but its firmware has stopped producing output
         (e.g. stuck retrying a wedged I2C bus -- the USB-serial link itself
@@ -696,6 +759,7 @@ def reader_thread_main(ser, latest):
                 if match:
                     latest.update(
                         float(match.group("grip")),
+                        match.group("gripping") == "1",
                         float(match.group("shoulder_pitch")),
                         float(match.group("shoulder_roll")),
                         float(match.group("elbow")),
@@ -773,7 +837,7 @@ def reader_thread_main(ser, latest):
                 if line.strip():
                     print(f"[FW] {line}")
     except serial.SerialException as exc:
-        # A real OS-level port failure (e.g. the CP2102 adapter was
+        # A real OS-level port failure (e.g. the USB-serial adapter was
         # physically unplugged) -- distinct from the firmware just going
         # quiet, which doesn't raise anything here since the port itself
         # stays open. Surfaced through LatestSample rather than printed
@@ -928,7 +992,17 @@ def save_calibration_fields(path, fields):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default=DEFAULT_PORT)
+    parser.add_argument(
+        "--port", default=None,
+        help="serial device path. Default: auto-detect whatever /dev/tty.usbserial-* is "
+             "plugged in (FT232RL, the project's current adapter). Use --cp2102 instead of "
+             "this to select the CP2102 adapter specifically by its fixed path.",
+    )
+    parser.add_argument(
+        "--cp2102", action="store_true",
+        help=f"use the CP2102 adapter at its fixed path ({CP2102_PORT}) instead of "
+             "auto-detecting -- for when CP2102 is what's plugged in, not FT232RL.",
+    )
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument(
         "--log-file", default=None,
@@ -1000,8 +1074,9 @@ def main():
         log_fh.write(f"\n--- session start {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         sys.stdout = Tee(sys.stdout, log_fh)
 
-    ser = serial.Serial(args.port, args.baud, timeout=1)
-    print(f"Listening on {args.port} @ {args.baud} baud -- Ctrl+C to stop")
+    port = args.port if args.port else autodetect_port(prefer_cp2102=args.cp2102)
+    ser = serial.Serial(port, args.baud, timeout=1)
+    print(f"Listening on {port} @ {args.baud} baud -- Ctrl+C to stop")
 
     latest = LatestSample()
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
@@ -1387,19 +1462,24 @@ def main():
                 # angle BEFORE either goes into oblique_decompose_scaled or
                 # the ctrl mapping below, so continuous per-tick noise gets
                 # averaged out instead of just rate-capped downstream.
+                # Stronger alpha while actively gripping (see
+                # GRIPPING_SMOOTHING_ALPHA's comment) -- muscle-exertion
+                # tremor is much larger than ordinary jitter, and the arm
+                # isn't meant to be moving much during a grip anyway.
+                raw_alpha = select_raw_smoothing_alpha(latest.snapshot_gripping())
                 if smoothed_shoulder_raw is None:
                     smoothed_shoulder_raw = shoulder_raw
                     smoothed_elbow_raw_scalar = elbow
                 else:
                     smoothed_shoulder_raw = tuple(
-                        ema_step(smoothed_shoulder_raw[i], shoulder_raw[i], RAW_SMOOTHING_ALPHA)
+                        ema_step(smoothed_shoulder_raw[i], shoulder_raw[i], raw_alpha)
                         for i in range(3)
                     )
-                    smoothed_elbow_raw_scalar = ema_step(smoothed_elbow_raw_scalar, elbow, RAW_SMOOTHING_ALPHA)
+                    smoothed_elbow_raw_scalar = ema_step(smoothed_elbow_raw_scalar, elbow, raw_alpha)
 
                 if port_error is not None:
                     sys.exit(f"\nserial port failed: {port_error}\n"
-                             f"(the CP2102 adapter was likely unplugged -- this needs the script "
+                             f"(the USB-serial adapter was likely unplugged -- this needs the script "
                              f"restarted after reconnecting, unlike a firmware-side stall)")
 
                 if is_stale and not was_stale:
