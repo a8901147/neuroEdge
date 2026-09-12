@@ -31,6 +31,50 @@ jobs:
       - name: Test
         run: ctest --preset sanitize-asan-ubsan --output-on-failure
 
+  firmware-build:
+    # Compile-only check (no hardware in CI, obviously) -- but a real gap
+    # until 2026-09-12: this project had zero automated protection against
+    # a change to include/edgeneuro/ (shared between host and firmware) or
+    # firmware/src/ itself breaking the actual embedded build. Every such
+    # check before this job was manual (`cmake --build build` in
+    # firmware/, remembered by hand each time). Builds every firmware
+    # target (`cmake --build` with no --target builds all of them, per
+    # firmware/CMakeLists.txt's firmware_add_target() calls), not just
+    # phase3_control_loop -- a change touching a shared header could break
+    # an older bring-up stage target without touching the current one.
+    name: Firmware build (arm-none-eabi, compile-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same toolchain, same version, as local dev (see firmware/README.md
+      # and PRD.md's Phase 1.5 history) -- the plain `apt`/Homebrew
+      # arm-none-eabi-gcc package ships without newlib (no <stdint.h>
+      # etc.), which is why this project uses ARM's own tarball instead of
+      # a package-manager one. x86_64 build here (ubuntu-latest runner),
+      # not the darwin-arm64 one local dev uses -- verified this URL
+      # exists (HTTP 200) before adding it here, not guessed.
+      - name: Install ARM GNU Toolchain (arm-none-eabi)
+        run: |
+          curl -sL -o /tmp/arm-gnu-toolchain.tar.xz \
+            "https://armkeil.blob.core.windows.net/developer/files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz"
+          mkdir -p "$HOME/.local/arm-toolchain"
+          tar -xJf /tmp/arm-gnu-toolchain.tar.xz -C "$HOME/.local/arm-toolchain" --strip-components=1
+          echo "$HOME/.local/arm-toolchain/bin" >> "$GITHUB_PATH"
+
+      # firmware/CMakeLists.txt sets CMAKE_TOOLCHAIN_FILE itself (before
+      # its own project() call), so this doesn't need -DCMAKE_TOOLCHAIN_FILE
+      # passed in -- same as a local `cmake -S firmware -B firmware/build`.
+      - name: Configure
+        run: cmake -S firmware -B firmware/build
+
+      - name: Build all firmware targets
+        run: cmake --build firmware/build -j
+        # No `ctest` step -- firmware/ has no host-runnable tests (bare-
+        # metal STM32 code); this job is a compile-only regression guard.
+        # Real functional verification is check_hardware_ready.py, run
+        # manually against actual hardware, not something CI can do.
+
   python-headless-tests:
     name: Python tests (headless, tools/mujoco_bridge)
     runs-on: ubuntu-latest
