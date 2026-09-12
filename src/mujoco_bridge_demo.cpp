@@ -102,6 +102,11 @@ int main(int argc, char** argv) {
     const std::string csv_path = argc > 1 ? argv[1] : "data/wearable_1emg_12imu.csv";
 
     Provider provider(csv_path);
+    // No EMA smoothing before this, unlike phase3_control_loop_main.cpp's
+    // grip (see grip_state_machine.hpp's 2026-09-12 correction) -- fine
+    // for now since this replays a synthetic CSV (data/generate_sample_data.py),
+    // not a noisy live ADC, but would reproduce that same "stuck gripping"
+    // bug if this ever replayed a real noisy capture instead.
     GripStateMachine<float> grip(kGripThreshold, kOnDuration, kOffDuration);
     SlewRateLimiter<float> setpoint(kSlewRate);
     ComplementaryFilter<float> shoulder_filter(0.98f, kDt); // upper-arm IMU, old decode kept only for [OLD] comparison output

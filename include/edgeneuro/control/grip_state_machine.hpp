@@ -22,8 +22,23 @@ namespace edgeneuro {
 //
 // Intended input is MyoWare 2.0's ENV (envelope) output, not RAW -- ENV is
 // already rectified + low-pass filtered in analog hardware before it ever
-// reaches the ADC, so no further filtering/feature extraction is needed
-// upstream of this class.
+// reaches the ADC.
+//
+// 2026-09-12 correction: the line above used to claim "so no further
+// filtering/feature extraction is needed upstream of this class" -- real
+// hardware use found that false. update()'s debounce below requires the
+// input to stay continuously above (or below) threshold for the full
+// on_duration/off_duration with zero interruption: a single noisy sample
+// on the wrong side resets that accumulator to 0 rather than just slowing
+// it, a `min()`-like criterion over the debounce window that's far more
+// noise-sensitive than a `mean()`-like one. In practice this meant the
+// grip stuck "on" almost constantly until the caller (see
+// firmware/src/phase3_control_loop_main.cpp's kEmgSmoothingAlpha) added
+// its own EMA smoothing before calling update() -- so ENV alone was not
+// enough, at least not against this debounce shape. Left as the caller's
+// responsibility rather than folded into this class, since a caller may
+// want different smoothing (or none, e.g. a synthetic/already-clean
+// signal in a test) -- but don't assume ENV input needs no help.
 //
 // Caller contract: call update() once per fresh envelope sample with dt
 // (seconds) since the last call. envelope's unit is whatever the caller's
