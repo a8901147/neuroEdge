@@ -123,24 +123,51 @@ cmake --build build/debug-heapguard --target edgeneuro_mujoco_bridge_demo
 (STM32F401 + real MyoWare + 2x real MPU6050) decoding and streaming live over
 USART2/USB-TTL, driving the same MuJoCo arm in real time. Firmware side:
 `firmware/src/phase3_control_loop_main.cpp`'s Stage 6 dual-IMU loop (see
-PRD §6 Stage 6 and `firmware/README.md` for wiring — two MPU6050s share I2C1
-at addresses `0x68`/`0x69`, `AD0` tied to 3.3V on the second unit). Python
+`firmware/README.md` for wiring — two MPU6050s share I2C1 at addresses
+`0x68`/`0x69`, `AD0` tied to 3.3V on the second unit). Python
 side: `tools/mujoco_bridge/run_demo_live.py`, a separate script from
 `run_demo.py` (different lifecycle — a live serial port has no "finished"
 sentinel), reusing the same MuJoCo model/actuator wiring, reading over
 `pyserial` instead of replaying a subprocess:
 
 ```sh
-# after flashing phase3_control_loop and connecting the CP2102 USB-TTL adapter
+# after flashing phase3_control_loop, power-cycle the board's own power
+# supply (not just a reset -- see SESSION_LOG.md's 2026-09-11/12 entries:
+# this bootloader empirically does not run the new firmware after a plain
+# SWD/pin reset, only after power is actually removed and reapplied), then
+# connect the USB-TTL adapter (FT232RL by default; see tools/usb_serial_port.py)
 .venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py
-.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --port /dev/tty.usbserial-0001 --baud 115200  # explicit defaults
+.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --cp2102               # use CP2102 instead of auto-detecting
+.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --port /dev/tty.usbserial-XXXXXXXX  # explicit override
 ```
 
-Verify hardware bring-up SWD-first before trusting the viewer (see PRD §6
-Stage 6's verification list): `python3 tools/check_hardware_ready.py
+Verify hardware bring-up SWD-first before trusting the viewer (see
+SESSION_LOG.md for the full bring-up history): `python3 tools/check_hardware_ready.py
 --i2c-scan` should ACK both `0x68` and `0x69`; the firmware's
 `g_wake_result_shoulder`/`g_wake_result_elbow` globals should both read `0`
 via `openocd ... mdw`.
+
+### Diagnostic and calibration utilities
+
+Every script below shares `tools/usb_serial_port.py`'s port auto-detection:
+no `--port` needed if only one USB-TTL adapter is plugged in, `--cp2102`
+selects CP2102's fixed path explicitly (its own path doesn't change per
+unit, unlike FT232RL's), and `--port <path>` overrides either.
+
+| Script | Use it when... |
+| --- | --- |
+| `python3 tools/check_hardware_ready.py [--i2c-scan] [--live-check] [--boot-check]` | Before trusting anything else in this list — confirms ST-Link/USB-TTL/serial port are all actually usable, optionally the I2C bus + both MPU6050s (`--i2c-scan`), a full live data flow (`--live-check`), or (no reflash) that execution reached the app after a manual power-cycle (`--boot-check`). |
+| `mjpython tools/mujoco_bridge/run_demo_live.py` | The actual task — full calibration + live MuJoCo control from real hardware. `--skip-calibration --skip-emg-calibration` reuses `shoulder_calibration.json` instead of re-running the pose/EMG calibration flow. |
+| `mjpython tools/mujoco_bridge/run_demo.py` | No hardware available, or isolating whether a problem is in the MuJoCo/control-mapping logic itself (replays a CSV instead of live serial). |
+| `mjpython tools/mujoco_bridge/run_demo_live_grip_only.py` | Testing just the MyoWare → grip path in isolation (no IMUs wired up, or ruling out shoulder/elbow tracking as a variable). |
+| `python3 tools/watch_emg_raw.py` | The EMG signal itself seems off, or before (re)calibrating the grip threshold — watch the live `emg_min`/`emg_max` trace while actually clenching, instead of guessing timing blind. |
+| `python3 tools/watch_myoware_uart.py` | Superseded by `watch_emg_raw.py` for current firmware; only useful against the older Stage 3c/3d/5a firmware targets in `firmware/README.md`. |
+| `mjpython tools/mujoco_bridge/sensor_orientation_sanity.py` / `sensor_xy_sanity.py` | Suspect a sensor is mounted backwards or wired wrong at a fundamental level — bypasses calibration/oblique-decompose entirely, just "tilt/move the sensor, watch the shape move the same way." |
+| `python3 tools/mujoco_bridge/log_raw_imu.py` | Need to (re)capture raw IMU ground-truth data for a fixture (e.g. `test_imu_to_mujoco.py`'s own captured poses) — no MuJoCo viewer needed. |
+
+`tools/generate_sample_data.py` and `tools/convert_epn612.py` (below) are
+Stage 1 host-only data-prep tools, not live-hardware utilities — listed
+under their own section since real hardware has superseded that workflow.
 
 ## Real-dataset compatibility (EMG-EPN-612)
 
