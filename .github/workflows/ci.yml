@@ -64,8 +64,9 @@ jobs:
 
       # Everything below is explicitly --headless-capable or was already
       # written to run under plain python3 with no display/mjpython --
-      # see each script's own docstring. test_grasp_coverage.py is
-      # deliberately NOT run here: its current DROPPED results at 4 of 5
+      # see each script's own docstring. test_grasp_coverage.py's actual
+      # HELD/DROPPED results are deliberately NOT gated on here (see the
+      # dedicated step below) -- its current DROPPED results at 4 of 5
       # reach poses are a known, accepted limitation (see its own
       # docstring), not a regression to gate merges on.
       - name: Run headless test suite
@@ -79,3 +80,32 @@ jobs:
           python3 test_grip_kinematics.py --headless
           python3 test_grasp_object.py --headless
           python3 test_myoware_grip_replay.py --headless
+
+      # 2026-09-12: tools/usb_serial_port.py (and its test) live outside
+      # tools/mujoco_bridge/, so the step above never ran it -- caught
+      # during a pre-v1.0.0 test audit. Pure stdlib, no mujoco/pyserial
+      # needed.
+      - name: Run tools/ tests (outside tools/mujoco_bridge)
+        working-directory: tools
+        run: python3 test_usb_serial_port.py
+
+      # test_grasp_coverage.py's own sys.exit(1) for the known-DROPPED
+      # poses is intentionally not gated on (see the comment above) -- but
+      # excluding the whole script from CI also meant an unrelated CRASH
+      # in it (grasp_test_common.py's pedestal-position override doing a
+      # literal string match against XML text with different float
+      # formatting, fixed 2026-09-12) went unnoticed for a while, since
+      # nothing ever ran this script's non-default-pose code path in CI.
+      # Runs it and fails only on an actual crash (a Python traceback),
+      # not on its documented/accepted exit code.
+      - name: Run test_grasp_coverage.py (crash check only, not its known-DROPPED results)
+        working-directory: tools/mujoco_bridge
+        run: |
+          set +e
+          output=$(python3 test_grasp_coverage.py 2>&1)
+          echo "$output"
+          if echo "$output" | grep -q "Traceback (most recent call last)"; then
+            echo "::error::test_grasp_coverage.py crashed -- see the Traceback above. This is a real regression, unlike the script's documented DROPPED results at 4/5 poses."
+            exit 1
+          fi
+          exit 0
