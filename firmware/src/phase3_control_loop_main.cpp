@@ -121,6 +121,19 @@ static constexpr uint8_t kImuRegAddr = 0x3Bu;    // ACCEL_XOUT_H -- meaningless 
 static constexpr uint32_t kImuReadLen = 14u;
 static constexpr uint32_t kImuMaxTicksPerRead = 50u; // abort+retry a read stuck > 50ms
 
+// CONFIG register (register 26 / 0x1A per RM-MPU-6000A-00 sec 4.3): bits
+// 2:0 are DLPF_CFG, which resets to 0 (260Hz accel / 256Hz gyro bandwidth,
+// ~0-1ms delay -- effectively unfiltered) and was never written by any
+// prior stage, so every reading has been running against raw, wide-band
+// noise the whole project. DLPF_CFG=3 per the same table: 44Hz accel /
+// 42Hz gyro bandwidth, 4.9ms/4.8ms delay -- cuts the high-frequency jitter
+// (a real human arm moves well under 10Hz) while adding single-digit-ms
+// delay, negligible next to the rest of the pipeline's latency. 2026-09-12:
+// picked as a starting point pending real-hardware jitter measurement
+// before/after; not yet tuned against measured data.
+static constexpr uint8_t kMpu6050ConfigReg = 0x1Au;
+static constexpr uint8_t kDlpfCfg3 = 0x03u;
+
 // I2C1 Fast Mode (400kHz, register math below) was tried once a real
 // MPU6050 arrived (PRD.md Stage 5c) and measured a real ~3.4x throughput
 // win (592/s -> 2028/s completions) -- but a second test on the same
@@ -536,6 +549,13 @@ static bool i2c1_bus_recovery(void) {
     mpu6050_write_reg_blocking(kShoulderImuAddr, 0x6Bu, 0x01u);
     mpu6050_write_reg_blocking(kElbowImuAddr, 0x6Bu, 0x01u);
 
+    // Same reasoning as the wake writes just above: a real device power-
+    // cycle during the wedge would also reset CONFIG/DLPF_CFG to its
+    // power-on default (0, unfiltered) -- silently, since reads would keep
+    // "succeeding" either way. Re-apply defensively.
+    mpu6050_write_reg_blocking(kShoulderImuAddr, kMpu6050ConfigReg, kDlpfCfg3);
+    mpu6050_write_reg_blocking(kElbowImuAddr, kMpu6050ConfigReg, kDlpfCfg3);
+
     return freed;
 }
 
@@ -825,6 +845,13 @@ int main(void) {
                                 "-- continuing without it\r\n");
         }
     }
+
+    // DLPF (see kDlpfCfg3's own comment) -- not gated on wake success/
+    // g_require_*_imu like PWR_MGMT_1 above: a missing/optional sensor just
+    // gets an extra harmless failed write here, and this isn't required for
+    // basic operation the way waking from SLEEP is.
+    mpu6050_write_reg_blocking(kShoulderImuAddr, kMpu6050ConfigReg, kDlpfCfg3);
+    mpu6050_write_reg_blocking(kElbowImuAddr, kMpu6050ConfigReg, kDlpfCfg3);
 
     // 2026-09-09: no boot-time calibration block here anymore -- see
     // kFallbackThreshold's own comment above for the full story. Starts
