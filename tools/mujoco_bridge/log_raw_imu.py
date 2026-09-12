@@ -18,7 +18,8 @@ tools/mujoco_bridge/test_imu_to_mujoco.py's fixtures.
 
 Usage:
     python3 tools/mujoco_bridge/log_raw_imu.py
-    python3 tools/mujoco_bridge/log_raw_imu.py --port /dev/tty.usbserial-0001 --baud 115200
+    python3 tools/mujoco_bridge/log_raw_imu.py --cp2102 --baud 115200
+    python3 tools/mujoco_bridge/log_raw_imu.py --port /dev/tty.usbserial-XXXXXXXX --baud 115200
 """
 
 import argparse
@@ -32,7 +33,9 @@ from pathlib import Path
 import serial
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_PORT = "/dev/tty.usbserial-0001"
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+from usb_serial_port import autodetect_port  # noqa: E402
+
 DEFAULT_BAUD = 115200
 
 # Same fields as run_demo_live.py's SHOULDER_RAW_RE/ELBOW_RAW_RE -- kept as
@@ -199,7 +202,8 @@ def average_tail(samples, tail_seconds):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default=DEFAULT_PORT)
+    parser.add_argument("--port", default=None, help="default: auto-detect")
+    parser.add_argument("--cp2102", action="store_true", help="use CP2102's fixed path instead of auto-detecting")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument("--out", default=str(REPO_ROOT / "tools" / "mujoco_bridge" / "raw_imu_capture.json"))
     parser.add_argument("--repeats", type=int, default=1,
@@ -209,9 +213,10 @@ def main():
                               "raw-sensor/human-repeatability noise, not the normal single-capture "
                               "fixture shape other tools (test_imu_to_mujoco.py) expect.")
     args = parser.parse_args()
+    port = args.port if args.port else autodetect_port(prefer_cp2102=args.cp2102)
 
-    ser = serial.Serial(args.port, args.baud, timeout=1)
-    print(f"Listening on {args.port} @ {args.baud} baud")
+    ser = serial.Serial(port, args.baud, timeout=1)
+    print(f"Listening on {port} @ {args.baud} baud")
 
     latest = LatestRaw()
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)

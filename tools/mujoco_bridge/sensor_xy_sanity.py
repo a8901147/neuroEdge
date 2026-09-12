@@ -10,7 +10,8 @@ rotating it) and watch whether the shape slides the same way on screen.
 
 Usage:
     mjpython tools/mujoco_bridge/sensor_xy_sanity.py
-    mjpython tools/mujoco_bridge/sensor_xy_sanity.py --port /dev/tty.usbserial-0001
+    mjpython tools/mujoco_bridge/sensor_xy_sanity.py --cp2102
+    mjpython tools/mujoco_bridge/sensor_xy_sanity.py --port /dev/tty.usbserial-XXXXXXXX
 """
 
 import argparse
@@ -27,7 +28,9 @@ import serial
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "sensor_xy_sanity.xml"
 
-DEFAULT_PORT = "/dev/tty.usbserial-0001"
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+from usb_serial_port import autodetect_port  # noqa: E402
+
 DEFAULT_BAUD = 115200
 
 # raw_ax/ay are in g's; SCALE converts g -> meters of on-screen slide.
@@ -117,15 +120,17 @@ def clamp(v, lo, hi):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default=DEFAULT_PORT)
+    parser.add_argument("--port", default=None, help="default: auto-detect")
+    parser.add_argument("--cp2102", action="store_true", help="use CP2102's fixed path instead of auto-detecting")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     args = parser.parse_args()
+    port = args.port if args.port else autodetect_port(prefer_cp2102=args.cp2102)
 
     if not SCENE_XML.exists():
         sys.exit(f"scene not found: {SCENE_XML}")
 
-    ser = serial.Serial(args.port, args.baud, timeout=1)
-    print(f"Listening on {args.port} @ {args.baud} baud -- Ctrl+C to stop")
+    ser = serial.Serial(port, args.baud, timeout=1)
+    print(f"Listening on {port} @ {args.baud} baud -- Ctrl+C to stop")
 
     latest = Latest()
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
