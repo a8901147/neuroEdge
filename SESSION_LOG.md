@@ -226,4 +226,43 @@ board 確認正常開機、跑進 app 之後，連續送 `O2\n`（bit1=elbow 選
 #### 下個 session 要接著做的事（TODO，依優先順序）
 
 1. **完整六步驟抓球任務在真實硬體上跑一次**——目前沒有已知阻礙了（I2C、UART、bootloader 三個今天處理過的問題都已解決/驗證）。建議開頭先跑 `check_hardware_ready.py --i2c-scan --live-check`，flash 完記得手動斷電重插一次，再跑 `run_demo_live.py --skip-calibration --skip-emg-calibration`。
-2. `PRD.md` 累積了 5 份 Session Handoff、超過 500 行，考慮整理（拆檔或精簡舊記錄），這個 session 還沒決定要怎麼做。
+2. ~~`PRD.md` 累積了 5 份 Session Handoff、超過 500 行，考慮整理~~ → 2026-09-12 已拆成本檔案 + PRD.md。
+
+### Session Handoff (2026-09-12)：MPU6050 DLPF 開啟、抓握時加強平滑、port自動偵測、check_hardware_ready.py 兩個小修正
+
+延續上一份 handoff 的第 1 項待辦，抓球任務開始之前，使用者提出「肌肉用力時手臂會顫抖，希望減少晃動但不要延遲太多」的新需求。
+
+#### DLPF：從沒開過，到 CFG=3，再修正到 CFG=6
+
+查了兩顆 MPU6050 從專案一開始就沒設定過 CONFIG 暫存器（0x1A，DLPF_CFG），一直跑在晶片開機預設值（幾乎不濾波）。查證官方 RM-MPU-6000A-00 datasheet 第4.3節確認暫存器位址跟完整的 DLPF_CFG 表格（0-6 檔，頻寬/延遲），不是憑印象寫暫存器。
+
+第一版選了 CFG=3（42-44Hz 頻寬，~4.8ms 延遲），實機驗證 `check_hardware_ready.py --i2c-scan --live-check` 全過，靜止時三顆感測器（shoulder 陀螺儀/加速度計、elbow 加速度計）雜訊量級都壓到 0.005-0.012 這個範圍，彼此一致。
+
+但使用者接著澄清真正的症狀是「**用力時**才顫抖」，不是一般性晃動——這個描述指向生理性顫抖（physiological tremor），不是感測器雜訊，一開始因此推論「DLPF 開再強都沒用，因為這是真實動作不是雜訊」。**這個推論被使用者質疑後發現是錯的**：低通濾波器只看頻率、不管訊號來源是不是「真實」，如果顫抖頻率夠高、跟正常手臂動作頻率隔得開，濾波器還是能選擇性地把顫抖濾掉。
+
+實測驗證：請使用者實際握拳出力，同步抓 5 秒鐘 raw 陀螺儀資料，量到：
+- 用力時陀螺儀跳動幅度（0.5 rad/s）是靜止時（0.005 rad/s）的**約100倍**——確認不是感測器雜訊等級的東西。
+- 用zero-crossing方法粗估振動頻率，gx≈9.1Hz、gy≈10.3Hz——**剛好落在生理性顫抖典型的8-12Hz範圍**，比正常手臂動作（通常<3Hz）高得多，兩者頻率隔得開。
+
+結論：**DLPF確實值得開到最強檔**。改成 CFG=6（5Hz頻寬，18.6-19ms延遲，仍遠低於人能感覺到延遲的門檻），因為5Hz頻寬比9-10Hz的顫抖頻率低，比3Hz以下的正常動作頻率也低，理論上能選擇性濾掉顫抖、保留真實動作意圖。**這一版還沒有實機重新驗證過**（只驗證過CFG=3那版）。
+
+同樣的邏輯（電源循環可能重置感測器暫存器）套用在 `i2c1_bus_recovery()` 的防禦性喚醒路徑上，跟前一天的 wake write 修法邏輯一致。
+
+#### Python端：抓握時加強平滑（commit待補）
+
+既然顫抖只在出力/抓握當下發生，而那個當下手臂本來就不太需要移動，在 `run_demo_live.py` 新增 `GRIPPING_SMOOTHING_ALPHA`（0.01，比平常的 `RAW_SMOOTHING_ALPHA`=0.03 強3倍），只在韌體回報 `gripping=1` 時套用，平常正常動作時維持原本反應速度不受影響。之前 `gripping` 欄位其實已經被 regex 解析出來但完全沒被使用，這次補上 `LatestSample.update()`/`snapshot_gripping()` 讓它真正被用到。
+
+#### `run_demo_live.py` 預設 port 換成自動偵測，不再寫死 CP2102
+
+CP2102 換成 FT232RL 之後，原本寫死的 `DEFAULT_PORT = "/dev/tty.usbserial-0001"` 直接壞掉（那個路徑不存在了）。沒有選擇把預設值改成寫死 FT232RL 的路徑（那個路徑帶著這顆FT232RL晶片自己的USB序號，換一顆新的或换孔都可能不一樣，只是把同一個脆弱點換個地方重演），改成 `autodetect_port()`：預設自動偵測 `/dev/tty.usbserial-*`（目前就是FT232RL），新增 `--cp2102` 選項可以明確指定用CP2102固定的舊路徑。
+
+#### `check_hardware_ready.py` 兩個小修正
+
+1. **清空serial buffer**：`--live-check` 在 `check_boot_reached_app()` 的最長25秒等待期間完全沒有人在讀serial port，累積的舊資料可能跟flash前的殘留資料混在一起，導致tick counter「看起來」倒退，誤判一顆健康的板子壞掉。已加 `ser.reset_input_buffer()`。
+2. **一個還沒查清楚的殘留問題**：修完上面那個之後，還是偶爾看到tick小幅度「倒退」（例如1150→1100，不像原本那種跨session的巨大跳動）。用一個獨立、不呼叫任何SWD指令的乾淨腳本重測，tick序列完全正常遞增——證實韌體本身沒問題，問題出在 `run_live_check()` 裡兩次 `_mdw_read()`（各自開一個新的openocd連線讀wake結果）之間，但確切機制沒有查清楚。已經在程式碼裡用註解記下來，避免以後被誤認為是已解決或被忽略。
+
+#### 下個 session 要接著做的事（TODO，依優先順序）
+
+1. **實機重新驗證 DLPF=6**：目前只驗證過 CFG=3 那版的靜止雜訊量級，CFG=6 這版還沒有實機測過（連基本的 `--i2c-scan --live-check` 都還沒跑），也還沒有拿使用者實際握拳出力的原始資料重新測一次，確認顫抖真的被壓下去、且正常動作沒有變遲鈍。
+2. **完整六步驟抓球任務**——上一份 handoff 的待辦，這個 session 因為使用者提出晃動問題而暫時中斷，DLPF=6驗證過後應該就可以直接跑。
+3. **`_mdw_read()` 造成的tick順序異常**——已記錄但未查清楚根本原因，不影響目前的判斷（真正重要的wake/completions/pitch-roll檢查都正常），但值得有空時查一下，可能反映serial buffer處理或openocd互動上一個更普遍的小問題。
