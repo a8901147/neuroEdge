@@ -27,13 +27,20 @@ for max so a growing/shrinking swing is visible without reading numbers.
 
 Usage:
     python3 tools/watch_myoware_uart.py
-    python3 tools/watch_myoware_uart.py --port /dev/tty.usbserial-0001 --baud 9600
+    python3 tools/watch_myoware_uart.py --cp2102 --baud 9600
+    python3 tools/watch_myoware_uart.py --port /dev/tty.usbserial-XXXXXXXX --baud 9600
 """
 import argparse
 import re
+import sys
 import time
+from pathlib import Path
 
 import serial
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+from usb_serial_port import autodetect_port  # noqa: E402
 
 TIMER_ADC_RE = re.compile(r"samples=(\d+)\s+min=(\d+)\s+max=(\d+)")
 GRIP_RE = re.compile(r"raw_min=(\d+)\s+raw_max=(\d+)\s+gripping=(\d)\s+setpoint_x1000=(-?\d+)")
@@ -43,13 +50,15 @@ ADC_FULL_SCALE = 4095
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default="/dev/tty.usbserial-0001")
+    parser.add_argument("--port", default=None, help="default: auto-detect")
+    parser.add_argument("--cp2102", action="store_true", help="use CP2102's fixed path instead of auto-detecting")
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--bar-width", type=int, default=40, help="width of the ASCII max-value bar")
     args = parser.parse_args()
+    port = args.port if args.port else autodetect_port(prefer_cp2102=args.cp2102)
 
-    ser = serial.Serial(args.port, args.baud, timeout=1)
-    print(f"Listening on {args.port} @ {args.baud} baud -- Ctrl+C to stop\n")
+    ser = serial.Serial(port, args.baud, timeout=1)
+    print(f"Listening on {port} @ {args.baud} baud -- Ctrl+C to stop\n")
 
     prev_t = None
     buf = b""

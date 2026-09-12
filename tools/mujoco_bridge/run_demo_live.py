@@ -32,7 +32,6 @@ RuntimeError under plain CPython on macOS.
 """
 
 import argparse
-import glob
 import json
 import math
 import re
@@ -48,41 +47,15 @@ import serial
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "arm_hand_scene.xml"
 
-# CP2102's macOS device path is fixed (no per-unit serial suffix), so it can
-# be hardcoded; FT232RL's isn't (macOS names it after the chip's own USB
-# serial string, e.g. /dev/tty.usbserial-A73C97JW -- a different string per
-# physical unit). 2026-09-11 replaced CP2102 as the project's adapter (see
-# SESSION_LOG.md's known firmware lockup bug), so the default now
-# auto-detects whatever's plugged in instead of hardcoding either path --
-# hardcoding the new adapter's path would just recreate the same fragility
-# this replaces (breaks again the next time the unit or port changes).
-CP2102_PORT = "/dev/tty.usbserial-0001"
+# See usb_serial_port.py's own docstring for why this is a shared module
+# instead of a copy per script (2026-09-12 -- this file's own copy was the
+# original, extracted out after realizing every other script with a --port
+# flag had the identical hardcoded-CP2102-path problem this was written to
+# fix).
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+from usb_serial_port import CP2102_PORT, autodetect_port  # noqa: E402
+
 DEFAULT_BAUD = 115200
-
-
-def autodetect_port(prefer_cp2102: bool = False) -> str:
-    """Returns the port to use, resolved at call time (not import time) so
-    a port that appears/disappears between script start and this call is
-    handled correctly. Raises SystemExit with an actionable message rather
-    than pyserial's raw FileNotFoundError if nothing is found."""
-    if prefer_cp2102:
-        if Path(CP2102_PORT).exists():
-            return CP2102_PORT
-        sys.exit(
-            f"--cp2102 given but {CP2102_PORT} doesn't exist -- is the CP2102 adapter "
-            "actually plugged in? (`ls /dev/cu.usbserial-*` to check what's connected)"
-        )
-    candidates = sorted(glob.glob("/dev/tty.usbserial-*"))
-    if not candidates:
-        sys.exit(
-            "no /dev/tty.usbserial-* device found -- plug in the USB-TTL adapter "
-            "(FT232RL or CP2102), or pass --port explicitly if it enumerates under a "
-            "different name."
-        )
-    if len(candidates) > 1:
-        print(f"[warn] multiple usbserial ports found ({candidates}), using {candidates[0]} "
-              "-- pass --port explicitly to pick a different one.")
-    return candidates[0]
 
 # Same mapping/scale as run_demo.py -- see that file for the empirical
 # tuning notes (palm-down quat fix, joint damping, GRIP_SCALE).
