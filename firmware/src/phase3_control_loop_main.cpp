@@ -85,6 +85,25 @@ static constexpr float kFallbackThreshold = 2800.0f;
 static constexpr float kOnDuration = 0.15f;
 static constexpr float kOffDuration = 0.15f;
 
+// EMA smoothing applied to the raw EMG ADC sample before it reaches
+// GripStateMachine::update() (and before emg_window_min/max track it) --
+// added 2026-09-12 after real-hardware use got stuck oscillating near the
+// threshold. GripStateMachine's on/off-duration debounce (above) requires
+// the envelope to stay above (or below) threshold for kOnDuration/
+// kOffDuration with ZERO interruption -- a single noisy sample dipping the
+// wrong side of threshold resets that accumulator to 0, not just slows it
+// down (see grip_state_machine.hpp's update()). That's a `min()`-like
+// criterion over the debounce window, much stricter than the `mean()`-like
+// criterion smoothing first + the same debounce gives -- smoothing here
+// tolerates a single noisy sample instead of letting it single-handedly
+// restart the whole debounce window. alpha=0.1 at this loop's 1kHz rate is
+// roughly a 10ms time constant -- negligible next to kOnDuration/
+// kOffDuration's 150ms, so this shouldn't add perceptible response lag.
+// Not yet tuned against real hardware (this session's fix was raising
+// EMG_THRESHOLD_K in run_demo_live.py; this is a complementary, so-far-
+// unverified addition on top of that).
+static constexpr float kEmgSmoothingAlpha = 0.1f;
+
 // --- Which sensors THIS session's bench setup actually has wired up ---
 // 2026-09-09: was a pair of compile-time constants (kRequireShoulderImu/
 // kRequireElbowImu, see git history) requiring an edit+reflash every time
@@ -936,6 +955,8 @@ int main(void) {
     uint32_t last_shoulder_completion_tick = 0;
     uint32_t emg_window_min = 0xFFFu;
     uint32_t emg_window_max = 0u;
+    float emg_ema = 0.0f;
+    bool emg_ema_initialized = false;
     // Cumulative since boot -- counts times ImuReader::consume_needs_rewake()
     // fired true, meaning that reader's device had just failed to ACK at
     // some point and this is the first completion since. A device that
@@ -1125,12 +1146,24 @@ int main(void) {
         if (ADC1->SR & ADC_SR_EOC) {
             ++tick_count;
 
-            // --- EMG: unchanged from Stage 5a ---
+            // --- EMG ---
             const uint32_t raw = ADC1->DR & 0xFFFu;
-            if (raw < emg_window_min) emg_window_min = raw;
-            if (raw > emg_window_max) emg_window_max = raw;
 
-            const bool edge = grip.update((float)raw, kDtPerTick);
+            // EMA-smooth before anything downstream sees it (see
+            // kEmgSmoothingAlpha's own comment) -- first sample seeds the
+            // EMA directly rather than blending from 0, so it doesn't ramp
+            // up from a cold start.
+            if (!emg_ema_initialized) {
+                emg_ema = (float)raw;
+                emg_ema_initialized = true;
+            } else {
+                emg_ema += kEmgSmoothingAlpha * ((float)raw - emg_ema);
+            }
+            const uint32_t emg_smoothed = (uint32_t)(emg_ema + 0.5f);
+            if (emg_smoothed < emg_window_min) emg_window_min = emg_smoothed;
+            if (emg_smoothed > emg_window_max) emg_window_max = emg_smoothed;
+
+            const bool edge = grip.update(emg_ema, kDtPerTick);
             sp = setpoint.update(grip.is_gripping() ? 1.0f : 0.0f, kDtPerTick);
             if (edge) {
                 usart2_send_string(grip.is_gripping() ? "EDGE -> Gripping\r\n" : "EDGE -> Released\r\n");
