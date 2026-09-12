@@ -139,6 +139,19 @@ MAX_CTRL_RATE_RAD_PER_SEC = 6.0
 # guard against two different kinds of bad signal.
 RAW_SMOOTHING_ALPHA = 0.03
 
+# 2026-09-12: separate, stronger smoothing applied only while gripping==1.
+# Real-hardware capture during a sustained grip found gyro spread ~100x the
+# measured resting noise floor (0.5 rad/s vs 0.005 rad/s), with a zero-
+# crossing estimate putting the dominant frequency at ~9-10Hz -- physiological
+# tremor from muscle exertion (see phase3_control_loop_main.cpp's kDlpfCfg6
+# comment for the same finding and the firmware-side DLPF response), not the
+# wire-glitch jitter RAW_SMOOTHING_ALPHA above was tuned against. Applying it
+# only during an active grip (not uniformly) costs no responsiveness during
+# real arm movement, since gripping is when the arm is deliberately being
+# held still anyway. Picked as a starting point (3x stronger than
+# RAW_SMOOTHING_ALPHA); not yet tuned against a real post-DLPF-CFG-6 capture.
+GRIPPING_SMOOTHING_ALPHA = 0.01
+
 # 2026-09-07: was 0.6, changed after test_grasp_coverage.py's long-settle
 # sweep found NO uniform-curl grip_scale is a permanently stable
 # equilibrium on this object -- gravity + tiny contact-solver drift
@@ -518,6 +531,7 @@ class LatestSample:
     def __init__(self):
         self._lock = threading.Lock()
         self.grip = 0.0
+        self.gripping = False
         self.shoulder_pitch = 0.0
         self.shoulder_roll = 0.0
         self.elbow = 0.0
@@ -559,14 +573,19 @@ class LatestSample:
         self.shoulder_required = None
         self.elbow_required = None
 
-    def update(self, grip, shoulder_pitch, shoulder_roll, elbow):
+    def update(self, grip, gripping, shoulder_pitch, shoulder_roll, elbow):
         with self._lock:
             self.grip = grip
+            self.gripping = gripping
             self.shoulder_pitch = shoulder_pitch
             self.shoulder_roll = shoulder_roll
             self.elbow = elbow
             self.last_update_monotonic = time.monotonic()
             self.has_received_data = True
+
+    def snapshot_gripping(self):
+        with self._lock:
+            return self.gripping
 
     def update_shoulder_raw(self, ax, ay, az):
         with self._lock:
@@ -731,6 +750,7 @@ def reader_thread_main(ser, latest):
                 if match:
                     latest.update(
                         float(match.group("grip")),
+                        match.group("gripping") == "1",
                         float(match.group("shoulder_pitch")),
                         float(match.group("shoulder_roll")),
                         float(match.group("elbow")),
@@ -1433,15 +1453,20 @@ def main():
                 # angle BEFORE either goes into oblique_decompose_scaled or
                 # the ctrl mapping below, so continuous per-tick noise gets
                 # averaged out instead of just rate-capped downstream.
+                # Stronger alpha while actively gripping (see
+                # GRIPPING_SMOOTHING_ALPHA's comment) -- muscle-exertion
+                # tremor is much larger than ordinary jitter, and the arm
+                # isn't meant to be moving much during a grip anyway.
+                raw_alpha = GRIPPING_SMOOTHING_ALPHA if latest.snapshot_gripping() else RAW_SMOOTHING_ALPHA
                 if smoothed_shoulder_raw is None:
                     smoothed_shoulder_raw = shoulder_raw
                     smoothed_elbow_raw_scalar = elbow
                 else:
                     smoothed_shoulder_raw = tuple(
-                        ema_step(smoothed_shoulder_raw[i], shoulder_raw[i], RAW_SMOOTHING_ALPHA)
+                        ema_step(smoothed_shoulder_raw[i], shoulder_raw[i], raw_alpha)
                         for i in range(3)
                     )
-                    smoothed_elbow_raw_scalar = ema_step(smoothed_elbow_raw_scalar, elbow, RAW_SMOOTHING_ALPHA)
+                    smoothed_elbow_raw_scalar = ema_step(smoothed_elbow_raw_scalar, elbow, raw_alpha)
 
                 if port_error is not None:
                     sys.exit(f"\nserial port failed: {port_error}\n"
