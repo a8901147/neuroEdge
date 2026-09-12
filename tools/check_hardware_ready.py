@@ -250,6 +250,25 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
     while True:
         pc = _read_pc()
         last_pc = pc
+        # ROM bootloader (0x1fff0000+) checked BEFORE the app-region check
+        # below, not after -- 0x1fff0000 is numerically >= APP_FLASH_ADDRESS
+        # (0x08004000), so `pc >= APP_FLASH_ADDRESS` alone also matches the
+        # ROM bootloader range. Checking that first used to make the ROM-
+        # bootloader branch below unreachable dead code: a chip genuinely
+        # stuck in the ROM bootloader (BOOT0 read high) was misreported as
+        # "[OK] ... execution reached main()" -- found in a pre-v1.0.0
+        # code-review pass, 2026-09-12; never actually observed in a real
+        # session since every real bootloader-stuck case hit here was the
+        # separate WeAct HID bootloader (0x08000000-0x08003fff), which is
+        # numerically below APP_FLASH_ADDRESS and was never affected by
+        # this ordering bug.
+        if ROM_BOOTLOADER_BASE <= pc < ROM_BOOTLOADER_BASE + 0x8000:
+            print(
+                f"[FAIL] PC=0x{pc:08x} is in the STM32's factory ROM bootloader (0x{ROM_BOOTLOADER_BASE:08x}+) -- "
+                "BOOT0 was read high at the last reset. Check the BOOT0 pin/jumper is low, then "
+                "power-cycle again."
+            )
+            return False
         if pc >= APP_FLASH_ADDRESS:
             print(f"[OK  ] PC=0x{pc:08x} is inside the app (>= 0x{APP_FLASH_ADDRESS:08x}) -- execution reached main()")
             return True
@@ -258,13 +277,6 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
         time.sleep(1.5)
 
     pc = last_pc
-    if ROM_BOOTLOADER_BASE <= pc < ROM_BOOTLOADER_BASE + 0x8000:
-        print(
-            f"[FAIL] PC=0x{pc:08x} is in the STM32's factory ROM bootloader (0x{ROM_BOOTLOADER_BASE:08x}+) -- "
-            "BOOT0 was read high at the last reset. Check the BOOT0 pin/jumper is low, then "
-            "power-cycle again."
-        )
-        return False
     print(
         f"[FAIL] PC=0x{pc:08x} is still inside the WeAct HID bootloader (0x08000000-0x08003fff) "
         f"after {poll_seconds:.0f}s -- a power-cycle either didn't happen or didn't take. Try a "
@@ -464,10 +476,11 @@ def run_live_check(port: str) -> bool:
                 diag_match = DIAG_LINE_RE.search(line)
                 if diag_match:
                     diag_samples.append({k: int(v) for k, v in diag_match.groupdict().items()})
-        ser.close()
     except Exception as e:
         print(f"[FAIL] could not read {port}: {e}")
         return False
+    finally:
+        ser.close()
 
     if not samples:
         print(
