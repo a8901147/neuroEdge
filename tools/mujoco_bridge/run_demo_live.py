@@ -377,6 +377,15 @@ def ema_step(current, target, alpha):
     return current + alpha * (target - current)
 
 
+def select_raw_smoothing_alpha(gripping):
+    """Which EMA alpha main()'s loop should use this tick -- extracted so
+    the actual decision (not just its inputs/outputs) is unit-testable,
+    same reasoning as ema_step/rate_limit_step below. See
+    GRIPPING_SMOOTHING_ALPHA's comment for why gripping gets its own,
+    stronger value."""
+    return GRIPPING_SMOOTHING_ALPHA if gripping else RAW_SMOOTHING_ALPHA
+
+
 def rate_limit_step(current, target, max_step):
     """Steps `current` toward `target` by at most `max_step`, never
     overshooting -- lands exactly on `target` if it's already within one
@@ -1457,7 +1466,7 @@ def main():
                 # GRIPPING_SMOOTHING_ALPHA's comment) -- muscle-exertion
                 # tremor is much larger than ordinary jitter, and the arm
                 # isn't meant to be moving much during a grip anyway.
-                raw_alpha = GRIPPING_SMOOTHING_ALPHA if latest.snapshot_gripping() else RAW_SMOOTHING_ALPHA
+                raw_alpha = select_raw_smoothing_alpha(latest.snapshot_gripping())
                 if smoothed_shoulder_raw is None:
                     smoothed_shoulder_raw = shoulder_raw
                     smoothed_elbow_raw_scalar = elbow

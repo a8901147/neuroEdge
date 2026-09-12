@@ -86,6 +86,28 @@ class EmaStepTest(unittest.TestCase):
         self.assertAlmostEqual(current, 1.0, places=6)
 
 
+class SelectRawSmoothingAlphaTest(unittest.TestCase):
+    """2026-09-12: gripping gets stronger smoothing (see
+    GRIPPING_SMOOTHING_ALPHA's comment -- muscle-exertion tremor measured
+    ~100x the ordinary jitter RAW_SMOOTHING_ALPHA was tuned against).
+    Guards the actual decision, not just its inputs -- a future change
+    that accidentally weakens or removes the gripping-specific value
+    should fail loudly here instead of only showing up as "the arm still
+    shakes while gripping" during a real hardware session."""
+
+    def test_gripping_uses_the_stronger_alpha(self):
+        self.assertEqual(rdl.select_raw_smoothing_alpha(True), rdl.GRIPPING_SMOOTHING_ALPHA)
+
+    def test_not_gripping_uses_the_ordinary_alpha(self):
+        self.assertEqual(rdl.select_raw_smoothing_alpha(False), rdl.RAW_SMOOTHING_ALPHA)
+
+    def test_gripping_alpha_is_actually_stronger(self):
+        # Smaller alpha = slower ema_step = more smoothing (see ema_step's
+        # own docstring) -- the whole point of a separate constant is that
+        # gripping's value smooths MORE, not just differently.
+        self.assertLess(rdl.GRIPPING_SMOOTHING_ALPHA, rdl.RAW_SMOOTHING_ALPHA)
+
+
 class RateLimitStepTest(unittest.TestCase):
     def test_within_one_step_lands_exactly_on_target(self):
         self.assertEqual(rdl.rate_limit_step(0.0, 0.05, 0.1), 0.05)
