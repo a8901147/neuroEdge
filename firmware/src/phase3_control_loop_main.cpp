@@ -106,7 +106,14 @@ static bool g_require_elbow_imu = true;
 // read_optional_sensors_config() (applies the above from a boot-time UART
 // command) is defined further down, after the usart2_send_* helpers it
 // needs -- see that function's own comment for the full design.
-static constexpr float kSlewRate = 5.0f;
+// SlewRateLimiter's max rate for the grip setpoint (units/sec over a 0..1
+// range), so a full open<->close ramp takes 1/kSlewRate seconds -- 0.2s at
+// the original 5.0. 2026-09-12: doubled to 10.0 (0.1s) per user request
+// for a faster grasp motion. Doesn't affect test_grasp_object.py/
+// test_grasp_coverage.py -- those replay a separate, hand-authored
+// Python-side ramp (--grip-ramp-seconds) against src/mujoco_bridge_demo.cpp,
+// not this firmware constant.
+static constexpr float kSlewRate = 10.0f;
 static constexpr float kDtPerTick = 0.001f; // TIM2-verified exact 1kHz
 
 // --- IMU side ---
