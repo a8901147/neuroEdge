@@ -102,6 +102,17 @@ static constexpr float kOffDuration = 0.15f;
 // Not yet tuned against real hardware (this session's fix was raising
 // EMG_THRESHOLD_K in run_demo_live.py; this is a complementary, so-far-
 // unverified addition on top of that).
+//
+// Hand-rolled below (emg_ema/emg_ema_initialized) rather than reusing
+// include/edgeneuro/filters/iir_filter.hpp's IirFilter, even though a
+// single-pole EMA is exactly IirFilter(alpha, 0, 0, -(1-alpha), 0) -- a
+// code-review pass flagged this duplication 2026-09-12. Not applied:
+// IirFilter's state (w1_/w2_) always starts at 0 with no way to seed it,
+// so its first output would be alpha*raw instead of raw -- e.g. ~10% of
+// the true value on sample 1 at alpha=0.1 -- where this hand-rolled
+// version seeds emg_ema directly from the first sample specifically to
+// avoid that cold-start dip. Revisit if IirFilter grows a way to seed
+// initial state; not worth it just for this one call site otherwise.
 static constexpr float kEmgSmoothingAlpha = 0.1f;
 
 // --- Which sensors THIS session's bench setup actually has wired up ---
@@ -1149,19 +1160,32 @@ int main(void) {
             // --- EMG ---
             const uint32_t raw = ADC1->DR & 0xFFFu;
 
-            // EMA-smooth before anything downstream sees it (see
-            // kEmgSmoothingAlpha's own comment) -- first sample seeds the
-            // EMA directly rather than blending from 0, so it doesn't ramp
-            // up from a cold start.
+            // emg_window_min/max track the RAW sample, not the smoothed one
+            // below -- deliberately: their whole purpose (see this window's
+            // usart2_send_uint(emg_window_min/max) call further down) is to
+            // show run_demo_live.py's calibrate_emg_threshold() and a human
+            // watching tools/watch_emg_raw.py genuinely raw noise/signal
+            // behavior, e.g. distinguishing "no real signal reaching the
+            // ADC at all" from "signal present but too weak" -- smoothing
+            // that feed would mask exactly the kind of raw glitch it exists
+            // to reveal, and would silently change the noise statistics
+            // EMG_THRESHOLD_K in run_demo_live.py is tuned against without
+            // that being obvious from either file alone. Found in review
+            // 2026-09-12: an earlier version of this smoothing fed
+            // emg_smoothed into this window instead of raw.
+            if (raw < emg_window_min) emg_window_min = raw;
+            if (raw > emg_window_max) emg_window_max = raw;
+
+            // EMA-smooth only the value GripStateMachine actually compares
+            // against threshold (see kEmgSmoothingAlpha's own comment) --
+            // first sample seeds the EMA directly rather than blending from
+            // 0, so it doesn't ramp up from a cold start.
             if (!emg_ema_initialized) {
                 emg_ema = (float)raw;
                 emg_ema_initialized = true;
             } else {
                 emg_ema += kEmgSmoothingAlpha * ((float)raw - emg_ema);
             }
-            const uint32_t emg_smoothed = (uint32_t)(emg_ema + 0.5f);
-            if (emg_smoothed < emg_window_min) emg_window_min = emg_smoothed;
-            if (emg_smoothed > emg_window_max) emg_window_max = emg_smoothed;
 
             const bool edge = grip.update(emg_ema, kDtPerTick);
             sp = setpoint.update(grip.is_gripping() ? 1.0f : 0.0f, kDtPerTick);

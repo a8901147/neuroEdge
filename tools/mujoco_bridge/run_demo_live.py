@@ -906,13 +906,16 @@ EMG_SETTLE_TAIL_SECONDS = 2.0
 # "on" almost constantly) -> 20 -> 15 -> back to 20, the last three moves
 # made in quick succession without a live re-test confirming any of them
 # in between. Only the "2.0 is too sensitive" finding is actually verified
-# against real hardware; the choice among {15, 20} is not, and neither is
-# whether this still holds now that phase3_control_loop_main.cpp's EMA
-# smoothing (kEmgSmoothingAlpha, added the same session) has changed the
-# relaxed baseline's std that K multiplies. Higher = fewer false triggers
-# from baseline noise, but needs a stronger contraction to cross; lower =
-# more sensitive, more prone to false triggers. Not yet tuned against a
-# real coverage sweep the way GRIP_SCALE was.
+# against real hardware; the choice among {15, 20} is not. (A code-review
+# pass flagged that phase3_control_loop_main.cpp's EMA smoothing --
+# kEmgSmoothingAlpha, added the same session -- might also have changed
+# the relaxed baseline's std this K multiplies; fixed by keeping
+# emg_window_min/max tracking the RAW sample, only feeding the smoothed
+# value to GripStateMachine itself, so this K is still tuned against the
+# same raw statistics it always was.) Higher = fewer false triggers from
+# baseline noise, but needs a stronger contraction to cross; lower = more
+# sensitive, more prone to false triggers. Not yet tuned against a real
+# coverage sweep the way GRIP_SCALE was.
 EMG_THRESHOLD_K = 20.0
 
 
