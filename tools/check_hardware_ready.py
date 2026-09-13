@@ -510,13 +510,17 @@ def run_live_check(port: str) -> bool:
           f"({ticks[0]} -> {ticks[-1]})" if ticks else "[FAIL] no tick values")
     if not tick_alive:
         print(
-            "    NOTE (2026-09-12, unresolved): a standalone capture with no SWD access "
-            "in between showed tick_count -- a plain never-reset uint32_t in firmware -- "
-            "increasing perfectly throughout. The two _mdw_read() calls just above this "
-            "(each opens its own openocd session) are the only difference from that clean "
-            "capture, and are suspected of somehow disturbing sample ordering, but the "
-            "actual mechanism hasn't been confirmed. Before assuming the board is broken, "
-            "try `python3 -m serial.tools.miniterm` directly, which doesn't touch SWD at all."
+            "    NOTE: this exact symptom was investigated 2026-09-12/13 -- a suspected "
+            "cause (the _mdw_read() calls just above this, each opening its own openocd "
+            "session, disturbing sample ordering) was tested three separate ways "
+            "(an isolated repeated-halt/resume test, a long-no-read buffer-overflow test, "
+            "and a full faithful replay of this exact function's remaining logic) and never "
+            "reproduced. Most likely already fixed by this function's own "
+            "ser.reset_input_buffer() call, or was an artifact of concurrent manual SWD "
+            "commands during the original debugging session, not something this script does "
+            "to itself when run alone. If this reappears, it's a genuinely new occurrence, "
+            "not the same still-open issue -- try `python3 -m serial.tools.miniterm` "
+            "directly (no SWD at all) to isolate this run's actual cause fresh."
         )
 
     # shoulder_pitch/shoulder_roll are raw ComplementaryFilter output (not
