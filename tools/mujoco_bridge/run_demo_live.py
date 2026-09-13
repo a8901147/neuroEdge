@@ -35,9 +35,11 @@ import argparse
 import json
 import math
 import re
+import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import mujoco
@@ -918,6 +920,78 @@ EMG_SETTLE_TAIL_SECONDS = 2.0
 # coverage sweep the way GRIP_SCALE was.
 EMG_THRESHOLD_K = 20.0
 
+# 2026-09-19: long-term observation, not a live decision -- the user isn't
+# confident mean+K*std (however well-sourced, see EMG_THRESHOLD_K's own
+# comment) is actually the right algorithm, and wants real relax/contract
+# data from ordinary use over the coming week(s) before revisiting the
+# design, rather than trying to settle it from one or two sessions.
+# Deliberately NOT committed to git (see .gitignore) -- same convention as
+# shoulder_calibration.json, and for the same reason: real captured
+# personal signal data, not source.
+EMG_CALIBRATION_LOG_DIR = REPO_ROOT / "tools" / "mujoco_bridge" / "emg_calibration_logs"
+
+
+def _git_commit_hash():
+    """Best-effort short commit hash for the log entry's metadata -- so a
+    week of entries spanning several tuning changes (K has already moved
+    2.0 -> 20 -> 15 -> 20 in one session) can be told apart by which
+    algorithm/firmware version actually produced each one. Returns None
+    rather than raising if git isn't available or this isn't a repo (e.g.
+    a stripped install) -- the log entry is still useful without it."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std,
+                         threshold, contracted_mean, contracted_std, suspect):
+    """Appends one real calibration session's full raw data + computed
+    stats to EMG_CALIBRATION_LOG_DIR, for the long-term "is mean+K*std
+    actually the right algorithm" review this was added for -- see that
+    constant's own comment. Saves the RAW (t, emg_min, emg_max) tuples for
+    both phases, not just the summary stats, so a future re-analysis can
+    try a completely different algorithm against the same real data
+    without needing to re-capture it.
+
+    `suspect` (bool) -- reuses calibrate_emg_threshold's own existing
+    "contracted_mean didn't clear threshold" check, not a new heuristic --
+    goes straight into the filename (not just a field inside the JSON) so
+    a human scanning the directory listing can tell at a glance which
+    sessions might be worth discarding before doing any real analysis,
+    without opening every file first.
+
+    Best-effort: a failure to write (e.g. disk full, permissions) prints a
+    warning and returns rather than raising -- this is an observational
+    side-channel, not something that should ever block a real calibration
+    session from completing."""
+    try:
+        EMG_CALIBRATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        status = "SUSPECT" if suspect else "ok"
+        path = EMG_CALIBRATION_LOG_DIR / f"{timestamp}_{status}.json"
+        data = {
+            "timestamp": timestamp,
+            "git_commit": _git_commit_hash(),
+            "emg_threshold_k": EMG_THRESHOLD_K,
+            "relaxed_mean": relaxed_mean,
+            "relaxed_std": relaxed_std,
+            "threshold": threshold,
+            "contracted_mean": contracted_mean,
+            "contracted_std": contracted_std,
+            "suspect": suspect,
+            "relaxed_tail_raw": relaxed_tail,
+            "contracted_tail_raw": contracted_tail,
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"警告:EMG校準紀錄寫入失敗(不影響這次校準本身):{e}")
+
 
 def calibrate_emg_threshold(ser, latest, interactive=True):
     """Computes an EMG threshold entirely on the host from emg_min/emg_max
@@ -978,7 +1052,8 @@ def calibrate_emg_threshold(ser, latest, interactive=True):
 
     print(f"EMG 閾值計算完成:relaxed_mean={relaxed_mean:.0f} relaxed_std={relaxed_std:.1f} "
           f"threshold={threshold}(= mean + {EMG_THRESHOLD_K:.1f} * std)")
-    if contracted_mean <= threshold:
+    suspect = contracted_mean <= threshold
+    if suspect:
         print(f"警告:剛剛用力階段的平均值({contracted_mean:.0f}, std={contracted_std:.1f})"
               f"沒有超過算出來的閾值({threshold})-- 可能出力不夠大、電極貼片接觸不良,或 "
               f"EMG_THRESHOLD_K 對你來說偏高,建議加大力道或檢查貼片後重新校準,再不行可以考慮"
@@ -987,6 +1062,14 @@ def calibrate_emg_threshold(ser, latest, interactive=True):
         margin = contracted_mean - threshold
         print(f"驗證:用力階段平均值({contracted_mean:.0f}, std={contracted_std:.1f})高於閾值,"
               f"margin={margin:.0f}({'出力起伏較大' if contracted_std > relaxed_std * 3 else '穩定'})。")
+
+    # Long-term observation log (see EMG_CALIBRATION_LOG_DIR's own comment)
+    # -- only for a real interactive session, not interactive=False's
+    # ambient-noise-only calibration (that's not a real relax/clench
+    # sample worth keeping around for the week-later algorithm review).
+    if interactive:
+        log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std,
+                             threshold, contracted_mean, contracted_std, suspect)
 
     send_emg_threshold(ser, threshold)
     return threshold

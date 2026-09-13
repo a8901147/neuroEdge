@@ -7,3 +7,11 @@ data/raw/
 mujoco_menagerie/
 .venv/
 __pycache__/
+
+# Real captured personal/biometric data, not source -- kept local only.
+# shoulder_calibration.json was already excluded by convention (each
+# session manually avoiding `git add` on it) but never actually listed
+# here, which let a `git add -A` almost stage it once; formalized now
+# rather than relying on remembering every session.
+tools/mujoco_bridge/shoulder_calibration.json
+tools/mujoco_bridge/emg_calibration_logs/
