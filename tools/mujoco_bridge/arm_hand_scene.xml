@@ -511,12 +511,26 @@
          run_grasp_scenario call with the SAME unmodified REACH_CTRL
          (pitch=-1.00, roll=0.80, elbow=0.90) -- VERDICT: HELD
          (dist_after=0.051m). Kept in sync with grasp_test_common.py's
-         DEFAULT_PEDESTAL_POS/DEFAULT_OBJECT_POS. -->
-    <body name="pedestal" pos="0.051 0.332 0.930">
+         DEFAULT_PEDESTAL_POS/DEFAULT_OBJECT_POS.
+
+         2026-09-13: user reported the object sits higher than the arm's
+         own shoulder (real MuJoCo world pos of left_shoulder_pitch_link
+         is z=0.985, queried via mj_forward -- not read off the nested XML
+         offsets by hand, which don't sum to world coordinates directly)
+         and asked to lower it toward chest height. Dropped both pedestal
+         and object by 0.15m (object 0.98->0.83, pedestal 0.930->0.780),
+         X/Y and pedestal footprint/height unchanged -- NOT yet re-
+         verified via run_grasp_scenario as of this edit. Per this
+         session's own hard-won lesson two paragraphs up (an 18cm-wide
+         pedestal broke reachability from footprint alone, not the height
+         drop that was blamed first), do not assume a 15cm height change
+         -- six times the largest height change ever tested here -- keeps
+         REACH_CTRL valid without checking. -->
+    <body name="pedestal" pos="0.051 0.332 0.780">
       <geom type="box" size="0.05 0.05 0.025" rgba="0.6 0.5 0.4 1"/>
     </body>
 
-    <body name="object" pos="0.051 0.332 0.98">
+    <body name="object" pos="0.051 0.332 0.83">
       <freejoint/>
       <geom type="sphere" size="0.025" rgba="0.5 0.7 0.5 1" condim="6" priority="1"
         friction="1.0 0.02 0.005" mass="0.05"/>

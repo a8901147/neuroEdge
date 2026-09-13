@@ -62,8 +62,13 @@ DEFAULT_BALL_FRICTION = "1.0 0.02 0.005"
 # pedestal made the object unreachable -- the width itself blocked the
 # hand's approach, not the height drop; re-picked smaller and re-verified
 # HELD via a real run_grasp_scenario call with the unmodified REACH_CTRL).
-DEFAULT_PEDESTAL_POS = (0.051, 0.332, 0.930)
-DEFAULT_OBJECT_POS = (0.051, 0.332, 0.98)
+# 2026-09-13: dropped 0.15m (object 0.98->0.83, pedestal 0.930->0.780) per
+# the user's request to bring the object down from above-shoulder height
+# to roughly chest height -- see arm_hand_scene.xml's own comment for the
+# real shoulder-height measurement this was based on. NOT yet re-verified
+# against REACH_CTRL below as of this edit.
+DEFAULT_PEDESTAL_POS = (0.051, 0.332, 0.780)
+DEFAULT_OBJECT_POS = (0.051, 0.332, 0.83)
 
 FINGERTIP_BODIES = ["left_hand_thumb_2_link", "left_hand_middle_1_link", "left_hand_index_1_link"]
 
