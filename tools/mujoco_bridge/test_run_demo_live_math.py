@@ -152,6 +152,72 @@ class SelectRawSmoothingAlphaTest(unittest.TestCase):
         self.assertLess(rdl.GRIPPING_SMOOTHING_ALPHA, rdl.RAW_SMOOTHING_ALPHA)
 
 
+class GrippingSmoothingReducesRealTremorTest(unittest.TestCase):
+    """2026-09-13: a PROPERTY test against real captured tremor data, not a
+    pinned exact number -- see the user's own explicit concern that a
+    tuned-value regression test would fight legitimate future retuning.
+    _REAL_EXERTION_GX below is shoulder_raw_gx (rad/s) captured live during
+    an actual sustained muscle contraction (DLPF_CFG=6 already applied in
+    hardware; this is what reaches the host), on a *freshly* fixed I2C bus
+    -- an earlier capture attempt the same session returned exactly 129
+    identical samples (spread=0.0), traced to the bus wedging/recovering
+    77 times since boot (shoulder_completions=0, shoulder_nacks=3580 in a
+    single 1s diag window) rather than a genuinely quiet signal; this
+    fixture is the recapture after the user reseated the I2C wiring
+    (confirmed healthy after: 256/256 completions, 0 nacks/timeouts).
+
+    Only asserts smoothing measurably reduces spread -- not by how much,
+    and not what the resulting number is -- so this doesn't need updating
+    every time GRIPPING_SMOOTHING_ALPHA or the DLPF setting gets legitimately
+    retuned, only if smoothing is accidentally weakened enough to stop
+    doing its job at all (assertLess with a 5x margin below the ~51x
+    reduction actually measured against this fixture, so real tuning
+    headroom doesn't make this flaky)."""
+
+    _REAL_EXERTION_GX = [
+        0.074077, 0.022916, 0.048896, 0.0866, 0.108717, 0.164674, 0.159744, 0.033708,
+        0.136029, 0.155614, -0.088066, 0.029711, 0.072211, 0.183326, 0.1736, 0.174533,
+        0.015588, -0.09153, -0.022383, 0.191853, 0.14802, 0.083802, -0.002931, -0.032908,
+        0.047164, 0.185191, 0.177597, 0.053692, -0.066749, 0.197049, 0.127636, 0.034773,
+        0.041168, 0.011058, -0.02558, 0.14349, 0.09606, 0.089265, 0.079672, 0.088599,
+        -0.019185, 0.140692, 0.107251, 0.04783, 0.241681, 0.157613, 0.140559, 0.108317,
+        -0.002931, 0.083003, 0.124838, 0.080205, 0.13896, 0.101389, 0.055691, 0.187856,
+        0.084335, 0.075142, 0.121507, 0.192386, -0.015988, 0.068614, 0.051294, 0.153749,
+        0.080871, 0.138427, 0.078873, 0.017853, 0.082337, 0.085268, 0.115778, 0.03424,
+        0.120974, 0.049296, 0.061553, -0.011724, 0.114046, 0.242747, 0.07341, -0.033441,
+        -0.061153, 0.111381, 0.093662, 0.027845, 0.112314, 0.080072, -0.042234, 0.177864,
+        0.003997, 0.017853, 0.049162, 0.1311, 0.026779, 0.127236, 0.076608, 0.027046,
+        0.003597, 0.077807, 0.036372, 0.017187, -0.017054, 0.206775, 0.119375, 0.084868,
+        0.019052, 0.079806, 0.040636, 0.099923, 0.025847, -0.028245, 0.091796, 0.323352,
+        0.101389, 0.314159, 0.168804, -0.063818, 0.071145, 0.09526, 0.008394, 0.059821,
+        0.086867, 0.177198, 0.03957, 0.036905, 0.11338, 0.218233, 0.118309, 0.059554,
+        0.022383, 0.05276, 0.063418, 0.085934,
+    ]
+
+    def _smoothed_spread(self, alpha):
+        smoothed = None
+        values = []
+        for v in self._REAL_EXERTION_GX:
+            smoothed = v if smoothed is None else rdl.ema_step(smoothed, v, alpha)
+            values.append(smoothed)
+        return max(values) - min(values)
+
+    def test_fixture_is_real_noisy_data_not_synthetic(self):
+        # Sanity check on the fixture itself, not the algorithm -- if this
+        # ever fails, the fixture was edited into something too clean to
+        # exercise what this test exists to guard.
+        raw_spread = max(self._REAL_EXERTION_GX) - min(self._REAL_EXERTION_GX)
+        self.assertGreater(raw_spread, 0.3)
+
+    def test_gripping_smoothing_meaningfully_reduces_real_tremor_spread(self):
+        raw_spread = max(self._REAL_EXERTION_GX) - min(self._REAL_EXERTION_GX)
+        smoothed_spread = self._smoothed_spread(rdl.GRIPPING_SMOOTHING_ALPHA)
+        # Real measured reduction against this exact fixture was ~51x;
+        # 5x leaves headroom for legitimate future retuning without this
+        # test needing to change alongside it.
+        self.assertLess(smoothed_spread, raw_spread / 5)
+
+
 class RateLimitStepTest(unittest.TestCase):
     def test_within_one_step_lands_exactly_on_target(self):
         self.assertEqual(rdl.rate_limit_step(0.0, 0.05, 0.1), 0.05)
