@@ -119,6 +119,7 @@ jobs:
           python3 test_run_demo_live_math.py
           python3 test_serial_parsing.py
           python3 test_run_demo_live_integration.py
+          python3 test_emg_calibration_logging.py
           python3 test_imu_to_mujoco.py
           python3 test_arm_workspace.py
           python3 test_grip_kinematics.py --headless
