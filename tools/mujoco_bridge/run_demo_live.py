@@ -519,6 +519,17 @@ class LatestSample:
         self.shoulder_pitch = 0.0
         self.shoulder_roll = 0.0
         self.elbow = 0.0
+        # Real min/max ever seen for these three, across the whole run --
+        # for sizing physical arm hardware (servo range) against what a
+        # task actually uses, not the joints' theoretical safety-clamp
+        # limits (SHOULDER_PITCH_RANGE etc. above). None until update()
+        # runs at least once.
+        self.shoulder_pitch_min = None
+        self.shoulder_pitch_max = None
+        self.shoulder_roll_min = None
+        self.shoulder_roll_max = None
+        self.elbow_min = None
+        self.elbow_max = None
         # Unmapped shoulder accelerometer axes -- see SHOULDER_RAW_RE's
         # comment. None until the first line carrying them arrives.
         self.shoulder_raw_ax = None
@@ -566,6 +577,30 @@ class LatestSample:
             self.elbow = elbow
             self.last_update_monotonic = time.monotonic()
             self.has_received_data = True
+
+            if self.shoulder_pitch_min is None or shoulder_pitch < self.shoulder_pitch_min:
+                self.shoulder_pitch_min = shoulder_pitch
+            if self.shoulder_pitch_max is None or shoulder_pitch > self.shoulder_pitch_max:
+                self.shoulder_pitch_max = shoulder_pitch
+            if self.shoulder_roll_min is None or shoulder_roll < self.shoulder_roll_min:
+                self.shoulder_roll_min = shoulder_roll
+            if self.shoulder_roll_max is None or shoulder_roll > self.shoulder_roll_max:
+                self.shoulder_roll_max = shoulder_roll
+            if self.elbow_min is None or elbow < self.elbow_min:
+                self.elbow_min = elbow
+            if self.elbow_max is None or elbow > self.elbow_max:
+                self.elbow_max = elbow
+
+    def snapshot_ranges(self):
+        """Real min/max of shoulder_pitch/shoulder_roll/elbow seen so far
+        this run -- see the fields' own comment for why this exists
+        separately from the theoretical SHOULDER_PITCH_RANGE etc. clamps."""
+        with self._lock:
+            return (
+                (self.shoulder_pitch_min, self.shoulder_pitch_max),
+                (self.shoulder_roll_min, self.shoulder_roll_max),
+                (self.elbow_min, self.elbow_max),
+            )
 
     def snapshot_gripping(self):
         with self._lock:
@@ -1764,7 +1799,30 @@ def main():
                 if remaining > 0:
                     time.sleep(remaining)
     finally:
+        _print_arm_range_summary(latest)
         ser.close()
+
+
+def _print_arm_range_summary(latest):
+    """Prints the real min/max of shoulder_pitch/shoulder_roll/elbow seen
+    this run, in both rad and degrees -- for sizing physical arm hardware
+    (servo range) against what an actual task used, as opposed to the
+    theoretical SHOULDER_PITCH_RANGE/SHOULDER_ROLL_RANGE/ELBOW_RANGE safety
+    clamps above, which are much wider than any one task needs. Printed
+    unconditionally on exit (including Ctrl+C) since that is the normal way
+    this script ends during a live demo."""
+    (p_min, p_max), (r_min, r_max), (e_min, e_max) = latest.snapshot_ranges()
+    if p_min is None:
+        return  # no samples ever arrived -- nothing to report
+    print("\n[ARM RANGE SUMMARY] real min/max this run (not the safety-clamp limits):")
+    for label, lo, hi in (
+        ("shoulder_pitch", p_min, p_max),
+        ("shoulder_roll", r_min, r_max),
+        ("elbow", e_min, e_max),
+    ):
+        span_deg = math.degrees(hi - lo)
+        print(f"  {label:15s} {lo:+.3f} .. {hi:+.3f} rad  "
+              f"({math.degrees(lo):+.1f} .. {math.degrees(hi):+.1f} deg, span {span_deg:.1f} deg)")
 
 
 if __name__ == "__main__":

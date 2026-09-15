@@ -123,3 +123,13 @@ firmware_add_target(emg_grip_control src/startup.c src/emg_grip_control_main.cpp
 # address until a working MPU6050 arrives -- see this target's own file
 # header for why.
 firmware_add_target(phase3_control_loop src/startup.c src/phase3_control_loop_main.cpp)
+
+# Stage 7a (Phase 4 bring-up): 50Hz hobby-servo PWM on PA6 (TIM3_CH1),
+# sweeping pulse width so a single SG90 can be visually confirmed to move
+# end-to-end, before any of this is wired into the real control loop.
+firmware_add_target(servo_pwm_test src/startup.c src/servo_pwm_test_main.c)
+
+# Stage 7b: interactive follow-up to servo_pwm_test -- nudges the same
+# PA6/TIM3_CH1 PWM pulse width up/down by UART command ('+'/'-') so a
+# servo's real safe range can be found by ear/eye instead of guessed.
+firmware_add_target(servo_limit_finder src/startup.c src/servo_limit_finder_main.c)
