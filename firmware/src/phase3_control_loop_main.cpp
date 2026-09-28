@@ -40,6 +40,7 @@
 #include <cstdint>
 
 #include "edgeneuro/control/grip_state_machine.hpp"
+#include "edgeneuro/control/mpu6050_power_check.hpp"
 #include "edgeneuro/control/slew_rate_limiter.hpp"
 #include "edgeneuro/fusion/complementary_filter.hpp"
 #include "stm32f4xx.h"
@@ -131,6 +132,12 @@ static constexpr float kEmgSmoothingAlpha = 0.1f;
 // has to be decided before the main loop (and its wake attempts) even
 // exist, so this is a one-shot bounded wait at the very start of main(),
 // not something polled continuously afterward.
+// 2026-09-28: each MPU6050's own PWR_MGMT_1 as last read back (0xFFFFFFFF = not read yet) and how many times it read back
+// reset/asleep or unexpected (the firmware then re-wakes it) -- readable over SWD and printed in the diag line.
+volatile uint32_t g_pwr_mgmt_1_shoulder = 0xFFFFFFFFu;
+volatile uint32_t g_pwr_mgmt_1_elbow = 0xFFFFFFFFu;
+volatile uint32_t g_power_resets_shoulder = 0u;
+volatile uint32_t g_power_resets_elbow = 0u;
 static bool g_require_shoulder_imu = true;
 static bool g_require_elbow_imu = true;
 // read_optional_sensors_config() (applies the above from a boot-time UART
@@ -646,10 +653,15 @@ public:
     // the timeout fire in a fraction of a millisecond instead of the
     // intended ~50ms -- comparing against real elapsed EMG ticks instead
     // keeps the timeout meaning what it says regardless of poll rate.
-    void begin(uint32_t start_tick) {
+    // reg/len (2026-09-28): optional, defaulting to the data read (0x3B, 14 bytes) exactly as before. The only other
+    // use is the once-a-second power-register check (0x6A..0x6C, 3 bytes; mpu6050_power_check.hpp). len must be 3..14:
+    // this sequence is the verified N>=3 multi-byte read, and buf_ holds 14.
+    void begin(uint32_t start_tick, uint8_t reg = kImuRegAddr, uint32_t len = kImuReadLen) {
         state_ = ImuReadState::WaitStart1;
         start_tick_ = start_tick;
         byte_index_ = 0;
+        reg_ = reg;
+        len_ = (len < 3u) ? 3u : ((len > kImuReadLen) ? kImuReadLen : len);
         I2C1->CR1 |= I2C_CR1_START;
     }
 
@@ -740,7 +752,7 @@ public:
 
         case ImuReadState::WaitRegTxe:
             if (I2C1->SR1 & I2C_SR1_TXE) {
-                I2C1->DR = kImuRegAddr;
+                I2C1->DR = reg_;
                 state_ = ImuReadState::WaitRegBtf;
             }
             return false;
@@ -779,7 +791,7 @@ public:
             if (I2C1->SR1 & I2C_SR1_RXNE) {
                 buf_[byte_index_] = (uint8_t)I2C1->DR;
                 ++byte_index_;
-                if (byte_index_ == kImuReadLen - 2u) {
+                if (byte_index_ == len_ - 2u) {
                     state_ = ImuReadState::WaitBtfPenultimate;
                 }
             }
@@ -788,7 +800,7 @@ public:
         case ImuReadState::WaitBtfPenultimate:
             if (I2C1->SR1 & I2C_SR1_BTF) {
                 I2C1->CR1 &= ~I2C_CR1_ACK;
-                buf_[kImuReadLen - 2u] = (uint8_t)I2C1->DR;
+                buf_[len_ - 2u] = (uint8_t)I2C1->DR;
                 state_ = ImuReadState::WaitBtfLast;
             }
             return false;
@@ -796,7 +808,7 @@ public:
         case ImuReadState::WaitBtfLast:
             if (I2C1->SR1 & I2C_SR1_BTF) {
                 I2C1->CR1 |= I2C_CR1_STOP;
-                buf_[kImuReadLen - 1u] = (uint8_t)I2C1->DR;
+                buf_[len_ - 1u] = (uint8_t)I2C1->DR;
                 state_ = ImuReadState::Idle;
                 return true; // full reading complete
             }
@@ -810,6 +822,8 @@ private:
     ImuReadState state_{ImuReadState::Idle};
     uint32_t start_tick_{0};
     uint32_t byte_index_{0};
+    uint8_t reg_{kImuRegAddr};
+    uint32_t len_{kImuReadLen};
     uint8_t buf_[kImuReadLen]{};
     uint32_t nack_count_{0};
     uint32_t timeout_count_{0};
@@ -959,6 +973,10 @@ int main(void) {
     ImuReader shoulder_reader(kShoulderImuAddr);
     ImuReader elbow_reader(kElbowImuAddr);
     bool active_is_shoulder = true;
+    // 2026-09-28: once a second per sensor, its next read is the power-register check instead of the data read
+    edgeneuro::mpu6050::HealthSchedule shoulder_power_schedule(1000u);
+    edgeneuro::mpu6050::HealthSchedule elbow_power_schedule(1000u);
+    bool power_read_in_flight = false;
 
     uint32_t tick_count = 0;
     uint32_t shoulder_completions = 0;
@@ -1032,10 +1050,39 @@ int main(void) {
         ImuReader &active_reader = active_is_shoulder ? shoulder_reader : elbow_reader;
         const bool was_idle_before_this_pass = active_reader.is_idle();
         if (was_idle_before_this_pass) {
-            active_reader.begin(tick_count);
+            edgeneuro::mpu6050::HealthSchedule &sched = active_is_shoulder ? shoulder_power_schedule : elbow_power_schedule;
+            power_read_in_flight = sched.due(tick_count);
+            if (power_read_in_flight) {
+                active_reader.begin(tick_count, edgeneuro::mpu6050::kHealthReadStartReg, edgeneuro::mpu6050::kHealthReadLen);
+            } else {
+                active_reader.begin(tick_count);
+            }
         }
         const bool completed = active_reader.step(tick_count);
-        if (completed) {
+        if (completed && power_read_in_flight) {
+            // The sensor's own PWR_MGMT_1: what the hardware says, not an inference from the data (2026-09-28). A sensor
+            // that lost power for a moment between two reads comes back reset (SLEEP=1) without any I2C error -- wake it
+            // again and re-apply its filter setting, exactly like the existing post-failure re-wake does.
+            power_read_in_flight = false;
+            const uint8_t pwr = active_reader.buf()[edgeneuro::mpu6050::kPwrMgmt1Index];
+            const uint8_t addr = active_is_shoulder ? kShoulderImuAddr : kElbowImuAddr;
+            (active_is_shoulder ? shoulder_power_schedule : elbow_power_schedule).mark_done(tick_count);
+            if (active_is_shoulder) {
+                g_pwr_mgmt_1_shoulder = pwr;
+            } else {
+                g_pwr_mgmt_1_elbow = pwr;
+            }
+            if (edgeneuro::mpu6050::classify_pwr_mgmt_1(pwr) != edgeneuro::mpu6050::PowerState::Awake) {
+                if (active_is_shoulder) {
+                    g_power_resets_shoulder = g_power_resets_shoulder + 1u;
+                } else {
+                    g_power_resets_elbow = g_power_resets_elbow + 1u;
+                }
+                mpu6050_write_reg_blocking(addr, 0x6Bu, edgeneuro::mpu6050::kPwrMgmt1Awake);
+                mpu6050_write_reg_blocking(addr, kMpu6050ConfigReg, kDlpfCfg6);
+            }
+            active_is_shoulder = !active_is_shoulder;
+        } else if (completed) {
             const uint8_t *b = active_reader.buf();
             const float raw_ax = (float)be16(&b[0]) / 16384.0f;
             const float raw_ay = (float)be16(&b[2]) / 16384.0f;
@@ -1366,6 +1413,16 @@ int main(void) {
                     usart2_send_uint(shoulder_asleep_rewakes);
                     usart2_send_string(" elbow_asleep_rewakes=");
                     usart2_send_uint(elbow_asleep_rewakes);
+                    // 2026-09-28: each sensor's own PWR_MGMT_1 (1 = awake as configured, 64 = reset/asleep, 4294967295 =
+                    // not read yet) and how often it read back reset -- the hardware's own account of its state
+                    usart2_send_string(" shoulder_pwr_mgmt_1=");
+                    usart2_send_uint(g_pwr_mgmt_1_shoulder);
+                    usart2_send_string(" elbow_pwr_mgmt_1=");
+                    usart2_send_uint(g_pwr_mgmt_1_elbow);
+                    usart2_send_string(" shoulder_power_resets=");
+                    usart2_send_uint(g_power_resets_shoulder);
+                    usart2_send_string(" elbow_power_resets=");
+                    usart2_send_uint(g_power_resets_elbow);
                     usart2_send_string("\r\n");
                     GPIOC->ODR ^= (1u << LED_PIN);
                     shoulder_completions = 0;

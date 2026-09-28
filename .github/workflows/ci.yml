@@ -120,6 +120,7 @@ jobs:
           python3 test_serial_parsing.py
           python3 test_run_demo_live_integration.py
           python3 test_emg_calibration_logging.py
+          python3 test_run_demo_live_health.py
           python3 test_imu_to_mujoco.py
           python3 test_arm_workspace.py
           python3 test_grip_kinematics.py --headless
@@ -132,7 +133,11 @@ jobs:
       # needed.
       - name: Run tools/ tests (outside tools/mujoco_bridge)
         working-directory: tools
-        run: python3 test_usb_serial_port.py
+        run: |
+          python3 test_usb_serial_port.py
+          python3 test_sensor_health.py
+          python3 test_check_hardware_ready.py
+          python3 test_watch_imu_raw.py
 
       # test_grasp_coverage.py's own sys.exit(1) for the known-DROPPED
       # poses is intentionally not gated on (see the comment above) -- but

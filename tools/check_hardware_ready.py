@@ -355,19 +355,116 @@ def run_i2c_scan() -> bool:
             if word & (1 << bit):
                 found.append(word_idx * 32 + bit)
 
-    if found:
-        addr_list = ", ".join(f"0x{a:02x}" for a in found)
-        print(f"[OK  ] scan complete -- ACK from: {addr_list}")
-    else:
-        print(
+    ok, lines = evaluate_scan(found, busy_before, scan_done)
+    for l in lines:
+        print(l)
+    return ok
+
+
+# This project needs BOTH MPU6050s (SESSION_LOG 2026-09-27: the scan once printed "All checks passed" with only 0x69
+# answering, which is how a loose upper-arm sensor went unnoticed).
+EXPECTED_ADDRESSES = {0x68: "upper arm MPU6050 (AD0 open)", 0x69: "forearm MPU6050 (AD0 to 3.3V)"}
+
+
+def evaluate_scan(found, busy_before, scan_done):
+    """(ok, printable lines) for a finished scan: every expected address must ACK, the bus must not have been BUSY."""
+    if scan_done != 1:
+        return False, [f"[FAIL] scan did not complete (g_scan_done=0x{scan_done:08x}) -- target may be halted/crashed"]
+    lines = []
+    ok = busy_before == 0
+    if not found:
+        lines.append(
             "[FAIL] scan complete -- no address ACKed. If a device is definitely "
             "connected: re-check power (measure VCC-GND directly, don't trust an "
             "onboard LED alone), then SCL/SDA continuity end-to-end. If those are "
             "all fine, suspect the connected module itself -- cross-test with a "
-            "known-good I2C device (e.g. a PCF8574 LCD backpack, address 0x27) "
-            "before assuming the STM32 side is at fault."
-        )
-    return bool(found) and busy_before == 0
+            "known-good I2C device (any different chip with a known address) "
+            "before assuming the STM32 side is at fault.")
+        return False, lines
+    lines.append("[OK  ] scan complete -- ACK from: " + ", ".join(f"0x{a:02x}" for a in found))
+    for addr, what in EXPECTED_ADDRESSES.items():
+        if addr in found:
+            lines.append(f"[OK  ] 0x{addr:02x} {what} answers")
+        else:
+            ok = False
+            lines.append(f"[FAIL] 0x{addr:02x} {what} does not answer -- check its Vin/GND/SCL/SDA wiring "
+                         f"(if it drops out whenever the arm moves, a contact is loose)")
+    extra = [a for a in found if a not in EXPECTED_ADDRESSES]
+    if extra:
+        lines.append("[NOTE] other addresses that answered (not this project's MPU6050s): " + ", ".join(f"0x{a:02x}" for a in extra))
+    return ok, lines
+
+
+def parse_tick_raw(text):
+    """(upper_arm, forearm) raw accel vectors from one firmware tick line, each None if absent. Parsed separately:
+    the real firmware sends elbow_raw BEFORE shoulder_raw (a first version assumed the opposite and saw no data)."""
+    import re
+    out = []
+    for name in ("shoulder", "elbow"):
+        m = re.search(rf"{name}_raw_ax=(\S+) {name}_raw_ay=(\S+) {name}_raw_az=(\S+)", text)
+        out.append(tuple(float(x) for x in m.groups()) if m else None)
+    return out[0], out[1]
+
+
+def run_sensor_check(read_line, clock, seconds=3.0, max_seconds=8.0):
+    """Reads the running phase3_control_loop's UART for `seconds` (nothing is flashed) and judges both IMUs with
+    sensor_health. Returns (ok, printable lines)."""
+    import re
+    import sensor_health as sh
+    diag_re = re.compile(r"shoulder_completions=(\d+) elbow_completions=(\d+)")
+    mon = sh.HealthMonitor()
+    start = clock()
+    got_any = False
+    got_diag = False
+    # at least `seconds`; if no diag line has arrived yet, keep going up to `max_seconds` -- a failing sensor slows the
+    # firmware's own clock, so its once-a-second diag line can arrive only every few real seconds (2026-09-28)
+    while clock() - start < seconds or (not got_diag and clock() - start < max_seconds):
+        text = read_line()
+        up, fore = parse_tick_raw(text)
+        if up is not None or fore is not None:
+            got_any = True
+            mon.add_sample(clock(), up, fore)
+        d = diag_re.search(text)
+        if d:
+            got_diag = True
+            mon.add_diag(clock(), int(d.group(1)), int(d.group(2)))
+            mon.add_hardware(clock(), sh.parse_diag_line(text))
+    if not got_any:
+        return False, ["[FAIL] no sensor data received -- is the board running phase3_control_loop, and did the app actually "
+                       "start after flashing? (check with --boot-check)"]
+    rep = mon.report(clock())
+    if sh.passes_pre_use_check(rep):         # the data is right (option A, 2026-09-28: flaky-but-recovering passes)
+        lines = ["[OK  ] both MPU6050s read correctly (noisy, about 1 g, not frozen or stuck at full scale)"]
+        for w in rep.warnings:
+            if w.kind == "slow_data":
+                continue
+            label, addr = sh.SENSORS[w.sensor]
+            lines.append(f"[NOTE] {label} MPU6050({addr}):{sh.KIND_TEXT[w.kind]}  [{w.detail}]"
+                         f" -- the data is still correct, but the contact is unstable; secure this sensor's wiring")
+        slow = [w for w in rep.warnings if w.kind == "slow_data"]
+        if slow:
+            lines.append(f"[NOTE] slow data rate ({slow[0].detail}; normally about 100/s) -- fine for the demo, motion is just slightly less smooth")
+        return True, lines
+    # only what CAUSED the failure (the data cannot be trusted), not the incidental notes
+    return False, ["[FAIL] " + sh.format_warning(sh.Report(False, rep.problems, []))]
+
+
+def check_sensors(port, seconds=3.0):
+    import serial
+    import time as _time
+    ser = serial.Serial(port, 115200, timeout=0.2)
+    try:
+        ok, lines = run_sensor_check(lambda: ser.readline().decode(errors="ignore"), _time.monotonic, seconds)
+    except serial.SerialException as exc:
+        ok, lines = False, [f"[FAIL] could not read the serial port: {exc}\n"
+                            f"       Most common cause: another program (run_demo_live.py, watch_imu_raw.py, miniterm) "
+                            f"has the port open -- close it (Ctrl+C) and retry; or the USB-serial adapter was unplugged."]
+    finally:
+        ser.close()
+    print("\n--- Sensor health (reads the running firmware, nothing is flashed) ---")
+    for l in lines:
+        print(l)
+    return ok
 
 
 def run_live_check(port: str) -> bool:
@@ -597,6 +694,10 @@ def main() -> None:
         help="flash the real Stage 6 firmware and verify live shoulder/roll/elbow data actually changes",
     )
     parser.add_argument(
+        "--sensors", action="store_true",
+        help="read the running phase3_control_loop for 3 s (nothing is flashed) and check both MPU6050s are healthy",
+    )
+    parser.add_argument(
         "--boot-check", action="store_true",
         help="standalone: poll (no reflash) for execution to reach whatever is currently "
              "flashed -- run this right after you've manually power-cycled the board",
@@ -616,6 +717,15 @@ def main() -> None:
         else:
             i2c_ok = run_i2c_scan()
 
+    sensors_ok = True
+    if args.sensors:
+        _, port, _ = check_serial_port()
+        if not port:
+            print("\n[SKIP] sensor check needs the USB-TTL port -- fix the above first")
+            sensors_ok = False
+        else:
+            sensors_ok = check_sensors(port)
+
     live_ok = True
     if args.live_check:
         _, port, _ = check_serial_port()
@@ -625,7 +735,7 @@ def main() -> None:
         else:
             live_ok = run_live_check(port)
 
-    if not (basic_ok and i2c_ok and live_ok):
+    if not (basic_ok and i2c_ok and live_ok and sensors_ok):
         sys.exit(1)
 
     print("\nAll checks passed -- safe to flash/read.")

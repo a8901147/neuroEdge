@@ -2,7 +2,8 @@
 
 Key milestones and findings, oldest first. Each entry is one decision or one lesson; the numbers come from raw data
 captured on the real hardware. For how the system works now, see [README.md](README.md) and [PRD.md](PRD.md). Code
-comments that cite "SESSION_LOG <date>" refer to the dated entries below.
+comments that cite "SESSION_LOG <date>" refer to the dated entries below; "TODO C" was the measurement of the arm's
+shoulder × elbow region (09-24 → 09-27).
 
 ## August 2026: engine and hardware bring-up
 
@@ -29,3 +30,9 @@ comments that cite "SESSION_LOG <date>" refer to the dated entries below.
   gate. UART dropouts were traced to three separate hardware causes, each fixed.
 - **09-12 → 09-13: tremor filtered, first full task (v1.0.0).** Gripping caused 9–10 Hz physiological tremor. The
   IMUs' 5 Hz low-pass filter cut it 26–90×. Reach → grip → lift → hold then ran end to end on live hardware.
+- **09-21 → 09-23: the MeArm.** Direct joint mapping instead of inverse kinematics. "Dead" servos were the supply
+  sagging during current spikes, fixed with a bulk capacitor.
+- **09-24 → 09-27: safe by measurement.** MuJoCo twin; Python reference mapping with C++ ports tested against golden
+  tables. The arm's coupled shoulder × elbow limits were measured in five runs and frozen as a conservative envelope.
+- **09-27 → 09-28: a wiring fault, not a bug (v1.1.0).** A day of "reversed" motion was a loose IMU: rebuilding v1.0.0
+  showed the same symptom. Since then, sensor faults are detected automatically and the arm holds still.
