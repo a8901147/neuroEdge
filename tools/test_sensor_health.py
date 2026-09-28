@@ -187,7 +187,7 @@ class TooLittleDataTest(unittest.TestCase):
         rep = mon.report(t)
         self.assertTrue(rep.ok, rep.problems)
         self.assertEqual({(w.sensor, w.kind) for w in rep.warnings}, {("upper_arm", "slow_data"), ("forearm", "slow_data")})
-        self.assertIn("太少", sh.format_warning(rep))
+        # (kept in the report for check_hardware_ready --sensors' note; not printed as a notice -- QuietKindsInWarningTextTest)
 
     def test_almost_no_data_is_still_a_fault(self):
         mon = sh.HealthMonitor()
@@ -368,6 +368,64 @@ class FromLatestSampleTest(unittest.TestCase):
             poller.poll(now)
         self.assertTrue(mon.report(now).ok, mon.report(now).problems)
         self.assertLess(mon.sample_count, 400)    # ~300 real samples, not 3000 repeats
+
+
+class QuietKindsInWarningTextTest(unittest.TestCase):
+    """2026-09-28 v1.1.0 hardware test: run_demo_live printed '資料太少 [26 筆]' as a hardware notice at start and inside
+    the fault warning, although a slow-but-correct rate does not matter for the demo (user) -- WarningPrinter already
+    kept it quiet, format_warning did not."""
+
+    def test_slow_data_alone_is_not_printed_as_a_notice(self):
+        rep = sh.Report(True, [], [sh.Problem("upper_arm", "slow_data", "最近 1 秒只收到 26 筆")])
+        self.assertNotIn("資料太少", sh.format_warning(rep))
+        self.assertNotIn("硬體注意", sh.format_warning(rep))
+
+    def test_a_fault_warning_lists_the_fault_and_real_notices_but_not_the_rate(self):
+        rep = sh.Report(False, [sh.Problem("upper_arm", "frozen", "30 identical readings")],
+                        [sh.Problem("upper_arm", "slow_data", "最近 1 秒只收到 24 筆"),
+                         sh.Problem("upper_arm", "dropouts", "過去 1 秒沒回應 705 次,重新喚醒 1 次")])
+        text = sh.format_warning(rep)
+        self.assertIn(sh.KIND_TEXT["frozen"], text)
+        self.assertIn(sh.KIND_TEXT["dropouts"], text)
+        self.assertNotIn(sh.KIND_TEXT["slow_data"], text)
+
+
+class PollingGapTest(unittest.TestCase):
+    """Real false alarm, 2026-09-28 (v1.1.0 hardware test): while the MuJoCo viewer window was opening the main loop did
+    not poll for a few seconds, so the monitor saw only 2 samples in its 1 s window and held the arm for 'almost no
+    data' -- while the firmware's own diag line said completions=255 nacks=0. A gap in OUR polling is not a gap in the
+    data: rate judgements wait until a full window has been watched again. Real absence is still caught."""
+
+    def run_with_gap(self, rate_hz_after, resume_s):
+        latest = FromLatestSampleTest.FakeLatest()
+        mon = sh.HealthMonitor()
+        poller = sh.LatestSamplePoller(latest, mon)
+        rng = random.Random(6)
+        now = 0.0
+        period_after = 1.0 / rate_hz_after
+        next_sample = 0.0
+        for i in range(int((2.0 + 2.0 + resume_s) * 1000)):
+            now = (i + 1) * 0.001
+            rate_period = 0.01 if now < 2.0 else period_after
+            if now >= next_sample:                        # the board keeps sending, gap or not
+                latest.raw, latest.elbow_raw = noisy(HANG, rng), noisy(FORE_OK, rng)
+                latest.last_update_monotonic = now
+                next_sample = now + rate_period
+            if not 2.0 <= now < 4.0:                      # 2 s without a single poll (the viewer opening)
+                poller.poll(now)
+        return mon.report(now)
+
+    def test_a_pause_in_polling_is_not_reported_as_missing_data(self):
+        for resume_s in (0.05, 0.3, 0.9):
+            with self.subTest(resume_s=resume_s):
+                rep = self.run_with_gap(100, resume_s)
+                self.assertTrue(rep.ok, rep.problems)
+                self.assertEqual([w for w in rep.warnings if w.kind == "slow_data"], [])
+
+    def test_really_too_little_data_is_still_caught_once_a_full_window_is_watched(self):
+        rep = self.run_with_gap(5, 1.5)
+        self.assertEqual({(p.sensor, p.kind) for p in rep.problems},
+                         {("upper_arm", "not_enough_data"), ("forearm", "not_enough_data")})
 
 
 class PollerHardwareTest(unittest.TestCase):

@@ -98,6 +98,7 @@ class HealthMonitor:
         self._hw_prev = None                                      # last cumulative counters
         self._hw_events = {name: {} for name in SENSORS}         # kind -> (time, detail)
         self._pwr = {name: None for name in SENSORS}
+        self._watching_since = None                               # set after a gap in OUR polling (see below)
 
     def add_sample(self, t, upper, fore):
         self.sample_count += 1
@@ -133,6 +134,11 @@ class HealthMonitor:
             self._pwr[name] = c.get("pwr_mgmt_1")
         self._hw_prev = hw
 
+    def observation_gap(self, t):
+        """The caller stopped watching for a while (its loop was blocked -- e.g. the MuJoCo viewer opening) and resumes
+        at `t`: samples it missed are not missing data, so the rate is not judged until a full window was watched."""
+        self._watching_since = t
+
     def add_diag(self, t, upper_completions, fore_completions):
         self._diag = (t, {"upper_arm": upper_completions, "forearm": fore_completions})
 
@@ -166,7 +172,9 @@ class HealthMonitor:
             median = mags[len(mags) // 2]
             if not MAGNITUDE_OK_G[0] <= median <= MAGNITUDE_OK_G[1]:
                 problems.append(Problem(name, "magnitude", f"median |a| = {median:.2f} g"))
-            if len(good) < MIN_SAMPLES_TO_JUDGE:
+            if self._watching_since is not None and now - self._watching_since < WINDOW_S:
+                pass                                              # not watched a full window since a gap: no rate verdict
+            elif len(good) < MIN_SAMPLES_TO_JUDGE:
                 problems.append(Problem(name, "not_enough_data", f"最近 1 秒只收到 {len(good)} 筆"))
             elif len(good) < MIN_SAMPLES:
                 # 2026-09-28: live, plausible readings arriving slowly are still usable -- a warning, not a fault
@@ -211,9 +219,10 @@ def format_warning(report):
         for p in report.problems:
             label, addr = SENSORS[p.sensor]
             lines.append(f"   - {label} MPU6050({addr}):{KIND_TEXT[p.kind]}  [{p.detail}]")
-    if report.warnings:
+    shown = [w for w in report.warnings if w.kind not in QUIET_KINDS]     # a slow rate alone is not worth a notice
+    if shown:
         lines.append("⚠ 硬體注意:感測器有狀況(資料仍在更新,但可能不準)——請檢查接線。")
-        for w in report.warnings:
+        for w in shown:
             label, addr = SENSORS[w.sensor]
             lines.append(f"   - {label} MPU6050({addr}):{KIND_TEXT[w.kind]}  [{w.detail}]")
     return "\n".join(lines) if lines else "感測器狀態正常。"
@@ -261,6 +270,9 @@ class WarningPrinter:
         return None
 
 
+POLL_GAP_S = 0.25   # a longer pause between polls means the caller was blocked, not that the board went quiet
+
+
 class LatestSamplePoller:
     """Feeds a HealthMonitor from a run_demo_live.LatestSample without changing that class: a new sample is recognised
     by `last_update_monotonic` changing (so polling at 1 kHz a 100 Hz stream does not look like repeats), and the
@@ -271,8 +283,14 @@ class LatestSamplePoller:
         self._seen = None
         self._diag_seen = None
         self._diag_text_seen = None
+        self._last_poll = None
 
     def poll(self, now):
+        # 2026-09-28 (v1.1.0 hardware test): the caller's loop can block (viewer opening/dragged) -- that is a gap in the
+        # watching, not in the data, and must not read as "almost no data"
+        if self._last_poll is not None and now - self._last_poll > POLL_GAP_S:
+            self.monitor.observation_gap(now)
+        self._last_poll = now
         stamp = getattr(self.latest, "last_update_monotonic", None)
         if stamp is not None and stamp != self._seen:
             self._seen = stamp
