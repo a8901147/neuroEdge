@@ -56,6 +56,7 @@ SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "arm_hand_scene.xml"
 # fix).
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 from usb_serial_port import CP2102_PORT, autodetect_port  # noqa: E402
+import sensor_health  # noqa: E402  (tools/sensor_health.py -- automatic IMU health checks, 2026-09-28)
 
 DEFAULT_BAUD = 115200
 
@@ -802,6 +803,7 @@ def reader_thread_main(ser, latest):
                     continue
                 diag_match = DIAG_LINE_RE.search(line)
                 if diag_match:
+                    latest.last_diag_text = line    # 2026-09-28: the raw line, for sensor_health's hardware counters
                     latest.update_diag(
                         int(diag_match.group("shoulder_completions")),
                         int(diag_match.group("elbow_completions")),
@@ -1136,6 +1138,44 @@ def save_calibration_fields(path, fields):
         json.dump(data, f, indent=2)
 
 
+# Automatic sensor-health checks (tools/sensor_health.py; SESSION_LOG 2026-09-28): after a day lost to loose IMU wiring
+# mistaken for algorithm bugs, the live path refuses to start on faulty sensor data and warn loudly when a sensor fails
+# mid-session. None = wait as long as it takes (tests set a limit).
+HEALTH_PREFLIGHT_MAX_S = None
+HEALTH_REPEAT_WARNING_S = 3.0
+
+
+def wait_until_sensors_healthy(latest, ignore=(), max_s=None, repeat_s=None, prefix=""):
+    """Blocks until both IMUs look healthy, printing what is wrong every few seconds meanwhile (it continues by itself once
+    fixed -- no restart). An unplugged adapter exits instead of waiting forever; so does `max_s` running out.
+    `ignore`: sensor names deliberately absent (--optional-sensors). Returns (monitor, poller) to keep watching with."""
+    import sensor_health
+    max_s = HEALTH_PREFLIGHT_MAX_S if max_s is None else max_s
+    repeat_s = HEALTH_REPEAT_WARNING_S if repeat_s is None else repeat_s
+    monitor = sensor_health.HealthMonitor()
+    poller = sensor_health.LatestSamplePoller(latest, monitor)
+    started = time.monotonic()
+    next_warning_at = started + 1.0
+    while True:
+        now = time.monotonic()
+        _stale, port_error = latest.status()
+        if port_error is not None:                              # an unplugged adapter must not leave this waiting forever
+            sys.exit(f"\nserial port failed: {port_error}\n"
+                     f"(the USB-serial adapter was likely unplugged -- restart after reconnecting)")
+        poller.poll(now)
+        report = monitor.report(now, ignore=ignore)
+        if sensor_health.ready_to_start(report, now - started):
+            print(prefix + sensor_health.format_warning(report))
+            return monitor, poller
+        if max_s is not None and now - started >= max_s:
+            sys.exit(prefix + sensor_health.format_warning(report))
+        if now >= next_warning_at and sensor_health.should_announce(report, now - started):
+            print(sensor_health.format_warning(report) + "\n   (修好後會自動繼續,不用重開)")
+            next_warning_at = now + repeat_s
+        time.sleep(0.002)
+
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -1211,6 +1251,8 @@ def main():
         sys.exit(f"--optional-sensors: unknown name(s) {sorted(unknown_sensors)} -- "
                   f"choices are {sorted(VALID_OPTIONAL_SENSORS)}")
     shoulder_optional = "shoulder" in optional_sensors
+    # sensor-health checks (2026-09-28) must not count a sensor declared absent on purpose as faulty
+    health_ignore = ({"upper_arm"} if shoulder_optional else set()) | ({"forearm"} if "elbow" in optional_sensors else set())
 
     if not SCENE_XML.exists():
         sys.exit(f"arm+hand scene not found: {SCENE_XML}")
@@ -1291,6 +1333,19 @@ def main():
         last_print_t = -1.0
         while time.monotonic() < deadline:
             raw = latest.snapshot_shoulder_raw()
+            # 2026-09-28: a reading no live sensor can produce voids this recording (a frozen value LOOKS valid -- the
+            # 2026-09-27 calibration saved exactly that): warn, wait for healthy sensors, then record this pose again.
+            _bad = sensor_health.implausible_problems(raw, latest.snapshot_elbow_raw(), ignore=health_ignore)
+            if _bad:
+                print("\n" + sensor_health.format_warning(sensor_health.Report(False, _bad))
+                      + "\n   這次錄製作廢,感測器恢復後會自動重錄這個姿勢。")
+                wait_until_sensors_healthy(latest, ignore=health_ignore)
+                print("  感測器恢復,重錄這個姿勢——請維持姿勢。")
+                samples = []
+                t_start = time.monotonic()
+                deadline = t_start + seconds
+                last_print_t = -1.0
+                continue
             if raw[0] is not None:
                 t = time.monotonic() - t_start
                 samples.append((t, raw, latest.snapshot()[3]))
@@ -1372,6 +1427,9 @@ def main():
 
     while not latest.is_ready():
         time.sleep(0.05)
+
+    # 2026-09-28: automatic sensor-health check before anything is calibrated or shown
+    health, health_poller = wait_until_sensors_healthy(latest, ignore=health_ignore)
 
     if shoulder_optional:
         # 2026-09-09: previously guessed absence via a 5s timeout on
@@ -1594,6 +1652,9 @@ def main():
     smoothed_elbow_raw_scalar = None
 
     try:
+        sensor_fault = False
+        next_fault_warning_at = 0.0
+        hw_warnings = sensor_health.WarningPrinter()
         with mujoco.viewer.launch_passive(model, data) as viewer:
             step_count = 0
             while viewer.is_running():
@@ -1602,6 +1663,41 @@ def main():
                 grip, old_shoulder_pitch, old_shoulder_roll, elbow = latest.snapshot()
                 shoulder_raw = latest.snapshot_shoulder_raw()
                 is_stale, port_error = latest.status()
+
+                # 2026-09-28 sensor-health guard (checks only -- nothing about how the arm is computed changes): on a
+                # fault the arm HOLDS its last pose instead of following bad data, and a warning is printed; a reading
+                # no live sensor can produce is never fed into the smoothing either. Resumes by itself when healthy.
+                now_m = time.monotonic()
+                health_poller.poll(now_m)
+                if step_count % 20 == 0:
+                    report = health.report(now_m, ignore=health_ignore)
+                    if not report.ok and not sensor_fault:
+                        sensor_fault = True
+                        print("\n" + sensor_health.format_warning(report) + "\n   (手臂停在最後一個正常的姿勢)")
+                        next_fault_warning_at = now_m + HEALTH_REPEAT_WARNING_S
+                    elif not report.ok and now_m >= next_fault_warning_at:
+                        print(sensor_health.format_warning(report))
+                        next_fault_warning_at = now_m + HEALTH_REPEAT_WARNING_S
+                    elif report.ok and sensor_fault:
+                        sensor_fault = False
+                        print("✓ 感測器恢復正常,手臂重新跟隨。")
+                    hw_text = hw_warnings.update(report, now_m)     # drop-outs / resets the firmware saw: tell, don't hold
+                    if hw_text:
+                        print("\n" + hw_text)
+                if sensor_fault or sensor_health.implausible_problems(shoulder_raw, latest.snapshot_elbow_raw(),
+                                                                       ignore=health_ignore):
+                    if port_error is not None:
+                        sys.exit(f"\nserial port failed: {port_error}\n"
+                                 f"(the USB-serial adapter was likely unplugged -- this needs the script "
+                                 f"restarted after reconnecting, unlike a firmware-side stall)")
+                    mujoco.mj_step(model, data)
+                    if step_count % 20 == 0:
+                        viewer.sync()
+                    step_count += 1
+                    remaining = model.opt.timestep - (time.time() - step_start)
+                    if remaining > 0:
+                        time.sleep(remaining)
+                    continue
 
                 # Raw-domain EMA (see RAW_SMOOTHING_ALPHA's comment) --
                 # smooths the shoulder accel vector and the decoded elbow
