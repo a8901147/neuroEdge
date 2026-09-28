@@ -156,7 +156,7 @@ unit, unlike FT232RL's), and `--port <path>` overrides either.
 
 | Script | Use it when... |
 | --- | --- |
-| `python3 tools/check_hardware_ready.py [--i2c-scan] [--live-check] [--boot-check]` | Before trusting anything else in this list — confirms ST-Link/USB-TTL/serial port are all actually usable, optionally the I2C bus + both MPU6050s (`--i2c-scan`), a full live data flow (`--live-check`), or (no reflash) that execution reached the app after a manual power-cycle (`--boot-check`). |
+| `python3 tools/check_hardware_ready.py [--i2c-scan] [--sensors] [--live-check] [--boot-check]` | Before trusting anything else in this list — confirms ST-Link/USB-TTL/serial port are all actually usable, optionally the I2C bus + both MPU6050s (`--i2c-scan`), both IMUs' live data from the running firmware without flashing anything (`--sensors`), a full live data flow (`--live-check`), or (no reflash) that execution reached the app after a manual power-cycle (`--boot-check`). |
 | `mjpython tools/mujoco_bridge/run_demo_live.py` | The actual task — full calibration + live MuJoCo control from real hardware. `--skip-calibration --skip-emg-calibration` reuses `shoulder_calibration.json` instead of re-running the pose/EMG calibration flow. |
 | `mjpython tools/mujoco_bridge/run_demo.py` | No hardware available, or isolating whether a problem is in the MuJoCo/control-mapping logic itself (replays a CSV instead of live serial). |
 | `mjpython tools/mujoco_bridge/run_demo_live_grip_only.py` | Testing just the MyoWare → grip path in isolation (no IMUs wired up, or ruling out shoulder/elbow tracking as a variable). |
@@ -168,6 +168,42 @@ unit, unlike FT232RL's), and `--port <path>` overrides either.
 `tools/generate_sample_data.py` and `tools/convert_epn612.py` (below) are
 Stage 1 host-only data-prep tools, not live-hardware utilities — listed
 under their own section since real hardware has superseded that workflow.
+
+### Sensor health is checked automatically (v1.1.0)
+
+After a day lost to loose IMU wiring mistaken for algorithm bugs, the tools check both MPU6050s themselves
+(`tools/sensor_health.py`), so a hardware fault can't silently look like a wrong model:
+
+- **The data can't be trusted** — no readings, 0 completed I2C reads, **bit-identical ("frozen") readings**, an axis
+  stuck at full scale, a magnitude that is not ~1 g, or a sensor reporting itself asleep. `run_demo_live.py` **will not
+  start** (it says which sensor and what is wrong, and continues by itself once it is fixed); mid-session the arm
+  **holds its last pose** with a warning instead of following bad data and resumes by itself; a calibration capture
+  recorded during a fault is redone, never saved.
+- **The data is right but the connection is flaky** — the sensor stopped answering on I2C and came back, or reset and was
+  woken again. The arm keeps following; a note naming the sensor is printed (again at most every 30 s while it lasts),
+  and "✓ 感測器沒有再斷線。" once it stops.
+- Sensors declared absent with `--optional-sensors` are not counted as faulty.
+
+The flaky-connection counters come from the hardware itself, not inferred from the data: `phase3_control_loop`'s diag
+line reports each sensor's I2C NACKs/timeouts, and once a second it reads each MPU6050's own `PWR_MGMT_1` (0x6B, register
+map RM-MPU-6000A-00 Rev 4.0) — a sensor that lost power for a moment between reads comes back with `SLEEP` set and no I2C
+error, so the firmware wakes it again and counts it (`shoulder/elbow_pwr_mgmt_1`, `shoulder/elbow_power_resets`).
+
+One-off checks, nothing flashed:
+
+```sh
+python3 tools/check_hardware_ready.py --sensors      # reads the running phase3_control_loop for ~3 s
+python3 tools/check_hardware_ready.py --i2c-scan     # FAILS unless BOTH 0x68 (upper arm) and 0x69 (forearm) answer
+python3 tools/watch_imu_raw.py                       # per-second raw view of both IMUs (--no-verdict for numbers only)
+```
+
+A known-good calibration is committed as a golden sample: `data/shoulder_calibration_golden_2026-09-13.json` (the
+2026-09-13 real-board calibration, the day the full 6-step grasp task first ran end to end). Use it with
+`--skip-calibration --skip-emg-calibration --calibration-file data/shoulder_calibration_golden_2026-09-13.json` to rule
+out a bad fresh calibration; it only fits while the sensors are worn/strapped the same way as on that day.
+
+`--sensors` passes when the data is right; a flaky-but-recovering sensor is listed as `[NOTE]` with its name, and a
+low data rate (e.g. from repeated dropouts) is only a note — it doesn't affect a demo.
 
 ## Real-dataset compatibility (EMG-EPN-612)
 
