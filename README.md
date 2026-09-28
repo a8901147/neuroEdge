@@ -197,6 +197,11 @@ python3 tools/check_hardware_ready.py --i2c-scan     # FAILS unless BOTH 0x68 (u
 python3 tools/watch_imu_raw.py                       # per-second raw view of both IMUs (--no-verdict for numbers only)
 ```
 
+A known-good calibration is committed as a golden sample: `data/shoulder_calibration_golden_2026-09-13.json` (the
+2026-09-13 real-board calibration, the day the full 6-step grasp task first ran end to end). Use it with
+`--skip-calibration --skip-emg-calibration --calibration-file data/shoulder_calibration_golden_2026-09-13.json` to rule
+out a bad fresh calibration; it only fits while the sensors are worn/strapped the same way as on that day.
+
 `--sensors` passes when the data is right; a flaky-but-recovering sensor is listed as `[NOTE]` with its name, and a
 low data rate (e.g. from repeated dropouts) is only a note — it doesn't affect a demo.
 

@@ -19,15 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_demo_live as rdl  # noqa: E402
 
 
+# The golden sample: the real 2026-09-13 calibration (captured on the real board; the day the full 6-step grasp task
+# first ran end to end) -- the poses below are the ones it was captured at.
+GOLDEN_CALIBRATION = Path(__file__).resolve().parents[2] / "data" / "shoulder_calibration_golden_2026-09-13.json"
+
+
 class fx:
-    """The real 2026-09-13 calibration (captured on the real board) and the poses it was captured at."""
-    SAVED_9_13 = {
-        "baseline_raw": [0.9926369238095238, 0.04678664761904762, 0.26501993333333335],
-        "forward_raw": [0.03340870754716981, -0.010959839622641509, 1.0248781886792453],
-        "left_twist_raw": [0.12286084761904763, 0.4518007904761905, 0.9183839047619048],
-        "right_twist_raw": [0.11225231428571429, -0.4611189333333333, 0.8999546761904761],
-        "zero_elbow": 0.4340121238095238,
-    }
+    SAVED_9_13 = json.loads(GOLDEN_CALIBRATION.read_text())
     HANG = tuple(SAVED_9_13["baseline_raw"])
     FORWARD = tuple(SAVED_9_13["forward_raw"])
     LEFT = tuple(SAVED_9_13["left_twist_raw"])
@@ -74,7 +72,7 @@ class FakeViewer:
         return False
 
 
-SAVED = dict(fx.SAVED_9_13, emg_threshold=1129, captured_at="2026-09-13 16:35:48")
+SAVED = fx.SAVED_9_13
 FROZEN_FOREARM = ("elbow_raw_ax=+0.000 elbow_raw_ay=+0.000 elbow_raw_az=+1.000",
                   "elbow_raw_ax=+1.999939 elbow_raw_ay=+0.000000 elbow_raw_az=+0.000000")
 
