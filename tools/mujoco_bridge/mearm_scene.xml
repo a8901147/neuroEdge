@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MeArm digital-twin scene, adapted 2026-09-24 from zc110747/MeArmPilot
+     (MeArm-3D/simulation/mujoco/mearm.xml, MIT license,
+     https://github.com/zc110747/MeArmPilot), not built from scratch --
+     see SESSION_LOG.md's 2026-09-23/24 entries for why: this project's
+     Phase 4 goal is a MEArm digital twin used as a preview/visualization
+     tool (so live control logic can be sanity-checked without depending
+     on real, currently power-flaky hardware), and MeArmPilot already had
+     a complete, working, self-contained (no external mesh files -- only
+     primitive box/cylinder/capsule geoms) model built the same way this
+     project builds things: their own README states joint geometry was
+     derived from "camera photos + a degree-by-degree servo sweep" against
+     a REAL physical unit, and that their own initial shoulder/elbow role
+     assumption (from firmware naming) turned out to be WRONG until they
+     checked -- independent confirmation of the exact kind of mixup this
+     project also hit and fixed the same way (see SESSION_LOG's 2026-09-21
+     entry on confirming channel 2 = shoulder).
+
+     IMPORTANT CAVEAT, not yet resolved: the <joint>/<actuator> range=/
+     ctrlrange= values below are MeArmPilot's OWN measured numbers, from
+     THEIR physical MeArm unit -- not this project's jin-hua clone kit.
+     This project's own real measured ranges are in pulse_us
+     (servo_limit_finder_4ch, base=500-2500/shoulder=1200-2100/
+     elbow=500-1850/claw=1300-1600us, see phase3_control_loop_main.cpp's
+     2026-09-23 comment), and there is no verified pulse-us-to-radian
+     conversion factor for this project's own specific servos/joints to
+     convert those into a matching set of radian ranges here. Until that
+     conversion is established, treat this file's joint ranges as a
+     reasonable stand-in for a PREVIEW tool, not a geometrically accurate
+     twin of this project's own physical arm -- consistent with this
+     model's stated purpose (see the scene comment above).
+
+     Renamed from MeArmPilot's own arbitrary Arduino-pin-based actuator
+     names (servo_9/servo_7/servo_8/servo_6) to this project's own
+     base/shoulder/elbow/claw convention (matches phase3_control_loop_
+     main.cpp's TIM3 channel comments and README.md's Phase 4 section) --
+     no other structural change from the upstream file, including its
+     tendon+equality trick for keeping the claw level (replaces actually
+     modeling MeArm's real parallel-linkage rigid bodies -- a real MeArm's
+     claw orientation is a mechanical CONSEQUENCE of the shoulder+elbow
+     linkage geometry, not an independent DOF; MeArmPilot's own upstream
+     comment confirms this "tool" joint is passive, kept in the model only
+     to make that geometric consequence visible, not something this
+     project's control code should ever try to actuate directly). -->
+<mujoco model="mearm">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.001" integrator="implicitfast" solver="Newton" iterations="80" tolerance="1e-10" gravity="0 0 -9.81"/>
+  <default>
+    <geom friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" margin="0.001" condim="3" density="0"/>
+    <default class="world">
+      <geom contype="1" conaffinity="3" group="1" density="0"/>
+    </default>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2" density="0" condim="1" margin="0" solref="0.02 1"/>
+    </default>
+    <default class="collision">
+      <geom contype="2" conaffinity="3" group="3" density="0"/>
+    </default>
+    <default class="arm">
+      <joint type="hinge" damping="0.01" frictionloss="0.005" armature="0.0005" limited="true"/>
+      <!-- 2026-09-24: forcerange widened from MeArmPilot's own upstream
+           0.1765 (their real measured servo torque spec) to 2.0. Found via
+           a real settle-and-measure test (not assumed): with the original
+           value, commanding shoulder to its own range extreme (e.g. 0.898)
+           settled far short (~0.66) even with the table collision below
+           already fixed -- not enough simulated torque to hold the arm out
+           against gravity at that angle. This project's own stated use for
+           this model is a rough live PREVIEW (see this file's top header
+           comment), not a torque-realistic twin, so trading that realism
+           away to guarantee the commanded angle is actually reached is the
+           right tradeoff here -- a real MEArm's real SG92R has its own
+           real torque limit, already handled by servo_limit_finder_4ch on
+           the actual hardware, not by this simulation. -->
+      <position kp="5" kv="0.5" forcerange="-2.0 2.0"/>
+    </default>
+  </default>
+  <worldbody>
+    <light name="key_light" pos="0.3 0.3 0.6" dir="-0.5 -0.5 -1" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2"/>
+    <light name="fill_light" pos="-0.3 -0.2 0.4" dir="0.5 0.3 -1" diffuse="0.35 0.35 0.35"/>
+    <geom name="floor" class="world" type="plane" size="0.6 0.6 0.01" pos="0 0 0" rgba="0.45 0.47 0.5 1"/>
+    <!-- 2026-09-24: table_top's collision disabled (contype/conaffinity=0
+         override, below) after a real settle-and-measure test found the
+         claw physically colliding with it (a real MjData.contact, not
+         assumed) whenever shoulder swung toward its own reaching-forward
+         range end -- blocking the arm from ever reaching a real commanded
+         angle, not a control/calibration issue. This table's position was
+         inherited as-is from MeArmPilot's own upstream scene (see this
+         file's top comment) and was never re-checked against this
+         project's own real target-object placement (still an open,
+         deliberately-deferred decision -- see SESSION_LOG.md). Kept
+         visually (as a size/scale reference) but non-colliding until that
+         placement decision is actually made. -->
+    <body name="table" pos="0.17 0 0.031">
+      <geom name="table_top" class="world" type="box" size="0.11 0.11 0.015" rgba="0.62 0.55 0.42 1"
+            contype="0" conaffinity="0"/>
+    </body>
+    <body name="base_link" pos="0 0 0">
+      <inertial pos="0 0 0.006" mass="0.0266" diaginertia="1.57915333e-05 2.04731333e-05 3.44913333e-05"/>
+      <geom name="base_link_coll" class="collision" type="box" size="0.047 0.041 0.01" pos="0 0 0.01" rgba="0.15 0.85 0.45 0.35"/>
+      <geom name="base_link_vis" class="visual" type="box" size="0.03143 0.02405 0.0015" pos="0 0 0.0035" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+      <geom name="base_link_vis0" class="visual" type="cylinder" size="0.0042 0.0015" pos="0.037 0.031 0.0085" quat="0.70710678 0.70710678 0 0" rgba="0.0863 0.102 0.129 1"/>
+      <geom name="base_link_vis1" class="visual" type="cylinder" size="0.0042 0.0015" pos="-0.037 0.031 0.0085" quat="0.70710678 0.70710678 0 0" rgba="0.0863 0.102 0.129 1"/>
+      <geom name="base_link_vis2" class="visual" type="cylinder" size="0.0042 0.0015" pos="0.037 -0.031 0.0085" quat="0.70710678 0.70710678 0 0" rgba="0.0863 0.102 0.129 1"/>
+      <geom name="base_link_vis3" class="visual" type="cylinder" size="0.0042 0.0015" pos="-0.037 -0.031 0.0085" quat="0.70710678 0.70710678 0 0" rgba="0.0863 0.102 0.129 1"/>
+      <geom name="base_link_vis4" class="visual" type="box" size="0.0114 0.0061 0.01125" pos="0 0 0.0195" quat="1 0 0 0" rgba="0.184 0.212 0.267 1"/>
+      <body name="column_link" pos="0 0 0">
+        <inertial pos="0 0 0.03" mass="0.0336" diaginertia="1.008e-05 1.008e-05 2.24e-06"/>
+        <joint name="base" class="arm" axis="0 0 1" range="-1.08210414 1.08210414"/>
+        <geom name="column_link_coll" class="collision" type="capsule" size="0.014 0.006" pos="0 0 0.04" rgba="0.15 0.85 0.45 0.35"/>
+        <geom name="column_link_vis" class="visual" type="box" size="0.029 0.029 0.0015" pos="0 0 0.034" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+        <geom name="column_link_vis0" class="visual" type="box" size="0.026 0.0108 0.0015" pos="0 0.013 0.049" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+        <geom name="column_link_vis1" class="visual" type="box" size="0.026 0.0108 0.0015" pos="0 -0.013 0.049" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+        <geom name="column_link_vis2" class="visual" type="box" size="0.0114 0.0061 0.01125" pos="0 0 0.06" quat="0.70710678 -0.70710678 0 0" rgba="0.184 0.212 0.267 1"/>
+        <body name="upper_arm_link" pos="0 0 0.06">
+          <inertial pos="0 0 0.04" mass="0.037" diaginertia="1.97333333e-05 1.97333333e-05 2.46666667e-06"/>
+          <joint name="shoulder" class="arm" axis="0 1 0" range="-0.141261412 0.898057932"/>
+          <geom name="upper_arm_link_coll" class="collision" type="capsule" size="0.013 0.027" pos="0 0 0.04" rgba="0.15 0.85 0.45 0.35"/>
+          <geom name="upper_arm_link_vis" class="visual" type="box" size="0.011 0.0025 0.037" pos="0 0.014 0.037" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+          <geom name="upper_arm_link_vis0" class="visual" type="box" size="0.011 0.0025 0.037" pos="0 -0.014 0.037" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+          <geom name="upper_arm_link_vis1" class="visual" type="cylinder" size="0.0055 0.002" pos="0 0.0175 0" quat="0.70710678 0.70710678 0 0" rgba="0.169 0.204 0.275 1"/>
+          <geom name="upper_arm_link_vis2" class="visual" type="cylinder" size="0.0055 0.002" pos="0 -0.0175 0" quat="0.70710678 0.70710678 0 0" rgba="0.169 0.204 0.275 1"/>
+          <geom name="upper_arm_link_vis3" class="visual" type="box" size="0.011 0.014 0.0025" pos="0 0 0.068" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+          <geom name="upper_arm_link_vis4" class="visual" type="box" size="0.0114 0.0061 0.01125" pos="0 0 0.08" quat="0.70710678 -0.70710678 0 0" rgba="0.184 0.212 0.267 1"/>
+          <body name="forearm_link" pos="0 0 0.08">
+            <inertial pos="0 0 0.04" mass="0.019" diaginertia="1.01333333e-05 1.01333333e-05 1.26666667e-06"/>
+            <joint name="elbow" class="arm" axis="0 1 0" range="0.994603031 2.61715444"/>
+            <geom name="forearm_link_coll" class="collision" type="capsule" size="0.011 0.029" pos="0 0 0.04" rgba="0.15 0.85 0.45 0.35"/>
+            <geom name="forearm_link_vis" class="visual" type="box" size="0.009 0.0025 0.034" pos="0 0.0135 0.034" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+            <geom name="forearm_link_vis0" class="visual" type="box" size="0.009 0.0025 0.034" pos="0 -0.0135 0.034" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+            <geom name="forearm_link_vis1" class="visual" type="cylinder" size="0.005 0.002" pos="0 0.0165 0" quat="0.70710678 0.70710678 0 0" rgba="0.169 0.204 0.275 1"/>
+            <geom name="forearm_link_vis2" class="visual" type="cylinder" size="0.005 0.002" pos="0 -0.0165 0" quat="0.70710678 0.70710678 0 0" rgba="0.169 0.204 0.275 1"/>
+            <geom name="forearm_link_vis3" class="visual" type="box" size="0.009 0.011 0.0025" pos="0 0 0.064" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+            <geom name="forearm_link_vis4" class="visual" type="box" size="0.009 0.0025 0.006" pos="0 0.0135 0.074" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+            <geom name="forearm_link_vis5" class="visual" type="box" size="0.009 0.0025 0.006" pos="0 -0.0135 0.074" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+            <body name="tool_link" pos="0 0 0.08">
+              <inertial pos="0 0 0.02" mass="0.022" diaginertia="2.93333333e-06 2.93333333e-06 1.46666667e-06"/>
+              <joint name="tool" class="arm" axis="0 1 0" range="-0.940003288 -0.286958051"/>
+              <geom name="tool_link_coll" class="collision" type="capsule" size="0.012 0.008" pos="0 0 0.02" rgba="0.15 0.85 0.45 0.35"/>
+              <geom name="tool_link_vis" class="visual" type="box" size="0.011 0.013 0.0055" pos="0 0 0.006" quat="1 0 0 0" rgba="0.137 0.157 0.188 1"/>
+              <geom name="tool_link_vis0" class="visual" type="box" size="0.0114 0.0061 0.01125" pos="0 0 0.026" quat="0.70710678 0 0.70710678 0" rgba="0.184 0.212 0.267 1"/>
+              <geom name="tool_link_vis1" class="visual" type="cylinder" size="0.0032 0.016" pos="0 0 0.04" quat="0.5 0.5 0.5 0.5" rgba="0.169 0.204 0.275 1"/>
+              <site name="tcp" pos="0 0 0.04" size="0.004" rgba="1 0.85 0.2 1" group="4"/>
+              <body name="jaw_link" pos="0 0 0.04">
+                <inertial pos="0 0 0.017" mass="0.0033" diaginertia="2.2e-07 2.2e-07 2.2e-07"/>
+                <joint name="claw" class="arm" axis="1 0 0" range="0.13962634 1.78023584"/>
+                <geom name="jaw_link_coll" class="collision" type="capsule" size="0.005 0.01" pos="0 0 0" quat="0.70710678 0 0.70710678 0" rgba="0.15 0.85 0.45 0.35"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="base_link" body2="column_link"/>
+    <exclude body1="column_link" body2="upper_arm_link"/>
+    <exclude body1="upper_arm_link" body2="forearm_link"/>
+    <exclude body1="forearm_link" body2="tool_link"/>
+    <exclude body1="tool_link" body2="jaw_link"/>
+  </contact>
+  <actuator>
+    <position name="base" class="arm" joint="base" ctrlrange="-1.08210414 1.08210414"/>
+    <position name="shoulder" class="arm" joint="shoulder" ctrlrange="-0.141261412 0.898057932"/>
+    <position name="elbow" class="arm" joint="elbow" ctrlrange="0.994603031 2.61715444"/>
+    <position name="claw" class="arm" joint="claw" ctrlrange="0.13962634 1.78023584"/>
+  </actuator>
+  <tendon>
+    <fixed name="tool_lock_tendon">
+      <joint joint="shoulder" coef="1"/>
+      <joint joint="elbow" coef="1"/>
+      <joint joint="tool" coef="1"/>
+    </fixed>
+  </tendon>
+  <equality>
+    <tendon name="tool_lock" tendon1="tool_lock_tendon" polycoef="1.57079632679 0 0 0 0"/>
+  </equality>
+</mujoco>

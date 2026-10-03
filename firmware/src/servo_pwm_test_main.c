@@ -80,12 +80,33 @@ static void gpioa_pa6_tim3_ch1_af(void) {
     GPIOA->AFR[0] |= (2u << (4u * 6u)); // AF2 = TIM3_CH1, see header comment
 }
 
+// 2026-09-21: replaced the earlier blind 1000-2000us guess with this
+// specific SG92R unit's REAL measured limits, found by ear via
+// servo_limit_finder (send '+'/'-' over UART, stop the instant it starts
+// grinding against its own mechanical end-stop): grinding began at
+// pulse_us=400 on one side and pulse_us=2550 on the other. Center is the
+// midpoint of those two real endpoints (1475), not the textbook 1500 --
+// the ~25us difference is exactly the kind of per-unit factory-calibration
+// tolerance discussed in this project's own SESSION_LOG (the servo's
+// internal potentiometer has no absolute external reference; 1500 was
+// always just a convention, not a guarantee for this specific unit).
+//
+// SERVO_PULSE_MIN_US/MAX_US below pull in 50us from each real grinding
+// point (400->450, 2550->2500) as a deliberate safety margin -- running
+// right at the discovered grind point risks the same gear wear the
+// margin exists to avoid, not just crossing it once.
+#define SERVO_CENTER_PULSE_US 1475u
+#define SERVO_PULSE_MIN_US 450u
+#define SERVO_PULSE_MAX_US 2500u
+#define SERVO_PULSE_STEP_US 20u
+
 static void tim3_pwm_50hz_init(void) {
     RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
 
     TIM3->PSC = 15u;    // TIM3CLK/16 = 16MHz/16 = 1MHz -> 1 tick = 1us
     TIM3->ARR = 19999u; // 20000 ticks x 1us = 20ms period -> exactly 50Hz
-    TIM3->CCR1 = 1500u; // start centered, ~1.5ms pulse (servo mid-travel)
+    TIM3->CCR1 = SERVO_CENTER_PULSE_US; // start centered on this specific
+                                        // unit's real measured center
 
     TIM3->CCMR1 = (TIM3->CCMR1 & ~TIM_CCMR1_OC1M) |
                   (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1); // 110 = PWM mode 1
@@ -94,15 +115,6 @@ static void tim3_pwm_50hz_init(void) {
     TIM3->CR1 |= TIM_CR1_ARPE;      // preload ARR writes (paired with OC1PE)
     TIM3->CR1 |= TIM_CR1_CEN;       // start counting -- PWM begins here
 }
-
-// Standard hobby-servo pulse convention: ~1000us = one end of travel,
-// ~1500us = center, ~2000us = the other end. Some servos (SG90 included)
-// tolerate a bit more than this before hitting their mechanical stop --
-// staying inside 1000-2000 here deliberately, so this bring-up test can't
-// itself stall the servo against its own end-stop.
-#define SERVO_PULSE_MIN_US 1000u
-#define SERVO_PULSE_MAX_US 2000u
-#define SERVO_PULSE_STEP_US 20u
 
 int main(void) {
     led_init();

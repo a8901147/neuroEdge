@@ -19,7 +19,8 @@ import math
 from collections import deque, namedtuple
 
 WINDOW_S = 1.0
-MIN_SAMPLES = 50                 # ~0.5 s at the firmware's 100 Hz line rate: below this the RATE is low -> warning
+MIN_SAMPLES = 20                 # healthy is ~34 lines/s (2026-10-03: the firmware queues its UART output; 115200 baud
+                                 # carries ~34 of its ~346-byte lines per second): below this the RATE is low -> warning
 MIN_SAMPLES_TO_JUDGE = 10        # below this there is too little to trust anything -> fault
 FROZEN_RUN = 30                  # ~0.3 s of bit-identical readings: never happens with a live sensor
 SATURATION_G = 1.99              # the +-2 g range's full scale (32767/16384 = 1.99994)
@@ -36,7 +37,7 @@ KIND_TEXT = {
     "saturated": "reading stuck at full scale",
     "magnitude": "reading does not look like gravity (not about 1 g)",
     "not_enough_data": "almost no data, cannot judge",
-    "slow_data": "too little data (normally about 100 per second, but the readings themselves are fine): usually a poor sensor contact (maybe the breadboard) with the bus recovering again and again",
+    "slow_data": "too little data (normally about 30 per second, but the readings themselves are fine): usually a poor sensor contact (maybe the breadboard) with the bus recovering again and again",
     "implausible": "reading cannot come from a working sensor",
     "asleep": "the sensor reports it is asleep (it lost power and restarted; its data will not update)",
     "dropouts": "dropped out and came back (no I2C answer): a poor contact, maybe the breadboard",

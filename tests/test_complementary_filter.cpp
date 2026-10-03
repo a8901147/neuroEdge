@@ -171,3 +171,99 @@ TEST_CASE("ComplementaryFilter pitch stays monotonic across a full real shoulder
         prev = current;
     }
 }
+
+// ---- edge cases and long-run stability (2026-09-26) ----
+// Replaces what firmware/src/complementary_filter_stress_test_main.cpp (removed) used
+// to answer on the bench with a synthetic tilt and an LCD as bus load: does the
+// filter math stay finite and bounded over a very long run, and does it survive bad
+// samples? On the host this is exact and takes milliseconds instead of a minute.
+
+#include <cmath>
+#include <limits>
+
+namespace {
+constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+constexpr float kInf = std::numeric_limits<float>::infinity();
+using FloatFilter = edgeneuro::ComplementaryFilter<float>;
+}  // namespace
+
+TEST_CASE("ComplementaryFilter stays finite for a zero accelerometer vector (free fall / bad read)", "[fusion][edge]") {
+    FloatFilter f(0.98f, 0.01f);
+    f.initialize(0.0f, 0.0f, 1.0f);
+    for (int i = 0; i < 100; ++i) f.update(0.1f, 0.1f, 0.0f, 0.0f, 0.0f);
+    REQUIRE(std::isfinite(f.roll()));
+    REQUIRE(std::isfinite(f.pitch()));
+}
+
+TEST_CASE("ComplementaryFilter ignores a non-finite sample instead of being poisoned by it", "[fusion][edge]") {
+    // The state is recursive: one NaN/Inf reaching it would make every later output
+    // NaN until reset(). A bad sample must be skipped, the state held, and the next
+    // good sample must continue exactly as if the bad one never happened.
+    const float bad_values[] = {kNaN, kInf, -kInf};
+    for (float bad : bad_values) {
+        for (int which = 0; which < 5; ++which) {
+            FloatFilter reference(0.98f, 0.01f), f(0.98f, 0.01f);
+            reference.initialize(0.2f, 0.1f, 0.97f);
+            f.initialize(0.2f, 0.1f, 0.97f);
+            float in[5] = {0.05f, -0.02f, 0.2f, 0.1f, 0.97f};
+            for (int i = 0; i < 20; ++i) {
+                reference.update(in[0], in[1], in[2], in[3], in[4]);
+                f.update(in[0], in[1], in[2], in[3], in[4]);
+            }
+            float poisoned[5] = {in[0], in[1], in[2], in[3], in[4]};
+            poisoned[which] = bad;
+            INFO("input #" << which << " = " << bad);
+            f.update(poisoned[0], poisoned[1], poisoned[2], poisoned[3], poisoned[4]);
+            REQUIRE(std::isfinite(f.roll()));
+            REQUIRE(std::isfinite(f.pitch()));
+            REQUIRE(f.roll() == reference.roll());     // held: the bad sample changed nothing
+            REQUIRE(f.pitch() == reference.pitch());
+            f.update(in[0], in[1], in[2], in[3], in[4]);
+            reference.update(in[0], in[1], in[2], in[3], in[4]);
+            REQUIRE(f.roll() == reference.roll());     // and it carries on normally afterwards
+            REQUIRE(f.pitch() == reference.pitch());
+        }
+    }
+}
+
+TEST_CASE("ComplementaryFilter ignores a non-finite dt on the per-call overload", "[fusion][edge]") {
+    FloatFilter f(0.98f, 0.01f);
+    f.initialize(0.0f, 0.0f, 1.0f);
+    f.update(0.3f, 0.3f, 0.0f, 0.0f, 1.0f, 0.01f);
+    const float roll = f.roll(), pitch = f.pitch();
+    for (float bad : {kNaN, kInf, -kInf}) {
+        f.update(0.3f, 0.3f, 0.0f, 0.0f, 1.0f, bad);
+        REQUIRE(f.roll() == roll);
+        REQUIRE(f.pitch() == pitch);
+    }
+}
+
+TEST_CASE("ComplementaryFilter is finite and bounded over a million iterations of a slow synthetic tilt", "[fusion][edge]") {
+    // the same synthetic input the old bench stress test used: slowly varying accel
+    // (|a| ~ 1 g) plus a gentle gyro
+    FloatFilter f(0.98f, 0.01f);
+    f.initialize(0.0f, 0.0f, 1.0f);
+    float max_abs = 0.0f;
+    for (int i = 0; i < 1000000; ++i) {
+        const float phase = 0.0005f * static_cast<float>(i);
+        const float ax = 0.5f * std::sin(phase), ay = 0.3f * std::cos(phase);
+        const float az = std::sqrt(1.0f - ax * ax - ay * ay);
+        f.update(0.5f * std::sin(phase), 0.5f * std::cos(phase), ax, ay, az);
+        REQUIRE(std::isfinite(f.roll()));
+        REQUIRE(std::isfinite(f.pitch()));
+        max_abs = std::fmax(max_abs, std::fmax(std::fabs(f.roll()), std::fabs(f.pitch())));
+    }
+    REQUIRE(max_abs < 4.0f);   // accel angles are within +-pi; the gyro term only adds a small bounded lag
+}
+
+TEST_CASE("ComplementaryFilter stays bounded at the MPU6050's full-scale gyro rate for a million iterations", "[fusion][edge]") {
+    // +-2000 deg/s = 34.9 rad/s: the physical maximum the sensor can report. A constant
+    // rate at that extreme with a steady accel reading must settle, not grow forever.
+    FloatFilter f(0.98f, 0.01f);
+    f.initialize(0.0f, 0.0f, 1.0f);
+    for (int i = 0; i < 1000000; ++i) f.update(34.9f, -34.9f, 0.0f, 0.0f, 1.0f);
+    REQUIRE(std::isfinite(f.roll()));
+    REQUIRE(std::isfinite(f.pitch()));
+    REQUIRE(std::fabs(f.roll()) < 100.0f);
+    REQUIRE(std::fabs(f.pitch()) < 100.0f);
+}

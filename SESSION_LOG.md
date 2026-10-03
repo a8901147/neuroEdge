@@ -36,3 +36,17 @@ shoulder × elbow region (09-24 → 09-27).
   tables. The arm's coupled shoulder × elbow limits were measured in five runs and frozen as a conservative envelope.
 - **09-27 → 09-28: a wiring fault, not a bug (v1.1.0).** A day of "reversed" motion was a loose IMU: rebuilding v1.0.0
   showed the same symptom. Since then, sensor faults are detected automatically and the arm holds still.
+- **09-29 → 10-01: servo power.** Dedicated battery pack, bulk capacitors, common ground: most servo stalls disappeared.
+
+## October 2026: the real arm follows the person
+
+- **10-03: timing, start-up and steadiness.**
+  - A UART busy-wait had cut the 1 kHz loop to 291 ticks/s; a transmit queue restored 1007.
+  - The FPU had never been enabled at reset and only worked because the bootloader left it on. Fixed.
+  - The base jitter was the arm's own sway, so the servos stay at full speed and the command is filtered (1€ filter +
+    hysteresis).
+  - Height/reach mapping, calibration sent over UART, and an `R` command to home the arm.
+- **10-04: reliable links, steady base, two-threshold grip (v1.2.0).** The calibration message was losing bytes; it is
+  now paced and resent, and 5 of 5 sends were applied. The base follows slowly while the arm is raised, cutting
+  unwanted swing 3–5×. Release threshold set below the grip threshold. Recordings showed the remaining grip problem:
+  arm motion alone (3848) out-reads a firm grip (1318). That is electrode placement, which no threshold can fix.

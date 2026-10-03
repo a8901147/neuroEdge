@@ -50,6 +50,19 @@ void (* const g_pfnVectors[])(void) = {
 };
 
 void Reset_Handler(void) {
+    // Enable the FPU before anything else (2026-10-03). Every target is built with -mfloat-abi=hard
+    // (cmake/arm-none-eabi-toolchain.cmake), but nothing ever turned the FPU on: the apps only ran because
+    // WeAct's bootloader happened to leave it enabled. Started without the bootloader (an SWD jump to
+    // this Reset_Handler), the first float instruction HardFaulted -- CFSR 0x00080000 = UFSR.NOCP,
+    // "no coprocessor". Same write as ST's SystemInit (vendored system_stm32f4xx.c line 171:
+    // SCB->CPACR |= (3UL << 10*2)|(3UL << 11*2), CP10+CP11 full access). CPACR = SCB base 0xE000ED00
+    // (core_cm4.h: SCS_BASE 0xE000E000 + 0x0D00) + offset 0x088 (core_cm4.h SCB_Type). DSB+ISB so the
+    // new access is in effect before the next instruction (ARMv7-M requirement after a CPACR write).
+    #define SCB_CPACR (*(volatile uint32_t *)0xE000ED88u)
+    SCB_CPACR |= (3u << 20) | (3u << 22);
+    __asm volatile("dsb");
+    __asm volatile("isb");
+
     uint32_t *src = &_sidata;
     uint32_t *dst = &_sdata;
     while (dst < &_edata) {

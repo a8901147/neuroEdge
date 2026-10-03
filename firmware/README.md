@@ -25,9 +25,12 @@ src/timer_adc_1khz_main.c             Stage 3c/3d: TIM2 TRGO triggers ADC1 at 1 
 src/i2c_mpu6050_hello_main.c          Stage 4a: I2C1 (PB6/PB7) raw accelerometer and gyroscope from an MPU6050
 src/complementary_filter_hello_main.cpp  Stage 4b: ComplementaryFilter on real MPU6050 data
 src/i2c_bus_scan_main.c               Diagnostic: scans every I2C1 address (tools/check_hardware_ready.py --i2c-scan)
-src/complementary_filter_stress_test_main.cpp  Diagnostic: the ComplementaryFilter loop on synthetic data, no MPU6050 needed
 src/emg_grip_control_main.cpp         Stage 5a: MyoWare signal drives GripStateMachine + SlewRateLimiter (no MPU6050)
 src/phase3_control_loop_main.cpp      Stage 5b: EMG + IMU in one 1 kHz loop, non-blocking I2C
+src/servo_pwm_test_main.c             Phase 4: one servo on TIM3 PWM (PA6)
+src/servo_limit_finder_main.c         Phase 4: one servo's real range, set over UART
+src/servo_pwm_4ch_test_main.c         MeArm: four TIM3 PWM channels (PA6 base, PA7 shoulder, PB0 elbow, PB1 claw)
+src/servo_limit_finder_4ch_main.c     MeArm: four channels; used by tools/servo_pose_4ch.py and measure_linkage_region.py
 ```
 
 ## Toolchain (once)
@@ -267,6 +270,14 @@ The Stage 5a EMG loop and `ComplementaryFilter` in one 1 kHz main loop. `ImuRead
 **Smoothing (2026-08-21):** `roll_smoother`/`pitch_smoother` (`IirFilter` as a one-pole EMA, `kSmoothAlpha=0.5`) on `roll`/`pitch`. `kSmoothAlpha` is a starting value.
 
 **`ImuReader` recovers from a timeout:** besides `STOP`, it does a full `SWRST` and re-configuration, as `i2c1_init()` does, so a temporary `BUSY` hang clears itself. `g_timeout_count`, `g_imu_state_at_timeout`, `g_sr1_at_timeout`, `g_sr2_at_timeout` can be read over SWD.
+
+**Servo build (2026-09-26 → 10-04, the physical MeArm):** the servos are off by default, so watching MuJoCo cannot move the real arm. With `-DEDGENEURO_DRIVE_SERVOS=ON` the board computes the four servo commands itself: the base from upper-arm twist, shoulder and elbow through the `height_reach` mapping inside the measured envelope, the claw from the EMG; a 1€ filter, base hysteresis and slow follow while raising keep the commands steady. `run_demo_live.py` sends the calibration over UART after boot; `R` homes the servos. Details in the root README and SESSION_LOG.
+
+```sh
+cmake -S . -B build-servos -DEDGENEURO_DRIVE_SERVOS=ON && cmake --build build-servos --target flash_phase3_control_loop
+```
+
+After flashing, the WeAct bootloader often does not start the app: start it with the SWD jump in `DEVELOPMENT.md`, then confirm with `tools/check_hardware_ready.py --boot-check`.
 
 ## A real Adafruit MPU-6050; `kImuTargetAddr` back to `0x68` (2026-08-22)
 

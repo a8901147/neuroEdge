@@ -73,6 +73,15 @@ public:
     // update() cadence isn't actually fixed-interval.
     void update(ValueType gyro_x, ValueType gyro_y, ValueType accel_x, ValueType accel_y, ValueType accel_z,
                 ValueType dt) noexcept {
+        // The state is recursive, so one NaN/Inf sample would poison every later
+        // output until reset(). Skip a non-finite sample and hold the state; the
+        // next good sample continues as if it never happened. (Not reachable from
+        // the current firmware, whose inputs are converted I2C integers -- this
+        // is a cheap guard for a shared library, tested in test_complementary_filter.cpp.)
+        if (!std::isfinite(gyro_x) || !std::isfinite(gyro_y) || !std::isfinite(accel_x) ||
+            !std::isfinite(accel_y) || !std::isfinite(accel_z) || !std::isfinite(dt)) {
+            return;
+        }
         const ValueType accel_roll = accel_roll_angle(accel_y, accel_z);
         const ValueType accel_pitch = accel_pitch_angle(accel_x, accel_y, accel_z);
 

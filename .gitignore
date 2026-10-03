@@ -17,3 +17,6 @@ tools/mujoco_bridge/shoulder_calibration.json
 # (Deliberate exception: data/shoulder_calibration_golden_2026-09-13.json is committed on purpose as the
 # reference/golden calibration -- four gravity-direction vectors, the elbow zero and the EMG threshold, no raw EMG.)
 tools/mujoco_bridge/emg_calibration_logs/
+build-*/
+# local backups of the (gitignored) calibration -- personal, like the file itself
+tools/mujoco_bridge/shoulder_calibration.json.bak*

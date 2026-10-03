@@ -1,0 +1,55 @@
+{
+  "measured_at": "2026-09-27 00:22:39",
+  "step_us": 25,
+  "dwell_s": 0.8,
+  "return_dwell_s": 0.15,
+  "backoff_steps": 3,
+  "claw_rest_us": 1300,
+  "records": [
+    {
+      "shoulder": 1500,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1600,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500,
+      "elbow_up_start": 1500,
+      "elbow_down_start": 1500
+    },
+    {
+      "shoulder": 1650,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1775,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500,
+      "elbow_up_start": 1500,
+      "elbow_down_start": 1500
+    },
+    {
+      "shoulder": 1800,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1800,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500,
+      "elbow_up_start": 1500,
+      "elbow_down_start": 1500
+    },
+    {
+      "shoulder": 1350,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1525,
+      "elbow_down_bind": 725,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500,
+      "elbow_up_start": 1500,
+      "elbow_down_start": 1500
+    }
+  ],
+  "excluded_positions": {
+    "2100": "3 attempts gave a downward stop of 850, 725 and 1400 (not repeatable; mechanism straining)",
+    "1200": "the shoulder binds by itself at ~1250 with the elbow at 1500"
+  },
+  "excluded_positions_note": "removed by the user's decision 2026-09-27; the complete run is kept in mearm_linkage_measurements_run2_2026-09-27_full.json"
+}
