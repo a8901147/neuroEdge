@@ -1489,10 +1489,11 @@ def run_mearm_preview(args):
     functions/constants main() itself uses, not reimplemented copies) so
     the two paths can't silently drift apart on that shared math.
 
-    Always requires a previously-saved calibration (--calibration-file) --
-    does not run the interactive BASELINE/FORWARD/LEFT_TWIST/EMG prompts
-    itself. Run this script once WITHOUT --mearm first (the default
-    --humanoid path) to produce one, then reuse it here."""
+    Since 2026-10-03 it runs the same interactive pose/EMG calibration as
+    the humanoid path (skipped with --skip-calibration /
+    --skip-emg-calibration, which reuse --calibration-file), sends the
+    calibration and EMG threshold to the board, and homes the real arm (R)
+    before following."""
     # 2026-10-03: without --skip-calibration the four poses are captured here (the humanoid path's own
     # calibrate_pose), once the sensors are healthy; with it, the saved calibration is required up front.
     skip_calibration = getattr(args, "skip_calibration", True)
@@ -1828,9 +1829,10 @@ def main():
              "the humanoid arm+hand scene -- a SEPARATE, simplified code path (see "
              "run_mearm_preview()'s own docstring for what's simplified and why), added "
              "purely additively: this flag's absence (the default) runs the exact same "
-             "--humanoid behavior this script has always had, unchanged. Requires a "
-             "previously-saved --calibration-file (run once without --mearm first to "
-             "produce one) -- does not run the interactive calibration prompts itself.",
+             "--humanoid behavior this script has always had, unchanged. Runs the same "
+             "pose/EMG calibration as the humanoid path unless --skip-calibration / "
+             "--skip-emg-calibration, sends the calibration and EMG threshold to the board, "
+             "then homes the real arm's servos (R) after you let the arm hang.",
     )
     parser.add_argument(
         "--log-file", default=None,

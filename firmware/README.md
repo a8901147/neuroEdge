@@ -27,6 +27,10 @@ src/complementary_filter_hello_main.cpp  階段 4b:ComplementaryFilter 融合真
 src/i2c_bus_scan_main.c               診斷工具(非 pipeline 階段):掃描 I2C1 全部位址,見 tools/check_hardware_ready.py --i2c-scan
 src/emg_grip_control_main.cpp         階段 5a:真實 MyoWare 訊號驅動 GripStateMachine + SlewRateLimiter,不依賴 MPU6050
 src/phase3_control_loop_main.cpp      階段 5b:EMG+IMU 合併成真正的 1kHz 主迴圈,不阻塞 I2C 讀取狀態機
+src/servo_pwm_test_main.c             Phase 4:TIM3 單通道 PWM 帶起一顆伺服(PA6)
+src/servo_limit_finder_main.c         Phase 4:單通道,從 UART 下指令找一顆伺服的實際行程
+src/servo_pwm_4ch_test_main.c         MeArm:TIM3 四通道 PWM(PA6 底座、PA7 肩膀、PB0 手肘、PB1 夾爪)
+src/servo_limit_finder_4ch_main.c     MeArm:四通道版,tools/servo_pose_4ch.py 與 measure_linkage_region.py 用它擺姿勢、量連桿
 ```
 
 ## 工具鏈設定(僅需一次)
@@ -266,6 +270,14 @@ cmake --build build --target flash_phase3_control_loop
 **指令軌跡平滑化(2026-08-21)**：`roll_smoother`/`pitch_smoother`(`IirFilter`,單極指數移動平均,`kSmoothAlpha=0.5`)已經接上,套用在 `roll`/`pitch` 輸出。`kSmoothAlpha` 是暫定值,不是推導出來的截止頻率。
 
 **`ImuReader` 逾時自我修復**：逾時後除了 `STOP`,也會比照 `i2c1_init()` 做一次完整 `SWRST` + 重新設定 `CR2`/`CCR`/`TRISE`,讓暫時性的匯流排 `BUSY` 卡死能自動恢復,不用每次都手動重插線、重新燒錄。診斷用全域變數 `g_timeout_count`/`g_imu_state_at_timeout`/`g_sr1_at_timeout`/`g_sr2_at_timeout` 可以用 SWD 讀出來確認有沒有在重試。
+
+**伺服版(2026-09-26 → 10-04,實體 MeArm)**:預設不驅動伺服(只看 MuJoCo 時不會讓實體手臂亂動)。加 `-DEDGENEURO_DRIVE_SERVOS=ON` 才會由晶片本身算出四顆伺服的指令並輸出 TIM3 PWM——底座看上臂旋轉、肩膀/手肘用 `height_reach` 對應並限制在量過的安全包絡內、夾爪看 EMG;1€ 濾波、底座遲滯與「舉起中慢慢跟」讓指令穩定。校正在開機後由 `run_demo_live.py` 經 UART 送進來(不用重新燒錄),`R` 指令讓伺服回到起點。細節見根目錄 README 與 SESSION_LOG。
+
+```sh
+cmake -S . -B build-servos -DEDGENEURO_DRIVE_SERVOS=ON && cmake --build build-servos --target flash_phase3_control_loop
+```
+
+燒錄後 WeAct bootloader 常常不會自己跳進程式:用 `CLAUDE.md` 裡的 SWD 跳轉指令啟動,再用 `tools/check_hardware_ready.py --boot-check` 確認。
 
 ## 真實 Adafruit MPU-6050 到貨,`kImuTargetAddr` 改回 `0x68`(2026-08-22)
 

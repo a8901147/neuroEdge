@@ -977,3 +977,13 @@ Path B 解碼 → 模型肩膀指令＋**未經連桿投影**的手肘請求 →
 
 **底座放大倍數 `--base-gain`（2026-10-04，使用者要求試試看）**：我先用資料說明濾波器調強解決不了舉手時的亂跳（極強的 1€ 0.05 Hz：往左前方舉 983 → 876，但左右擺落後 74 µs 而且擺不到底），使用者接著想試降低底座放大倍數。做法：`mearm_real.with_base_gain(saved, gain)` 把目前的底座範圍（有量過的舒服範圍，否則預設的約 ±34°）除以 gain，存成範圍的原始向量（在 FORWARD 的傾斜角上合成），**隨校正訊息送給板子**，不用重新燒錄；只在送出的訊息裡，不存檔；不加 `--base-gain` 就恢復原本。gain 限制 0.4–2.0（低於 0.4 時底座的兩端會在身體後面，Path B 會淡出）。先寫測試：gain 1 完全不變、0.5 時範圍變兩倍且同樣轉動底座只動一半、量過的範圍也一起縮放、不合理的 gain 拒絕、原本的 dict 不被修改、`--mearm --base-gain 0.5` 送出的訊息等於 `encode(with_base_gain(...))` 且校正檔沒有被寫入。突變 7 種抓到 6 種；存活的是「合成向量用哪個傾斜角」，底座只用向量的方位角，所以是等價突變。實機確認還沒做（序列埠正被使用者的 run_demo_live 占用）。
 - **同一天移除**：使用者實機試過 `--base-gain 0.67`，覺得沒有什麼用，整個拿掉（`with_base_gain`、`--base-gain`、相關測試）。結論：底座的問題靠「舉起中慢慢跟」處理，不靠降低放大倍數。
+
+**開 PR #5 前後的全面檢查：沒測到的程式、過時的文件（2026-10-04）**：用覆蓋率工具實際量（C++：clang `-fprofile-instr-generate`；Python：coverage.py，跑 CI 的全部測試清單），不是用猜的。
+- C++ 幾乎全部 100%。沒跑到的：`shoulder_ctrl_at_pulse` 是**死碼**（C++、Python 都沒人用），已刪掉（韌體大小不變，本來就沒編進去）；`smooth_elbow_window` 最後一行只有肩膀值是 NaN 才會到，但肩膀值來自 `env.clamp()` 的整數，到不了，屬於防禦性程式碼，不加測試；`make_compiled_base_reach` 的「有量過底座範圍」分支取決於編譯時的資料（目前沒量過）。
+- Python 補了 4 處（每處都用突變確認測試真的抓得到）：
+  - `check_hardware_ready.check_boot_reached_app`（CLAUDE.md 要求每次都跑的 `--boot-check`）原本**完全沒有測試**：補 4 個（程式在跑→通過；bootloader 還在跑→繼續等；一直卡在 WeAct bootloader→失敗並印出 SWD 跳轉指令；卡在原廠 ROM bootloader 不能被誤判成程式在跑）。突變 4 種全抓。順便把它過時的說明（「只有拔插才有用」）改成現況。
+  - Path B「FORWARD 離 HANG 不到 20° 就拒絕」：原本有 FORWARD == HANG 的測試，但它是在更早的正規化步驟就出錯，**從來沒有走到 20° 的檢查**；補了 10° 的案例並比對錯誤訊息。
+  - `--mearm` 重新校正後，舊的 MuJoCo 對齊資料不能再用：補測試。
+  - `test_gen_calibration_header` 原本拿編譯進去的校正和**本機（gitignore）的校正檔**比，使用者 01:51 重新校正後就失敗，CI 裡又永遠跳過。改成從已提交的 golden 校正產生並檢查（數值不變，只改註解），CI 也會跑。
+- 刻意沒補的：互動式、只在實機上跑的工具主程式（`watch_*`、`servo_limit_finder.py`、`measure_*`／`capture_arm_motion` 的 `main()`）、舊的資料集轉換工具 `convert_epn612.py`、需要視窗的 `test_arm_kinematics.py`（所以不在 CI）。
+- 文件：README 伺服段落原本還寫著「底座固定 1500、stretch 模式、校正要重新產生並重新燒錄、燒錄後要斷電重開、極性還沒實機確認」——全部改成現況（底座看上臂旋轉、height_reach、校正經 UART 送、SWD 跳轉、極性都已實機確認）；工具表的 `run_demo_live`／`capture_arm_motion` 說明更新；`firmware/README.md` 補上四個伺服韌體目標和伺服版的說明；`run_demo_live.py --mearm` 的 help 和說明文字原本寫「不會自己做校正」，已更正。PRD 的路線圖（Phase 3/4 進度）沒有動。
