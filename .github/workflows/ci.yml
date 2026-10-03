@@ -75,6 +75,20 @@ jobs:
         # Real functional verification is check_hardware_ready.py, run
         # manually against actual hardware, not something CI can do.
 
+      # The real-MEArm servo outputs must stay OFF unless explicitly enabled
+      # (flashing phase3_control_loop just to view the MuJoCo model must not
+      # move the physical arm). Checked on the machine code itself: the default
+      # build must not reference TIM3's base address (0x40000400) at all, while
+      # the opt-in build must (so this check can't pass vacuously).
+      - name: Servo outputs are off by default and on when enabled
+        run: |
+          off=$(arm-none-eabi-objdump -d firmware/build/phase3_control_loop | grep -c "40000400" || true)
+          cmake -S firmware -B firmware/build-servos -DEDGENEURO_DRIVE_SERVOS=ON
+          cmake --build firmware/build-servos --target phase3_control_loop -j
+          on=$(arm-none-eabi-objdump -d firmware/build-servos/phase3_control_loop | grep -c "40000400" || true)
+          echo "TIM3 base references: default=$off, servos-on=$on"
+          test "$off" -eq 0 && test "$on" -gt 0
+
   python-headless-tests:
     name: Python tests (headless, tools/mujoco_bridge)
     runs-on: ubuntu-latest
@@ -120,7 +134,19 @@ jobs:
           python3 test_serial_parsing.py
           python3 test_run_demo_live_integration.py
           python3 test_emg_calibration_logging.py
+          python3 test_calibrate_mearm_alignment.py
+          python3 test_mearm_direction.py
+          python3 test_run_mearm_preview.py
           python3 test_run_demo_live_health.py
+          python3 test_mearm_calibration_link.py
+          python3 test_constants_consistency.py
+          python3 test_linkage_golden.py
+          python3 test_pathb_golden.py
+          python3 test_mearm_pulse_map.py
+          python3 test_mearm_real.py
+          python3 test_real_golden.py
+          python3 test_gen_calibration_header.py
+          python3 test_view_mearm.py
           python3 test_imu_to_mujoco.py
           python3 test_arm_workspace.py
           python3 test_grip_kinematics.py --headless
@@ -135,9 +161,15 @@ jobs:
         working-directory: tools
         run: |
           python3 test_usb_serial_port.py
+          python3 test_servo_pose_4ch.py
+          python3 test_measure_linkage_region.py
+          python3 test_gen_mearm_envelope.py
+          python3 test_measure_servo_angles.py
           python3 test_sensor_health.py
           python3 test_check_hardware_ready.py
           python3 test_watch_imu_raw.py
+          python3 test_capture_arm_motion.py
+          python3 test_measure_servo_response.py
 
       # test_grasp_coverage.py's own sys.exit(1) for the known-DROPPED
       # poses is intentionally not gated on (see the comment above) -- but

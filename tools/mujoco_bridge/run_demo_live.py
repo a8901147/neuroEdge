@@ -48,6 +48,7 @@ import serial
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "arm_hand_scene.xml"
+MEARM_SCENE_XML = REPO_ROOT / "tools" / "mujoco_bridge" / "mearm_scene.xml"
 
 # See usb_serial_port.py's own docstring for why this is a shared module
 # instead of a copy per script (2026-09-12 -- this file's own copy was the
@@ -1138,8 +1139,71 @@ def save_calibration_fields(path, fields):
         json.dump(data, f, indent=2)
 
 
+# MeArm actuator ctrlrange, copied from mearm_scene.xml's <actuator> block
+# (see that file's own header comment: these are MeArmPilot's own measured
+# numbers, a different physical unit, not this project's jin-hua clone --
+# a reasonable stand-in for a PREVIEW tool, not a geometrically accurate
+# twin of this project's own arm).
+MEARM_BASE_CTRL_RANGE = (-1.08210414, 1.08210414)
+MEARM_SHOULDER_CTRL_RANGE = (-0.141261412, 0.898057932)
+MEARM_ELBOW_CTRL_RANGE = (0.994603031, 2.61715444)
+MEARM_WAIT_HINT_SECONDS = 5.0   # first "still waiting for the upper-arm IMU vector" hint in --mearm
+# --mearm refuses to start on faulty sensor data (tools/sensor_health.py; SESSION_LOG 2026-09-28): it keeps checking and
+# starts by itself once both IMUs are healthy. None = wait as long as it takes; tests set a limit.
+MEARM_HEALTH_PREFLIGHT_MAX_S = None
+MEARM_HEALTH_REPEAT_WARNING_S = 3.0
+MEARM_CLAW_CTRL_RANGE = (0.13962634, 1.78023584)
+
+
+def rescale(value, in_lo, in_hi, out_lo, out_hi):
+    """Linearly rescales value from [in_lo, in_hi] to [out_lo, out_hi],
+    clamping first -- the Python-side equivalent of firmware's
+    ServoAngleMap (include/edgeneuro/control/servo_angle_map.hpp), used
+    here instead of that C++ class only because this is a host-side
+    script, not because the logic differs."""
+    clamped = clamp(value, in_lo, in_hi)
+    t = (clamped - in_lo) / (in_hi - in_lo)
+    return out_lo + t * (out_hi - out_lo)
+
+
+def apply_anchor_map(anchors, x, out_lo, out_hi):
+    """Piecewise-linear map through MEASURED (x, y) anchor points, clamped
+    to [out_lo, out_hi] (either order). x is a decoded sensor value (e.g.
+    pitch_equiv in radians), y is the MeArm model ctrl that value should
+    produce -- both captured together by calibrate_mearm_alignment.py while
+    the user holds a real pose that matches a known model pose, so polarity,
+    range and center offset all come from data instead of being assumed
+    (the full-anatomical-ROM rescale() this replaces compressed a ~90deg
+    real arm raise into ~14deg of model motion).
+
+    Needs >=2 anchors with distinct x (sorted internally, so caller order
+    doesn't matter). Between anchors it interpolates; outside them it
+    extrapolates along the nearest end segment until the clamp -- with 3
+    anchors (e.g. RIGHT/HANG/LEFT) each side gets its own slope, which is
+    what handles a decode that's asymmetric left vs. right (real hardware,
+    2026-09-13: RIGHT_TWIST decoded to roll -0.63 rad vs. LEFT_TWIST's
+    +1.20)."""
+    pts = sorted((float(a), float(b)) for a, b in anchors)
+    if len(pts) < 2:
+        raise ValueError("apply_anchor_map needs at least 2 anchors")
+    for (xa, _), (xb, _) in zip(pts, pts[1:]):
+        if xb - xa < 1e-6:
+            raise ValueError(f"anchors must have distinct x values (got {xa} and {xb})")
+    if x <= pts[0][0]:
+        (xa, ya), (xb, yb) = pts[0], pts[1]
+    elif x >= pts[-1][0]:
+        (xa, ya), (xb, yb) = pts[-2], pts[-1]
+    else:
+        for i in range(len(pts) - 1):
+            if pts[i][0] <= x <= pts[i + 1][0]:
+                (xa, ya), (xb, yb) = pts[i], pts[i + 1]
+                break
+    y = ya + (x - xa) * (yb - ya) / (xb - xa)
+    return clamp(y, min(out_lo, out_hi), max(out_lo, out_hi))
+
+
 # Automatic sensor-health checks (tools/sensor_health.py; SESSION_LOG 2026-09-28): after a day lost to loose IMU wiring
-# mistaken for algorithm bugs, the live path refuses to start on faulty sensor data and warn loudly when a sensor fails
+# mistaken for algorithm bugs, both paths refuse to start on faulty sensor data and warn loudly when a sensor fails
 # mid-session. None = wait as long as it takes (tests set a limit).
 HEALTH_PREFLIGHT_MAX_S = None
 HEALTH_REPEAT_WARNING_S = 3.0
@@ -1175,6 +1239,574 @@ def wait_until_sensors_healthy(latest, ignore=(), max_s=None, repeat_s=None, pre
         time.sleep(0.002)
 
 
+def apply_emg_threshold(args, ser, latest):
+    """Gives the board its EMG grip threshold: --skip-emg-calibration sends the one saved in --calibration-file, otherwise
+    the interactive relax/clench calibration runs and its result is sent and saved. Shared by the humanoid path (moved
+    here verbatim from main(), 2026-10-03) and --mearm (which until then never sent one, so the firmware's built-in
+    fallback applied instead of the calibrated threshold)."""
+    if args.skip_emg_calibration:
+        saved = load_calibration_file(args.calibration_file)
+        if "emg_threshold" not in saved:
+            sys.exit(f"--skip-emg-calibration passed but no saved emg_threshold in "
+                      f"{args.calibration_file} -- run once without this flag first.")
+        emg_threshold = saved["emg_threshold"]
+        print(f"--skip-emg-calibration: loaded threshold={emg_threshold} from "
+              f"{args.calibration_file} (captured {saved.get('emg_threshold_captured_at', 'unknown time')}).")
+        send_emg_threshold(ser, emg_threshold)
+    else:
+        emg_threshold = calibrate_emg_threshold(ser, latest, interactive=True)
+        if emg_threshold is not None:
+            save_calibration_fields(args.calibration_file, {
+                "emg_threshold": emg_threshold,
+                "emg_threshold_captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            print(f"EMG threshold saved to {args.calibration_file} -- next run can pass "
+                  f"--skip-emg-calibration to reuse it instead of re-prompting.")
+
+
+# Record for RECORD_SECONDS but only average the last SETTLE_TAIL_SECONDS
+# -- same as log_raw_imu.py's record_pose()/average_tail(), and for the
+# same reason: the 3/2/1 countdown ending is not the same instant as
+# "the arm has actually finished moving and settled", especially for a
+# bigger reach like FORWARD_RAISE. An earlier version of this function
+# averaged the WHOLE window starting immediately after the countdown
+# (no settle margin at all) -- confirmed too short on real hardware
+# (2026-09-05): the person was still mid-motion when averaging started,
+# producing calibration readings measurably smaller/less-separated than
+# log_raw_imu.py's own captures of the same poses.
+#
+# RECORD_SECONDS/SETTLE_TAIL_SECONDS raised again (was 4.0/1.5, kept in
+# sync with log_raw_imu.py's own constants -- see that file's comment):
+# real data showed even the 1.5s "settled" tail was still drifting
+# internally for a deliberately EXAGGERATED calibration pose (PURE_DOWN's
+# az moved another -0.14 comparing the tail's own first half to its
+# second half) -- a big effortful reach can keep settling well past 2.5s
+# in, not just during an initial "moving" phase.
+RECORD_SECONDS = 6.0
+SETTLE_TAIL_SECONDS = 2.5
+
+def capture_window(latest, ignore=(), seconds=None, tail_seconds=None):
+    # (module level since 2026-10-03, shared by the humanoid path and --mearm; was a closure in main())
+    seconds = RECORD_SECONDS if seconds is None else seconds
+    tail_seconds = SETTLE_TAIL_SECONDS if tail_seconds is None else tail_seconds
+    # Prints raw_shoulder every ~0.5s during the recording (added
+    # 2026-09-05): a real debugging session had no way to tell "the arm
+    # really didn't move much during this capture" apart from "it moved
+    # plenty but got averaged/timed wrong" -- only the final settled
+    # value was ever visible. This makes the actual trajectory visible
+    # in the log itself, not just the end result.
+    samples = []  # (t, raw_shoulder, elbow)
+    t_start = time.monotonic()
+    deadline = t_start + seconds
+    last_print_t = -1.0
+    while time.monotonic() < deadline:
+        raw = latest.snapshot_shoulder_raw()
+        # 2026-09-28: a reading no live sensor can produce voids this recording (a frozen value LOOKS valid -- the
+        # 2026-09-27 calibration saved exactly that): warn, wait for healthy sensors, then record this pose again.
+        _bad = sensor_health.implausible_problems(raw, latest.snapshot_elbow_raw(), ignore=ignore)
+        if _bad:
+            print("\n" + sensor_health.format_warning(sensor_health.Report(False, _bad))
+                  + "\n   這次錄製作廢,感測器恢復後會自動重錄這個姿勢。")
+            wait_until_sensors_healthy(latest, ignore=ignore)
+            print("  感測器恢復,重錄這個姿勢——請維持姿勢。")
+            samples = []
+            t_start = time.monotonic()
+            deadline = t_start + seconds
+            last_print_t = -1.0
+            continue
+        if raw[0] is not None:
+            t = time.monotonic() - t_start
+            samples.append((t, raw, latest.snapshot()[3]))
+            if t - last_print_t >= 0.5:
+                print(f"    t={t:4.1f}s raw_shoulder=({raw[0]:+.3f},{raw[1]:+.3f},{raw[2]:+.3f})")
+                last_print_t = t
+        time.sleep(0.02)
+    t_max = samples[-1][0]
+    tail = [s for s in samples if s[0] >= t_max - tail_seconds]
+    if not tail:
+        tail = samples[-5:]
+    n = len(tail)
+    raw_avg = (
+        sum(s[1][0] for s in tail) / n,
+        sum(s[1][1] for s in tail) / n,
+        sum(s[1][2] for s in tail) / n,
+    )
+    elbow_avg = sum(s[2] for s in tail) / n
+
+    # Warns (2026-09-05) if the tail window itself still shows real
+    # drift -- see RECORD_SECONDS's comment above for why a big
+    # effortful pose can still be mid-settle this far in. Printed only,
+    # not an automatic retry (unlike MIN_CALIBRATION_TILT_DEG's guard
+    # below) -- read it and judge whether to redo with more hold time.
+    if len(tail) >= 4:
+        t_mid = (tail[0][0] + tail[-1][0]) / 2.0
+        first_half = [s[1] for s in tail if s[0] < t_mid]
+        second_half = [s[1] for s in tail if s[0] >= t_mid]
+        if first_half and second_half:
+            fh = [sum(v[i] for v in first_half) / len(first_half) for i in range(3)]
+            sh = [sum(v[i] for v in second_half) / len(second_half) for i in range(3)]
+            drift = max(abs(sh[i] - fh[i]) for i in range(3))
+            if drift > 0.05:
+                print(f"  警告:這段錄製的『穩定期』內部,shoulder raw 還在漂移"
+                      f"(前半段 vs 後半段最大差異 {drift:.3f}g)——這個姿勢可能還沒真的定住,"
+                      f"考慮重錄、保持動作更久再結束。")
+
+    return raw_avg, elbow_avg
+
+# Interactive per-pose calibration -- press Enter when actually in
+# position, then a visible 3/2/1 countdown before the capture window
+# starts, same pattern as log_raw_imu.py's proven interactive flow.
+# The earlier version of this calibration just printed an instruction
+# and slept a fixed 2s regardless of whether the person was actually
+# ready -- with no confirmation step, a slow transition (or a chat-
+# paced back-and-forth) meant the capture window could start before
+# the arm ever got there, silently baking a wrong reading into the
+# whole session's calibration basis.
+# min_tilt_deg/ref_raw: automatic retry guard against a too-small
+# calibration pose, added 2026-09-05 after DOWN/LEFT_A came out at
+# 1.8-9.2deg from BASELINE four separate real-hardware attempts in a
+# row despite the instruction already saying "exaggerate this" --
+# relying on the person to notice the printed tilt themselves and
+# manually redo clearly wasn't reliable enough. Loops the SAME prompt
+# instead of proceeding with an almost-degenerate basis (see the
+# comment above this function's call sites for why that basis
+# amplifies ordinary hand-tremor noise into large, unstable output).
+def calibrate_pose(latest, instruction, ref_raw=None, min_tilt_deg=None, ignore=()):
+    # (module level since 2026-10-03, shared by the humanoid path and --mearm; was a closure in main())
+    while True:
+        print(instruction)
+        print("準備好後按 Enter。")
+        input()
+        print(f"3 秒後開始 -- 請保持住直到錄製結束(共 {RECORD_SECONDS:.0f} 秒,前段是移動時間,"
+              f"只有最後 {SETTLE_TAIL_SECONDS:.1f} 秒會拿來平均)。")
+        for n in (3, 2, 1):
+            print(f"  {n}...", flush=True)
+            time.sleep(1.0)
+        print("開始錄製!請維持姿勢。")
+        result = capture_window(latest, ignore)
+        if ref_raw is None or min_tilt_deg is None:
+            return result
+        raw, _ = result
+        tilt_deg = calibration_tilt_deg(ref_raw, raw)
+        if tilt_deg >= min_tilt_deg:
+            print(f"  角度足夠(tilt={tilt_deg:.1f}deg >= {min_tilt_deg:.0f}deg),採用這次錄製。\n")
+            return result
+        print(f"  角度太小(tilt={tilt_deg:.1f}deg,需要 >= {min_tilt_deg:.0f}deg)——"
+              f"這個角度離基準點太近,校正基底會不穩定,請重來一次,這次動作要更誇張。\n")
+
+
+CAL_CONFIRM_TIMEOUT_S = 4.0   # the board's diag line comes once a second
+CAL_SEND_ATTEMPTS = 3     # resends only for a message damaged on the way (cal_malformed), never for a refused one
+
+# Minimum tilt of FORWARD/LEFT_TWIST/RIGHT_TWIST from BASELINE (moved out of main(), 2026-10-03): comfortably above real
+# hand-tremor-scale noise (measured elsewhere in this project at a few degrees) and still well within a real shoulder's
+# comfortable ROM in either direction.
+MIN_CALIBRATION_TILT_DEG = 20.0
+
+
+def _diag_int(text, key):
+    m = re.search(rf"\b{key}=(\d+)", text or "")
+    return int(m.group(1)) if m else None
+
+
+def send_calibration_to_board(ser, latest, saved, timeout_s=None):
+    """Sends the arm calibration to phase3_control_loop over UART (mearm_calibration_link; 2026-10-03, the user's
+    choice "B": the real arm uses it at once, no re-flash) and waits for the board's diag line to confirm it (cal_applied
+    goes up). Never fatal: a board that does not confirm (servos-off build, older firmware) keeps its compiled-in
+    calibration, and that is said plainly. Returns True when confirmed."""
+    import mearm_calibration_link
+    timeout_s = CAL_CONFIRM_TIMEOUT_S if timeout_s is None else timeout_s
+    before = _diag_int(getattr(latest, "last_diag_text", None), "cal_applied")
+    before_rej = _diag_int(getattr(latest, "last_diag_text", None), "cal_rejected") or 0
+    before_mal = _diag_int(getattr(latest, "last_diag_text", None), "cal_malformed") or 0
+    for attempt in range(1, CAL_SEND_ATTEMPTS + 1):
+        mearm_calibration_link.send(ser, saved)
+        deadline = time.monotonic() + timeout_s
+        damaged = False
+        while time.monotonic() < deadline:
+            text = getattr(latest, "last_diag_text", None)
+            applied = _diag_int(text, "cal_applied")
+            if applied is not None and applied > (before or 0):
+                print(f"校正已傳給板子，板子已套用（captured {saved.get('captured_at', 'unknown time')}）。")
+                return True
+            if (_diag_int(text, "cal_rejected") or 0) > before_rej:
+                print("⚠ 板子拒絕了這份校正（內容不對），實體手臂沿用原本的校正。")
+                return False
+            malformed = _diag_int(text, "cal_malformed") or 0
+            if malformed > before_mal:
+                before_mal, damaged = malformed, True       # a byte lost on the way (2026-10-04): send it again
+                break
+            time.sleep(0.05)
+        if not damaged:
+            print("⚠ 板子沒有確認收到校正（不是伺服版韌體，或韌體太舊？）——實體手臂沿用原本的校正。")
+            return False
+        if attempt < CAL_SEND_ATTEMPTS:
+            print(f"校正傳輸途中掉了字，重傳一次（第 {attempt + 1} 次）……")
+    print(f"⚠ 校正傳了 {CAL_SEND_ATTEMPTS} 次都在途中損壞（序列線接觸？），實體手臂沿用原本的校正。")
+    return False
+
+
+def capture_calibration_poses(latest, ignore=()):
+    """The four calibration poses, interactively (calibrate_pose), as the dict saved in shoulder_calibration.json. The
+    same prompts as the humanoid path (2026-10-03: shared with --mearm)."""
+    baseline_raw, zero_elbow = calibrate_pose(
+        latest, "Calibrating shoulder -- BASELINE: 請把手臂自然垂下,手肘打直。", ignore=ignore)
+    forward_raw, _ = calibrate_pose(
+        latest, "FORWARD: 先回到 BASELINE(垂下),然後手肘打直,手臂往前伸直到底,手腕不要轉。",
+        ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG, ignore=ignore)
+    left_twist_raw, _ = calibrate_pose(
+        latest, "LEFT_TWIST: 先回到 BASELINE(垂下),然後手肘打直,手臂往左甩到底,同時大拇指轉朝上。",
+        ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG, ignore=ignore)
+    right_twist_raw, _ = calibrate_pose(
+        latest, "RIGHT_TWIST(驗證用,不會進入校正基底): 先回到 BASELINE(垂下),然後手肘打直,"
+                "手臂往右甩到底,同時大拇指轉朝下。",
+        ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG, ignore=ignore)
+    return {"captured_at": time.strftime("%Y-%m-%d %H:%M:%S"), "baseline_raw": list(baseline_raw),
+            "forward_raw": list(forward_raw), "left_twist_raw": list(left_twist_raw),
+            "right_twist_raw": list(right_twist_raw), "zero_elbow": zero_elbow}
+
+
+def run_mearm_preview(args):
+    """--mearm's entry point -- a deliberately SIMPLIFIED live preview
+    against mearm_scene.xml, added 2026-09-24 alongside (not instead of)
+    main()'s existing --humanoid (default) path, which this function
+    never calls into or modifies. See SESSION_LOG.md's 2026-09-24 entry
+    for why this exists (a MuJoCo preview decoupled from the real MEArm's
+    power/wiring flakiness) and why it's simplified rather than reusing
+    100% of main()'s pipeline: elbow's real per-tick value turned out to
+    be simple to replicate exactly (firmware's own elbow field, EMA'd,
+    minus a calibration-time zero_elbow offset -- see main()'s own
+    target_elbow_ctrl line), but shoulder's real value goes through a
+    whole calibration-basis + oblique-decompose pipeline that lives
+    inextricably inside main()'s ~1800-line body. Reimplementing that
+    exactly here risked introducing a subtle divergence between two
+    copies of the same math with no live hardware available this session
+    to verify either one against -- this function DELIBERATELY skips
+    main()'s EMA smoothing and rate-limiting instead (acceptable for a
+    preview tool; makes the arm visibly jumpier tick-to-tick than the
+    real polished pipeline, not wrong-direction-wrong) and reuses
+    oblique_decompose_scaled()/ELBOW_OFFSET/zero_elbow verbatim (the same
+    functions/constants main() itself uses, not reimplemented copies) so
+    the two paths can't silently drift apart on that shared math.
+
+    Always requires a previously-saved calibration (--calibration-file) --
+    does not run the interactive BASELINE/FORWARD/LEFT_TWIST/EMG prompts
+    itself. Run this script once WITHOUT --mearm first (the default
+    --humanoid path) to produce one, then reuse it here."""
+    # 2026-10-03: without --skip-calibration the four poses are captured here (the humanoid path's own
+    # calibrate_pose), once the sensors are healthy; with it, the saved calibration is required up front.
+    skip_calibration = getattr(args, "skip_calibration", True)
+    if skip_calibration and not args.calibration_file.exists():
+        sys.exit(f"--mearm --skip-calibration needs a previously-saved calibration, but "
+                 f"{args.calibration_file} doesn't exist -- run without --skip-calibration to capture one.")
+    def _mearm_calibration(saved):
+        """(pathb_cal, shoulder_basis, baseline_raw, forward_raw, zero_elbow, alignment) from a calibration dict -- exits
+        with the reason if it is unusable (2026-10-03: a function so a fresh capture can be built the same way)."""
+        for key in ("baseline_raw", "forward_raw", "left_twist_raw", "zero_elbow"):
+            if key not in saved:
+                sys.exit(f"--mearm: {args.calibration_file} is missing '{key}' -- "
+                          f"re-run without --mearm to (re)capture a full calibration.")
+        baseline_raw = tuple(saved["baseline_raw"])
+        forward_raw = tuple(saved["forward_raw"])
+        left_twist_raw = tuple(saved["left_twist_raw"])
+        zero_elbow = saved["zero_elbow"]
+        shoulder_basis = make_oblique_basis(baseline_raw, forward_raw, left_twist_raw)
+        print(f"--mearm: loaded calibration from {args.calibration_file} "
+              f"(captured {saved.get('captured_at', 'unknown time')}).")
+
+        alignment = saved.get("mearm_alignment")
+        pathb_cal = None
+        if alignment is not None:
+            missing = [k for k in ("decode", "elbow_anchors", "claw_open_ctrl", "claw_closed_ctrl", "captures")
+                       if k not in alignment]
+            if missing or alignment.get("decode") != "spherical":
+                sys.exit(f"--mearm: 'mearm_alignment' in {args.calibration_file} is from an older version of "
+                          f"the alignment tool (missing {missing or 'decode=spherical'}) -- re-run "
+                          f"calibrate_mearm_alignment.py.")
+            # Built from THIS alignment run's own captures, not the humanoid path's
+            # baseline_raw/forward_raw/... keys, which the alignment tool never
+            # touches. Same spherical decode as the offline default.
+            cap = alignment["captures"]
+            try:
+                pathb_cal = mearm_pathb.Calibration(cap["hang_raw"], cap["forward_raw"], cap["left_twist_raw"],
+                                                    cap["right_twist_raw"], cap["hang_elbow"])
+            except (KeyError, ValueError) as exc:
+                sys.exit(f"--mearm: the saved alignment's captures are unusable ({exc}) -- re-run "
+                          f"calibrate_mearm_alignment.py.")
+            baseline_raw, forward_raw = tuple(cap["hang_raw"]), tuple(cap["forward_raw"])   # for the live off-HANG/FORWARD print
+            print(f"--mearm: using pose-anchored alignment (captured {alignment.get('captured_at', 'unknown')}).")
+        else:
+            # No interactive alignment yet: use Path B's offline default mapping
+            # (mearm_pathb.py -- spherical tilt/azimuth decode straight from THIS
+            # file's saved vectors, read-only). Big directions only; fine detail
+            # comes from calibrate_mearm_alignment.py at the hardware. This
+            # replaces the earlier full-anatomical-ROM rescale fallback, which
+            # compressed a ~90deg arm raise into ~14deg of model motion.
+            try:
+                pathb_cal = mearm_pathb.make_calibration(saved)
+            except (KeyError, ValueError) as exc:
+                sys.exit(f"--mearm: cannot build the offline Path B mapping from {args.calibration_file}: "
+                          f"{exc} -- re-run this script once without --mearm to recalibrate.")
+            print("--mearm: no interactive alignment saved -- using Path B's offline default mapping "
+                  "(big directions only). For finer detail run: "
+                  "mjpython tools/mujoco_bridge/calibrate_mearm_alignment.py")
+        return pathb_cal, shoulder_basis, baseline_raw, forward_raw, zero_elbow, alignment
+
+    import mearm_pathb  # linkage projection is applied on BOTH the aligned and default paths
+    pathb_cal = shoulder_basis = baseline_raw = forward_raw = zero_elbow = alignment = None
+    if skip_calibration:
+        pathb_cal, shoulder_basis, baseline_raw, forward_raw, zero_elbow, alignment = _mearm_calibration(
+            load_calibration_file(args.calibration_file))
+
+    if not MEARM_SCENE_XML.exists():
+        sys.exit(f"MeArm scene not found: {MEARM_SCENE_XML}")
+
+    port = args.port if args.port else autodetect_port(prefer_cp2102=args.cp2102)
+    ser = serial.Serial(port, args.baud, timeout=1)
+    print(f"--mearm: listening on {port} @ {args.baud} baud -- Ctrl+C to stop")
+
+    latest = LatestSample()
+    reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
+    reader.start()
+
+    # Prints a hint instead of hanging silently forever: this wait only ends
+    # for firmware that emits the live tick line (phase3_control_loop) --
+    # servo_pwm_4ch_test/servo_limit_finder_4ch/etc. never do, and a
+    # silent hang there looks identical to "the script is broken" (hit
+    # twice on real hardware, 2026-09-24).
+    wait_started = time.monotonic()
+    next_hint_at = 5.0
+    while not latest.is_ready():
+        time.sleep(0.05)
+        if time.monotonic() - wait_started >= next_hint_at:
+            print(f"--mearm: still no live data after {next_hint_at:.0f}s -- is "
+                  f"phase3_control_loop the firmware currently flashed (not a servo test "
+                  f"firmware), and was the board power-cycled after flashing?")
+            next_hint_at += 10.0
+    # is_ready() only guarantees the tick line's core fields (shoulder_pitch/
+    # shoulder_roll/elbow/grip) have arrived at least once -- shoulder_raw_ax/
+    # ay/az are a SEPARATE regex match (SHOULDER_RAW_RE) that can lag a tick
+    # or two behind, and firmware reports a literal (0.0, 0.0, 0.0) before its
+    # own first real IMU read completes (not Python None -- see LatestSample's
+    # own comment: raw fields are None only until the FIRST line carrying them
+    # arrives at all, then hold whatever value that line had). main()'s
+    # --humanoid path never hits this because its interactive calibration
+    # prompts (several seconds of holding BASELINE) incidentally guarantee
+    # real data has arrived by the time its own oblique_decompose_scaled call
+    # runs -- this --mearm path skips that, so it needs an explicit wait
+    # instead (found the hard way: a real ZeroDivisionError in
+    # oblique_decompose_scaled -> _normalize3 on a real run, the exact
+    # zero-vector case its own docstring warns about).
+    raw_wait_started = time.monotonic()
+    next_raw_hint_at = MEARM_WAIT_HINT_SECONDS
+    while True:
+        raw = latest.snapshot_shoulder_raw()
+        if raw[0] is not None and math.hypot(*raw) > 1e-6:
+            break
+        time.sleep(0.05)
+        if time.monotonic() - raw_wait_started >= next_raw_hint_at:
+            print(f"--mearm: tick lines arrive but the upper-arm IMU vector is missing or all-zero "
+                  f"after {next_raw_hint_at:.0f}s -- is the shoulder MPU6050 (0x68) connected and answering?")
+            next_raw_hint_at += 2 * MEARM_WAIT_HINT_SECONDS
+
+    # Automatic sensor-health check BEFORE anything is shown (a wiring fault must never look like an algorithm problem):
+    # wait, saying what is wrong, until both IMUs are healthy.
+    import sensor_health
+    health, poller = wait_until_sensors_healthy(latest, max_s=MEARM_HEALTH_PREFLIGHT_MAX_S,
+                                                repeat_s=MEARM_HEALTH_REPEAT_WARNING_S, prefix="--mearm: ")
+
+    # 2026-10-03 (the user's design): start every session from the same place. The firmware keeps driving the real
+    # servos whether or not this script runs, so they can be anywhere; once the person has let the arm hang, R walks
+    # every servo back to the start pose (base/shoulder/elbow 1500, claw 1300 = open) and the arm is followed from there.
+    # EMG grip threshold (2026-10-03): the same as the humanoid path -- before R, so the claw responds properly at once
+    apply_emg_threshold(args, ser, latest)
+
+    # The arm calibration (2026-10-03): captured now unless --skip-calibration, then SENT to the board -- the real arm
+    # uses it at once, no re-flash -- and confirmed from the board's diag line. Before R.
+    if not skip_calibration:
+        save_calibration_fields(args.calibration_file, capture_calibration_poses(latest))
+        print(f"Calibration saved to {args.calibration_file} -- next run can pass --skip-calibration to reuse it.")
+        fresh = load_calibration_file(args.calibration_file)
+        if fresh.get("mearm_alignment") is not None:
+            print("--mearm: a fresh calibration was just captured; the saved MuJoCo alignment belongs to an earlier "
+                  "mount and is not used this run.")
+            fresh = {k: v for k, v in fresh.items() if k != "mearm_alignment"}
+        pathb_cal, shoulder_basis, baseline_raw, forward_raw, zero_elbow, alignment = _mearm_calibration(fresh)
+    send_calibration_to_board(ser, latest, load_calibration_file(args.calibration_file))
+
+    input("\n--mearm: 請先把手臂往下垂擺好，按 Enter 後伺服會回到起點：")
+    ser.write(b"R\n")
+    print("--mearm: 伺服回到起點中（慢慢移動），之後會跟著你的手臂。")
+
+    model = mujoco.MjModel.from_xml_path(str(MEARM_SCENE_XML))
+    data = mujoco.MjData(model)
+    base_id = model.actuator("base").id
+    shoulder_id = model.actuator("shoulder").id
+    elbow_id = model.actuator("elbow").id
+    claw_id = model.actuator("claw").id
+
+    step_count = 0
+    was_stale = False
+    sensor_fault = False
+    next_fault_warning_at = 0.0
+    hw_warnings = sensor_health.WarningPrinter()
+    try:
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            while viewer.is_running():
+                step_start = time.time()
+
+                # Same two checks the --humanoid loop makes (every ~20ms is plenty):
+                # an unplugged adapter must stop the run with a message, and a silent
+                # firmware must be flagged instead of the model freezing unexplained.
+                if step_count % 20 == 0:
+                    is_stale, port_error = latest.status()
+                    if port_error is not None:
+                        sys.exit(f"\nserial port failed: {port_error}\n"
+                                 f"(the USB-serial adapter was likely unplugged -- restart after reconnecting)")
+                    if is_stale and not was_stale:
+                        print(f"\n[STALE] no valid line from the STM32 in >{STALE_AFTER_SECONDS}s -- holding "
+                              f"the last pose (port still open: the board/firmware went quiet, not a USB unplug).")
+                    elif was_stale and not is_stale:
+                        print(f"[OK] data flowing again after {latest.seconds_since_update():.1f}s gap")
+                    was_stale = is_stale
+
+                # Sensor health, every step: on a fault the model HOLDS its last good pose (it neither follows bad data nor
+                # jumps to rest) and says so loudly; it resumes by itself when the data is good again.
+                now_m = time.monotonic()
+                poller.poll(now_m)
+                if step_count % 20 == 0:
+                    report = health.report(now_m)
+                    if not report.ok and not sensor_fault:
+                        sensor_fault = True
+                        print("\n" + sensor_health.format_warning(report) + "\n   (模型停在最後一個正常的姿勢)")
+                        next_fault_warning_at = now_m + MEARM_HEALTH_REPEAT_WARNING_S
+                    elif not report.ok and now_m >= next_fault_warning_at:
+                        print(sensor_health.format_warning(report))
+                        next_fault_warning_at = now_m + MEARM_HEALTH_REPEAT_WARNING_S
+                    elif report.ok and sensor_fault:
+                        sensor_fault = False
+                        print("✓ 感測器恢復正常,模型重新跟隨手臂。")
+                    hw_text = hw_warnings.update(report, now_m)     # drop-outs / resets the firmware saw: tell, don't hold
+                    if hw_text:
+                        print("\n" + hw_text)
+                # ...and the instant per-sample guard: a reading no live sensor can produce is never applied, even in the
+                # fraction of a second before the monitor has seen enough of them to raise the loud warning above.
+                if not sensor_fault and not (sensor_health.plausible(latest.snapshot_shoulder_raw())
+                                             and sensor_health.plausible(latest.snapshot_elbow_raw())):
+                    hold_this_step = True
+                else:
+                    hold_this_step = sensor_fault
+                if hold_this_step:
+                    step_count += 1
+                    mujoco.mj_step(model, data)
+                    viewer.sync()
+                    wait = model.opt.timestep - (time.time() - step_start)
+                    if wait > 0:
+                        time.sleep(wait)
+                    continue
+
+                grip, _old_shoulder_pitch, _old_shoulder_roll, elbow = latest.snapshot()
+                shoulder_raw = latest.snapshot_shoulder_raw()
+
+                # Same zero-vector guard as the wait loop above (defense in
+                # depth -- e.g. a mid-session I2C bus recovery could in
+                # principle report a momentary zero reading again).
+                if shoulder_raw[0] is not None and math.hypot(*shoulder_raw) > 1e-6:
+                    pitch_equiv, roll_equiv = oblique_decompose_scaled(shoulder_basis, shoulder_raw)
+                else:
+                    pitch_equiv, roll_equiv = 0.0, 0.0
+                # Same sign convention as main()'s target_pitch_ctrl/target_roll_ctrl
+                # (see that code's own comment): pitch negated, roll not.
+                shoulder_pitch = clamp(-pitch_equiv, *SHOULDER_PITCH_RANGE)
+                shoulder_roll = clamp(roll_equiv, *SHOULDER_ROLL_RANGE)
+                elbow_ctrl = clamp(ELBOW_OFFSET - (elbow - zero_elbow), *ELBOW_RANGE)
+
+                base_ctrl = rescale(shoulder_roll, *SHOULDER_ROLL_RANGE, *MEARM_BASE_CTRL_RANGE)
+                shoulder_ctrl = rescale(shoulder_pitch, *SHOULDER_PITCH_RANGE, *MEARM_SHOULDER_CTRL_RANGE)
+                # Reversed polarity vs. base/shoulder/claw's rescale calls below
+                # -- MEARM_ELBOW_CTRL_RANGE's low end (0.9946) is this model's
+                # EXTENDED/reaching-out elbow pose and its high end (2.617) is
+                # FOLDED-in, confirmed 2026-09-24 via a real settle-and-measure
+                # test (commanded each end, read back the tcp site's actual
+                # world position -- low end measured further from the base,
+                # high end measured closer). elbow_ctrl's own low end
+                # (ELBOW_RANGE[0]=-1.0472) is real elbow FLEXION (folded), so it
+                # must map to MEARM_ELBOW_CTRL_RANGE's HIGH (folded) end, not
+                # its low end -- swapped here, not in the range constants
+                # themselves, same pattern ServoAngleMap's own "reversed pulse
+                # polarity" test case documents in the firmware C++ version.
+                elbow_mearm_ctrl = rescale(elbow_ctrl, *ELBOW_RANGE,
+                                            MEARM_ELBOW_CTRL_RANGE[1], MEARM_ELBOW_CTRL_RANGE[0])
+                claw_ctrl = rescale(grip, 0.0, 1.0, *MEARM_CLAW_CTRL_RANGE)
+
+                # Measured anchors (calibrate_mearm_alignment.py) supersede the
+                # full-ROM rescale() guesses above whenever they exist -- the
+                # legacy lines stay only as the fallback for a calibration file
+                # that was never aligned. `elbow` here is the same firmware
+                # elbow reading the alignment captured (snapshot()[3]).
+                # Both the aligned and the default path go through mearm_pathb: same
+                # spherical decode, pole/behind fades and shoulder/elbow linkage
+                # projection. The alignment only supplies its own captures (the
+                # Calibration built above), the measured elbow anchors and the claw ends.
+                base_ctrl, shoulder_ctrl, elbow_mearm_ctrl = mearm_pathb.ctrl_from_sensors(
+                    pathb_cal, shoulder_raw, elbow,
+                    elbow_anchors=alignment["elbow_anchors"] if alignment is not None else None)
+                if alignment is not None:
+                    claw_ctrl = rescale(grip, 0.0, 1.0, alignment["claw_open_ctrl"], alignment["claw_closed_ctrl"])
+
+                data.ctrl[base_id] = base_ctrl
+                data.ctrl[shoulder_id] = shoulder_ctrl
+                data.ctrl[elbow_id] = elbow_mearm_ctrl
+                data.ctrl[claw_id] = claw_ctrl
+
+                # 2026-09-24: printed periodically (not every tick -- this loop
+                # runs at model.opt.timestep=1ms, would be unreadable) so the
+                # live numbers are actually visible while testing, not guessed
+                # at -- added after a real "shoulder doesn't lift" report with
+                # no way to tell whether shoulder_pitch itself wasn't moving
+                # (calibration/sensitivity issue) vs. it WAS moving but in the
+                # wrong direction (a polarity bug, see kShoulderPulseMap's own
+                # 2026-09-23 comment in phase3_control_loop_main.cpp -- the
+                # exact same open question, independently, on this Python path).
+                if step_count % 200 == 0:
+                    # Upper-arm IMU's raw gravity vector plus its angle from the
+                    # SAVED calibration's HANG (baseline_raw) and FORWARD
+                    # (forward_raw) poses -- a direct check of whether the
+                    # sensor is still mounted the way the calibration file
+                    # assumes: hold each pose and these two angles should read
+                    # near 0 for the matching pose (and ~73deg apart between
+                    # the two, per the saved file's own tilt). If they don't,
+                    # the mount/strap changed since calibration and every
+                    # decoded value above is unreliable until recalibrated.
+                    if shoulder_raw[0] is not None and math.hypot(*shoulder_raw) > 1e-6:
+                        tilt_hang = calibration_tilt_deg(baseline_raw, shoulder_raw)
+                        tilt_fwd = calibration_tilt_deg(forward_raw, shoulder_raw)
+                        if pathb_cal is not None:
+                            tilt_rad, az_rad = pathb_cal.decode(shoulder_raw)
+                            polar_txt = f" tilt={math.degrees(tilt_rad):4.0f}deg az={math.degrees(az_rad):+4.0f}deg"
+                        else:
+                            polar_txt = ""
+                        raw_txt = polar_txt + (f" | upperarm raw=({shoulder_raw[0]:+.2f},{shoulder_raw[1]:+.2f},"
+                                   f"{shoulder_raw[2]:+.2f}) off-HANG={tilt_hang:5.1f}deg "
+                                   f"off-FORWARD={tilt_fwd:5.1f}deg")
+                    else:
+                        raw_txt = ""
+                    print(f"shoulder_pitch={shoulder_pitch:+.3f} shoulder_roll={shoulder_roll:+.3f} "
+                          f"elbow_ctrl={elbow_ctrl:+.3f} grip={grip:.2f}  ->  mearm "
+                          f"base={base_ctrl:+.3f} shoulder={shoulder_ctrl:+.3f} "
+                          f"elbow={elbow_mearm_ctrl:+.3f} claw={claw_ctrl:+.3f}{raw_txt}")
+                step_count += 1
+
+                mujoco.mj_step(model, data)
+                viewer.sync()
+
+                time_until_next_step = model.opt.timestep - (time.time() - step_start)
+                if time_until_next_step > 0:
+                    time.sleep(time_until_next_step)
+    finally:
+        ser.close()   # (2026-10-03: the --mearm preview never closed its port; its reader thread outlived it)
+
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1190,6 +1822,16 @@ def main():
              "auto-detecting -- for when CP2102 is what's plugged in, not FT232RL.",
     )
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
+    parser.add_argument(
+        "--mearm", action="store_true",
+        help="preview against mearm_scene.xml (the physical MEArm digital twin) instead of "
+             "the humanoid arm+hand scene -- a SEPARATE, simplified code path (see "
+             "run_mearm_preview()'s own docstring for what's simplified and why), added "
+             "purely additively: this flag's absence (the default) runs the exact same "
+             "--humanoid behavior this script has always had, unchanged. Requires a "
+             "previously-saved --calibration-file (run once without --mearm first to "
+             "produce one) -- does not run the interactive calibration prompts itself.",
+    )
     parser.add_argument(
         "--log-file", default=None,
         help="also append all terminal output to this file (tee-style), for sessions too "
@@ -1243,6 +1885,14 @@ def main():
              "with no MyoWare connected at all, since there's no real signal to calibrate against.",
     )
     args = parser.parse_args()
+
+    # Branches to the separate, simplified --mearm path BEFORE any of the
+    # existing --humanoid (default) setup below runs -- see --mearm's own
+    # help text and run_mearm_preview()'s docstring. Everything from here
+    # to the end of main() is the ORIGINAL --humanoid behavior, untouched.
+    if args.mearm:
+        run_mearm_preview(args)
+        return
 
     VALID_OPTIONAL_SENSORS = {"shoulder", "elbow", "emg"}
     optional_sensors = {s.strip() for s in args.optional_sensors.split(",") if s.strip()}
@@ -1299,131 +1949,9 @@ def main():
     # drove this shoulder change), captured during the BASELINE hold
     # alongside the shoulder reading.
     #
-    # Record for RECORD_SECONDS but only average the last SETTLE_TAIL_SECONDS
-    # -- same as log_raw_imu.py's record_pose()/average_tail(), and for the
-    # same reason: the 3/2/1 countdown ending is not the same instant as
-    # "the arm has actually finished moving and settled", especially for a
-    # bigger reach like FORWARD_RAISE. An earlier version of this function
-    # averaged the WHOLE window starting immediately after the countdown
-    # (no settle margin at all) -- confirmed too short on real hardware
-    # (2026-09-05): the person was still mid-motion when averaging started,
-    # producing calibration readings measurably smaller/less-separated than
-    # log_raw_imu.py's own captures of the same poses.
-    #
-    # RECORD_SECONDS/SETTLE_TAIL_SECONDS raised again (was 4.0/1.5, kept in
-    # sync with log_raw_imu.py's own constants -- see that file's comment):
-    # real data showed even the 1.5s "settled" tail was still drifting
-    # internally for a deliberately EXAGGERATED calibration pose (PURE_DOWN's
-    # az moved another -0.14 comparing the tail's own first half to its
-    # second half) -- a big effortful reach can keep settling well past 2.5s
-    # in, not just during an initial "moving" phase.
-    RECORD_SECONDS = 6.0
-    SETTLE_TAIL_SECONDS = 2.5
-
-    def _capture_window(seconds=RECORD_SECONDS, tail_seconds=SETTLE_TAIL_SECONDS):
-        # Prints raw_shoulder every ~0.5s during the recording (added
-        # 2026-09-05): a real debugging session had no way to tell "the arm
-        # really didn't move much during this capture" apart from "it moved
-        # plenty but got averaged/timed wrong" -- only the final settled
-        # value was ever visible. This makes the actual trajectory visible
-        # in the log itself, not just the end result.
-        samples = []  # (t, raw_shoulder, elbow)
-        t_start = time.monotonic()
-        deadline = t_start + seconds
-        last_print_t = -1.0
-        while time.monotonic() < deadline:
-            raw = latest.snapshot_shoulder_raw()
-            # 2026-09-28: a reading no live sensor can produce voids this recording (a frozen value LOOKS valid -- the
-            # 2026-09-27 calibration saved exactly that): warn, wait for healthy sensors, then record this pose again.
-            _bad = sensor_health.implausible_problems(raw, latest.snapshot_elbow_raw(), ignore=health_ignore)
-            if _bad:
-                print("\n" + sensor_health.format_warning(sensor_health.Report(False, _bad))
-                      + "\n   這次錄製作廢,感測器恢復後會自動重錄這個姿勢。")
-                wait_until_sensors_healthy(latest, ignore=health_ignore)
-                print("  感測器恢復,重錄這個姿勢——請維持姿勢。")
-                samples = []
-                t_start = time.monotonic()
-                deadline = t_start + seconds
-                last_print_t = -1.0
-                continue
-            if raw[0] is not None:
-                t = time.monotonic() - t_start
-                samples.append((t, raw, latest.snapshot()[3]))
-                if t - last_print_t >= 0.5:
-                    print(f"    t={t:4.1f}s raw_shoulder=({raw[0]:+.3f},{raw[1]:+.3f},{raw[2]:+.3f})")
-                    last_print_t = t
-            time.sleep(0.02)
-        t_max = samples[-1][0]
-        tail = [s for s in samples if s[0] >= t_max - tail_seconds]
-        if not tail:
-            tail = samples[-5:]
-        n = len(tail)
-        raw_avg = (
-            sum(s[1][0] for s in tail) / n,
-            sum(s[1][1] for s in tail) / n,
-            sum(s[1][2] for s in tail) / n,
-        )
-        elbow_avg = sum(s[2] for s in tail) / n
-
-        # Warns (2026-09-05) if the tail window itself still shows real
-        # drift -- see RECORD_SECONDS's comment above for why a big
-        # effortful pose can still be mid-settle this far in. Printed only,
-        # not an automatic retry (unlike MIN_CALIBRATION_TILT_DEG's guard
-        # below) -- read it and judge whether to redo with more hold time.
-        if len(tail) >= 4:
-            t_mid = (tail[0][0] + tail[-1][0]) / 2.0
-            first_half = [s[1] for s in tail if s[0] < t_mid]
-            second_half = [s[1] for s in tail if s[0] >= t_mid]
-            if first_half and second_half:
-                fh = [sum(v[i] for v in first_half) / len(first_half) for i in range(3)]
-                sh = [sum(v[i] for v in second_half) / len(second_half) for i in range(3)]
-                drift = max(abs(sh[i] - fh[i]) for i in range(3))
-                if drift > 0.05:
-                    print(f"  警告:這段錄製的『穩定期』內部,shoulder raw 還在漂移"
-                          f"(前半段 vs 後半段最大差異 {drift:.3f}g)——這個姿勢可能還沒真的定住,"
-                          f"考慮重錄、保持動作更久再結束。")
-
-        return raw_avg, elbow_avg
-
-    # Interactive per-pose calibration -- press Enter when actually in
-    # position, then a visible 3/2/1 countdown before the capture window
-    # starts, same pattern as log_raw_imu.py's proven interactive flow.
-    # The earlier version of this calibration just printed an instruction
-    # and slept a fixed 2s regardless of whether the person was actually
-    # ready -- with no confirmation step, a slow transition (or a chat-
-    # paced back-and-forth) meant the capture window could start before
-    # the arm ever got there, silently baking a wrong reading into the
-    # whole session's calibration basis.
-    # min_tilt_deg/ref_raw: automatic retry guard against a too-small
-    # calibration pose, added 2026-09-05 after DOWN/LEFT_A came out at
-    # 1.8-9.2deg from BASELINE four separate real-hardware attempts in a
-    # row despite the instruction already saying "exaggerate this" --
-    # relying on the person to notice the printed tilt themselves and
-    # manually redo clearly wasn't reliable enough. Loops the SAME prompt
-    # instead of proceeding with an almost-degenerate basis (see the
-    # comment above this function's call sites for why that basis
-    # amplifies ordinary hand-tremor noise into large, unstable output).
     def _calibrate_pose(instruction, ref_raw=None, min_tilt_deg=None):
-        while True:
-            print(instruction)
-            print("準備好後按 Enter。")
-            input()
-            print(f"3 秒後開始 -- 請保持住直到錄製結束(共 {RECORD_SECONDS:.0f} 秒,前段是移動時間,"
-                  f"只有最後 {SETTLE_TAIL_SECONDS:.1f} 秒會拿來平均)。")
-            for n in (3, 2, 1):
-                print(f"  {n}...", flush=True)
-                time.sleep(1.0)
-            print("開始錄製!請維持姿勢。")
-            result = _capture_window()
-            if ref_raw is None or min_tilt_deg is None:
-                return result
-            raw, _ = result
-            tilt_deg = calibration_tilt_deg(ref_raw, raw)
-            if tilt_deg >= min_tilt_deg:
-                print(f"  角度足夠(tilt={tilt_deg:.1f}deg >= {min_tilt_deg:.0f}deg),採用這次錄製。\n")
-                return result
-            print(f"  角度太小(tilt={tilt_deg:.1f}deg,需要 >= {min_tilt_deg:.0f}deg)——"
-                  f"這個角度離基準點太近,校正基底會不穩定,請重來一次,這次動作要更誇張。\n")
+        # the shared module-level calibrate_pose (2026-10-03: moved out of main() so --mearm can use it too)
+        return calibrate_pose(latest, instruction, ref_raw, min_tilt_deg, ignore=health_ignore)
 
     while not latest.is_ready():
         time.sleep(0.05)
@@ -1472,24 +2000,8 @@ def main():
     # MyoWare gain trim pot gets touched.
     if "emg" in optional_sensors:
         print("emg 標記為選配,跳過 EMG 閾值校準。")
-    elif args.skip_emg_calibration:
-        saved = load_calibration_file(args.calibration_file)
-        if "emg_threshold" not in saved:
-            sys.exit(f"--skip-emg-calibration passed but no saved emg_threshold in "
-                      f"{args.calibration_file} -- run once without this flag first.")
-        emg_threshold = saved["emg_threshold"]
-        print(f"--skip-emg-calibration: loaded threshold={emg_threshold} from "
-              f"{args.calibration_file} (captured {saved.get('emg_threshold_captured_at', 'unknown time')}).")
-        send_emg_threshold(ser, emg_threshold)
     else:
-        emg_threshold = calibrate_emg_threshold(ser, latest, interactive=True)
-        if emg_threshold is not None:
-            save_calibration_fields(args.calibration_file, {
-                "emg_threshold": emg_threshold,
-                "emg_threshold_captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            })
-            print(f"EMG threshold saved to {args.calibration_file} -- next run can pass "
-                  f"--skip-emg-calibration to reuse it instead of re-prompting.")
+        apply_emg_threshold(args, ser, latest)
 
     # 2026-09-05, second pass: calibration baseline moved back to "arm
     # hangs at side" (see SHOULDER_PITCH_FORWARD_OFFSET's comment above).
@@ -1512,10 +2024,7 @@ def main():
     # "start from wherever you happen to be" produced an almost-degenerate
     # basis once; kept here even though FORWARD/LEFT_TWIST are big,
     # unambiguous motions less likely to suffer from it.
-    # 20deg minimum: comfortably above real hand-tremor-scale noise
-    # (measured elsewhere in this project at a few degrees) and still
-    # well within a real shoulder's comfortable ROM in either direction.
-    MIN_CALIBRATION_TILT_DEG = 20.0
+    # (MIN_CALIBRATION_TILT_DEG: module level since 2026-10-03, shared with --mearm.)
 
     # --skip-calibration (2026-09-05): re-doing all 4 poses every single
     # run got tedious once the pipeline itself was already trusted -- load
@@ -1576,6 +2085,12 @@ def main():
             })
             print(f"Calibration saved to {args.calibration_file} -- next run can pass "
                   f"--skip-calibration to reuse it instead of re-prompting.")
+
+    # 2026-10-03 (the user's choice "B"): the calibration also goes to the board, so a servos-ON phase3_control_loop
+    # (the real MEArm) uses the very calibration just loaded/captured -- no re-flash. Checks/sending only: how the
+    # humanoid arm is computed here is unchanged. Not with a deliberately absent shoulder IMU (no shoulder calibration).
+    if not shoulder_optional:
+        send_calibration_to_board(ser, latest, load_calibration_file(args.calibration_file))
 
     # shoulder_optional forces shoulder_basis=None unconditionally here,
     # even on the --skip-calibration path above (which would otherwise
@@ -1650,6 +2165,31 @@ def main():
     # the first tick, same reasoning as the rate-limited state above.
     smoothed_shoulder_raw = None
     smoothed_elbow_raw_scalar = None
+
+    # 2026-09-24: real bug, found via a real ZeroDivisionError -- is_ready()
+    # above only guarantees the tick line's core fields (shoulder_pitch/
+    # shoulder_roll/elbow/grip) have arrived at least once; shoulder_raw_ax/
+    # ay/az are a SEPARATE regex match (SHOULDER_RAW_RE) that can still be
+    # firmware's literal pre-first-read (0.0, 0.0, 0.0) default at this
+    # point, not yet a real reading -- oblique_decompose_scaled() normalizes
+    # its input and divides by zero on that exact vector. The interactive
+    # BASELINE/FORWARD/LEFT_TWIST calibration prompts above normally mask
+    # this by incidentally taking several real seconds (holding each pose),
+    # long enough for real data to have arrived by the time this runs --
+    # --skip-calibration skips straight past that incidental delay with
+    # nothing to replace it, hitting the race for real (confirmed via
+    # `git show HEAD` that this gap already existed before this session's
+    # own changes -- not introduced here, just uncovered here). Only waits
+    # when shoulder_basis is real: shoulder_basis is None means shoulder was
+    # deliberately marked optional (--optional-sensors), where
+    # shoulder_raw_ax staying (0.0, 0.0, 0.0) all session is the documented,
+    # correct behavior, not a race to wait out.
+    if shoulder_basis is not None:
+        while True:
+            raw = latest.snapshot_shoulder_raw()
+            if raw[0] is not None and math.hypot(*raw) > 1e-6:
+                break
+            time.sleep(0.05)
 
     try:
         sensor_fault = False

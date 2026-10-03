@@ -241,8 +241,9 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
     """
     print("\n--- Boot sanity check (does execution actually reach the app?) ---")
     print(
-        f"    If this was just flashed: fully unplug the board's power cable, wait a "
-        f"couple seconds, then plug it back in. Polling for up to {poll_seconds:.0f}s..."
+        f"    If this was just flashed, start the app with the SWD jump (CLAUDE.md, 2026-10-03):\n"
+        f"    {START_APP_CMD}\n"
+        f"    Polling for up to {poll_seconds:.0f}s..."
     )
     import time
     deadline = time.time() + poll_seconds
@@ -279,10 +280,16 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
     pc = last_pc
     print(
         f"[FAIL] PC=0x{pc:08x} is still inside the WeAct HID bootloader (0x08000000-0x08003fff) "
-        f"after {poll_seconds:.0f}s -- a power-cycle either didn't happen or didn't take. Try a "
-        "slower, more deliberate unplug/wait/replug cycle."
+        f"after {poll_seconds:.0f}s -- the bootloader did not jump to the app (replug and `reset run` are "
+        f"unreliable). Jump to the app directly over SWD:\n       {START_APP_CMD}"
     )
     return False
+
+
+# 2026-10-03: the reliable way to start the app after an SWD flash -- jump straight to its Reset_Handler, bypassing
+# the WeAct bootloader (needs firmware with the FPU-enable fix in startup.c; see CLAUDE.md)
+START_APP_CMD = ('openocd -f firmware/openocd.cfg -c "init; reset halt; reg msp [read_memory 0x08004000 32 1]; '
+                 'reg pc [expr {[read_memory 0x08004004 32 1] & ~1}]; reg xPSR 0x01000000; resume; exit"')
 
 
 def run_i2c_scan() -> bool:
@@ -443,7 +450,7 @@ def run_sensor_check(read_line, clock, seconds=3.0, max_seconds=8.0):
                          f"——資料仍正確,但接觸不穩,之後最好把這顆接牢")
         slow = [w for w in rep.warnings if w.kind == "slow_data"]
         if slow:
-            lines.append(f"[NOTE] 資料較慢({slow[0].detail},正常每秒約 100 筆)——對 demo 沒影響,動作只會稍微頓一點")
+            lines.append(f"[NOTE] 資料較慢({slow[0].detail},正常每秒約 30 筆)——對 demo 沒影響,動作只會稍微頓一點")
         return True, lines
     # only what CAUSED the failure (the data cannot be trusted), not the incidental notes
     return False, ["[FAIL] " + sh.format_warning(sh.Report(False, rep.problems, []))]

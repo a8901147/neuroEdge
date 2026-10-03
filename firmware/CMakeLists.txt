@@ -106,12 +106,6 @@ firmware_add_target(complementary_filter_hello src/startup.c src/complementary_f
 # target's own file header for why this exists.
 firmware_add_target(i2c_bus_scan src/startup.c src/i2c_bus_scan_main.c)
 
-# Diagnostic tool (not a pipeline stage): runs Stage 4b's ComplementaryFilter
-# loop with synthetic accel/gyro data (no real MPU6050 needed) to smoke-test
-# firmware plumbing -- timing, USART2, filter math stability -- ahead of a
-# replacement sensor arriving. See this target's own file header.
-firmware_add_target(complementary_filter_stress_test src/startup.c src/complementary_filter_stress_test_main.cpp)
-
 # Stage 5a: the EMG half of Phase 3's split control loop (GripStateMachine +
 # SlewRateLimiter) on real MyoWare hardware, independent of the
 # still-blocked MPU6050 side. See this target's own file header.
@@ -124,6 +118,22 @@ firmware_add_target(emg_grip_control src/startup.c src/emg_grip_control_main.cpp
 # header for why.
 firmware_add_target(phase3_control_loop src/startup.c src/phase3_control_loop_main.cpp)
 
+# The real-MEArm servo outputs (TIM3 CH1-4 on PA6/PA7/PB0/PB1) are OFF by
+# default (2026-09-26 review): flashing phase3_control_loop -- needed just to
+# run `run_demo_live.py --mearm` against the MuJoCo model -- must not also move
+# the physical arm. The firmware's servo mapping still drives shoulder/elbow
+# independently (ignoring the linkage coupling, SESSION_LOG TODO C) and from
+# different signals than the tested Path B, so turn it on only deliberately:
+#   cmake -S firmware -B firmware/build -DEDGENEURO_DRIVE_SERVOS=ON
+option(EDGENEURO_DRIVE_SERVOS "Drive the 4 MEArm servos from phase3_control_loop" OFF)
+if(EDGENEURO_DRIVE_SERVOS)
+    target_compile_definitions(phase3_control_loop PRIVATE EDGENEURO_DRIVE_SERVOS=1)
+    # Which servos follow the sensors, the others hold rest (2026-09-28: one at a time to find a bad servo / weak
+    # supply): bit0 base, bit1 shoulder, bit2 elbow, bit3 claw. e.g. -DEDGENEURO_SERVO_MASK=2 = shoulder only.
+    set(EDGENEURO_SERVO_MASK "15" CACHE STRING "servos that follow the sensors (bit0 base .. bit3 claw)")
+    target_compile_definitions(phase3_control_loop PRIVATE EDGENEURO_SERVO_MASK=${EDGENEURO_SERVO_MASK})
+endif()
+
 # Stage 7a (Phase 4 bring-up): 50Hz hobby-servo PWM on PA6 (TIM3_CH1),
 # sweeping pulse width so a single SG90 can be visually confirmed to move
 # end-to-end, before any of this is wired into the real control loop.
@@ -133,3 +143,17 @@ firmware_add_target(servo_pwm_test src/startup.c src/servo_pwm_test_main.c)
 # PA6/TIM3_CH1 PWM pulse width up/down by UART command ('+'/'-') so a
 # servo's real safe range can be found by ear/eye instead of guessed.
 firmware_add_target(servo_limit_finder src/startup.c src/servo_limit_finder_main.c)
+
+# Stage 7c: drives all 4 of TIM3's PWM channels (PA6/PA7/PB0/PB1) at once,
+# one MEArm servo per channel (base/shoulder/elbow/claw, bottom-to-top --
+# see the file's own header comment for why that's the assignment).
+# Moves one channel at a time so a miswired channel shows up as "this one
+# servo didn't move," not 4 servos moving with no way to tell which is
+# wrong.
+firmware_add_target(servo_pwm_4ch_test src/startup.c src/servo_pwm_4ch_test_main.c)
+
+# Stage 7d: interactive 4-channel follow-up -- send '1'-'4' over UART to
+# select a mounted servo (base/shoulder/elbow/claw), then '+'/'-' to find
+# ITS real usable range once actually mounted on the assembled MEArm (the
+# linkage geometry caps this well below the bare servo's own limit).
+firmware_add_target(servo_limit_finder_4ch src/startup.c src/servo_limit_finder_4ch_main.c)

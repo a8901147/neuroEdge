@@ -40,8 +40,15 @@
 #include <cstdint>
 
 #include "edgeneuro/control/grip_state_machine.hpp"
+#include "edgeneuro/control/imu_health.hpp"        // used only when EDGENEURO_DRIVE_SERVOS
 #include "edgeneuro/control/mpu6050_power_check.hpp"
+#include "edgeneuro/control/mearm_drive.hpp"       // used only when EDGENEURO_DRIVE_SERVOS
+#include "edgeneuro/control/mearm_joint_step.hpp"  // used only when EDGENEURO_DRIVE_SERVOS
+#include "edgeneuro/control/mearm_input_filter.hpp" // used only when EDGENEURO_DRIVE_SERVOS
+#include "edgeneuro/control/mearm_calibration_link.hpp"  // used only when EDGENEURO_DRIVE_SERVOS
+#include "edgeneuro/control/mearm_servo_maps.hpp"  // used only when EDGENEURO_DRIVE_SERVOS
 #include "edgeneuro/control/slew_rate_limiter.hpp"
+#include "edgeneuro/control/tx_ring.hpp"
 #include "edgeneuro/fusion/complementary_filter.hpp"
 #include "stm32f4xx.h"
 
@@ -274,6 +281,16 @@ static void usart2_init(void) {
 // purely for cross-cutting diagnostics/state.
 static edgeneuro::GripStateMachine<float> *g_grip_for_threshold_update = nullptr;
 static bool g_threshold_line_active = false;
+static volatile bool g_home_requested = false;   // set by an 'R' byte, consumed by the servo block
+// 2026-10-03: the MEArm calibration arrives over UART (mearm_calibration_link.hpp; sent by run_demo_live.py) instead of
+// only being compiled in. Every received byte goes to the parser; a complete, checksummed message raises the flag and
+// the servo block validates it (apply_calibration_message) before using it. Counts go out in the diag line.
+#if EDGENEURO_DRIVE_SERVOS
+static edgeneuro::mearm::calibration_link::Parser g_cal_parser;
+static volatile bool g_cal_received = false;
+#endif
+static uint32_t g_cal_applied = 0u;
+static uint32_t g_cal_rejected = 0u;      // complete messages whose calibration Path B refused
 static uint32_t g_threshold_line_value = 0;
 
 // Deliberately does NOT send any acknowledgment string: found the hard way
@@ -287,7 +304,17 @@ static uint32_t g_threshold_line_value = 0;
 static void poll_threshold_update(void) {
     if (USART2->SR & USART_SR_RXNE) {
         const uint8_t b = (uint8_t)USART2->DR;
-        if (b == (uint8_t)'T') {
+#if EDGENEURO_DRIVE_SERVOS
+        if (g_cal_parser.feed(b)) {
+            g_cal_received = true;
+        }
+#endif
+        if (b == (uint8_t)'R') {
+            // 2026-10-03: "walk every servo back to the start pose" (run_demo_live.py --mearm sends it once the person
+            // has let the arm hang; the servo block in main() picks it up -- mearm::drive::Homing). Not part of a T line.
+            g_home_requested = true;
+            g_threshold_line_active = false;
+        } else if (b == (uint8_t)'T') {
             g_threshold_line_active = true;
             g_threshold_line_value = 0;
         } else if (g_threshold_line_active) {
@@ -305,7 +332,38 @@ static void poll_threshold_update(void) {
     }
 }
 
-static void usart2_send_byte(uint8_t byte) {
+// 2026-10-03: measured on the real board, busy-waiting on every byte of the ~346-byte tick line (~30 ms at 115200)
+// stopped the 1 kHz main loop -- 291 ticks/s instead of 1000, so every tick-based time (servo ramps, filter dt) was
+// ~3.4x short. Once the main loop starts, bytes are QUEUED instead (edgeneuro::TxRing) and usart2_pump(), called on
+// every loop pass, hands the UART one byte whenever TXE says it is free -- the same two registers (SR.TXE, DR) as the
+// busy-wait, just never waited on. Boot messages and fatal paths (before the loop / blink_code) keep the old blocking
+// send: nothing would pump the queue there. A whole line that does not fit is skipped (uart_line_fits), never sent half.
+static edgeneuro::TxRing<2048> g_tx;
+static bool g_tx_queued = false;          // false until the main loop starts
+// Upper bounds (bytes) for each queued line, generous on purpose: measured 2026-10-03 the tick line is ~346 bytes and
+// the diag line ~407 (+~70 for the uart_ fields added then). A tick/EDGE line also keeps room for one diag line.
+static constexpr std::size_t kTickLineMax = 512u;
+static constexpr std::size_t kDiagLineMax = 640u;
+static constexpr std::size_t kEdgeLineMax = 32u;
+static uint32_t g_rx_overruns = 0u;       // USART SR.ORE seen: a received byte was lost before it was read
+
+static void usart2_pump(void) {
+    const uint32_t sr = USART2->SR;
+    if (sr & USART_SR_ORE) {
+        ++g_rx_overruns;                  // cleared by the DR read in poll_threshold_update() (SR then DR)
+    }
+    poll_threshold_update();
+    uint8_t b = 0u;
+    if ((sr & USART_SR_TXE) && g_tx.pop(b)) {
+        USART2->DR = b;
+    }
+}
+
+static bool uart_line_fits(std::size_t max_len) {
+    return !g_tx_queued || g_tx.begin_line(max_len);
+}
+
+static void usart2_send_byte_blocking(uint8_t byte) {
     // 2026-09-09: polls for an incoming threshold-update byte while
     // otherwise just spinning here -- without this, a short RX burst
     // (e.g. "T2691\n", ~52us at 115200 baud) arriving entirely during one
@@ -321,6 +379,14 @@ static void usart2_send_byte(uint8_t byte) {
         poll_threshold_update();
     }
     USART2->DR = byte;
+}
+
+static void usart2_send_byte(uint8_t byte) {
+    if (g_tx_queued) {
+        g_tx.push(byte);                  // a refused byte is counted by TxRing; lines are gated so it should not happen
+    } else {
+        usart2_send_byte_blocking(byte);
+    }
 }
 
 static void usart2_send_string(const char *s) {
@@ -444,6 +510,116 @@ static void tim2_init_1khz_trgo(void) {
     TIM2->CR2 = (TIM2->CR2 & ~TIM_CR2_MMS) | TIM_CR2_MMS_1;
     TIM2->CR1 |= TIM_CR1_CEN;
 }
+
+// Real-MEArm servo outputs are compiled in only with -DEDGENEURO_DRIVE_SERVOS=ON
+// (firmware/CMakeLists.txt explains why the default is OFF). With it OFF none of
+// TIM3 / PA6,PA7,PB0,PB1 is touched at all.
+#ifndef EDGENEURO_DRIVE_SERVOS
+#define EDGENEURO_DRIVE_SERVOS 0
+#endif
+
+// Which servos follow the sensors (bit0 base, bit1 shoulder, bit2 elbow, bit3 claw); the others hold rest. Default all.
+#ifndef EDGENEURO_SERVO_MASK
+#define EDGENEURO_SERVO_MASK 0xFu
+#endif
+
+#if EDGENEURO_DRIVE_SERVOS
+// --- MEArm servos: TIM3's 4 PWM channels, one per servo (base/shoulder/
+// elbow/claw, bottom-to-top -- see servo_pwm_4ch_test_main.c's header
+// comment for why that's the assignment and the RM0368/CMSIS-header
+// verification of every register value below; byte-for-byte identical
+// setup, this is that same code moved into the real control loop). PA6/
+// PA7/PB0/PB1 confirmed free of every other pin already in use above
+// (PA0=EMG ADC, PA2/PA3=USART2, PB6/PB7=I2C1).
+
+static void gpioa_tim3_ch1_ch2_af(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    GPIOA->MODER &= ~((3u << (6u * 2u)) | (3u << (7u * 2u)));
+    GPIOA->MODER |= (2u << (6u * 2u)) | (2u << (7u * 2u));
+    GPIOA->AFR[0] &= ~((0xFu << (4u * 6u)) | (0xFu << (4u * 7u)));
+    GPIOA->AFR[0] |= (2u << (4u * 6u)) | (2u << (4u * 7u)); // AF2 = TIM3
+}
+
+static void gpiob_tim3_ch3_ch4_af(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+    GPIOB->MODER &= ~((3u << (0u * 2u)) | (3u << (1u * 2u)));
+    GPIOB->MODER |= (2u << (0u * 2u)) | (2u << (1u * 2u));
+    GPIOB->AFR[0] &= ~((0xFu << (4u * 0u)) | (0xFu << (4u * 1u)));
+    GPIOB->AFR[0] |= (2u << (4u * 0u)) | (2u << (4u * 1u));
+}
+
+// Every channel's first pulse is its own rest pulse (edgeneuro::mearm::k*RestUs:
+// 1500us for base/shoulder/elbow, 1300us = open for the claw; chosen by looking at the
+// real arm, not measured as "safe"). The very first pulse after power-up moves a servo
+// from wherever it was at its own full speed -- nothing can slow that; after it, each
+// channel walks to its target through a ServoStartupRamp instead of jumping.
+// The servo-output block in main() runs on every 10th 1 kHz tick.
+static constexpr float kServoStepDt = 10.0f * 0.001f;
+
+static void tim3_pwm_50hz_4ch_init(void) {
+    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+
+    TIM3->PSC = 15u;
+    TIM3->ARR = 19999u;
+
+    TIM3->CCR1 = edgeneuro::mearm::kBaseRestUs;
+    TIM3->CCR2 = edgeneuro::mearm::kShoulderRestUs;
+    TIM3->CCR3 = edgeneuro::mearm::kElbowRestUs;
+    TIM3->CCR4 = edgeneuro::mearm::kClawRestUs;
+
+    TIM3->CCMR1 = (TIM3->CCMR1 & ~(TIM_CCMR1_OC1M | TIM_CCMR1_OC2M)) |
+                  (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1) |
+                  (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1);
+    TIM3->CCMR1 |= TIM_CCMR1_OC1PE | TIM_CCMR1_OC2PE;
+
+    TIM3->CCMR2 = (TIM3->CCMR2 & ~(TIM_CCMR2_OC3M | TIM_CCMR2_OC4M)) |
+                  (TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3M_1) |
+                  (TIM_CCMR2_OC4M_2 | TIM_CCMR2_OC4M_1);
+    TIM3->CCMR2 |= TIM_CCMR2_OC3PE | TIM_CCMR2_OC4PE;
+
+    TIM3->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC4E;
+
+    TIM3->CR1 |= TIM_CR1_ARPE;
+    TIM3->CR1 |= TIM_CR1_CEN;
+}
+
+// ============================================================================
+// 2026-09-23: real per-joint pulse ranges, measured with servo_limit_
+// finder_4ch against the ACTUALLY ASSEMBLED MEArm (not the bare-servo
+// placeholder this replaced -- see git history / SESSION_LOG.md's
+// 2026-09-21 entry for that earlier PLACEHOLDER version). Each channel's
+// real range is narrower than the bare SG92R's own 450-2500us limit,
+// confirming the linkage geometry (not the servo itself) is what caps
+// each joint's usable range, same conclusion the MeArm community
+// calibration data (README.md's Phase 4 section) already predicted.
+//
+// Channel <-> joint identity confirmed against a real MeArm assembly
+// guide (DroneBot Workshop's build instructions: "left servo controls
+// the shoulder joint" facing the arm from the front) AND a live check on
+// this specific unit (channel 2 physically raises/lowers the whole arm,
+// not just the forearm) -- not assumed from the part's channel number
+// alone.
+//
+// value_min/value_max are unchanged from the placeholder version (real
+// human-anatomy ranges, run_demo_live.py's SHOULDER_PITCH_RANGE/
+// SHOULDER_ROLL_RANGE/ELBOW_RANGE, and grip's 0..1 scale).
+//
+// POLARITY CAVEAT: which physical end of pulse_min_us/pulse_max_us a
+// more-negative vs. more-positive value_min/value_max should drive is
+// NOT yet verified live (servo_limit_finder_4ch measured the RANGE, not
+// which direction is which) -- inherited as-is from the placeholder
+// version's guess. First live test after flashing this: raise a real
+// arm (shoulder_pitch going more negative) and confirm the MEArm's
+// shoulder servo actually LIFTS, not lowers -- if backwards, swap that
+// map's pulse_min_us/pulse_max_us arguments (ServoAngleMap supports this
+// directly, see its own header comment / test_servo_angle_map.cpp's
+// "reversed pulse polarity" case), don't touch value_min/value_max.
+// 2026-09-27: the four servos are no longer fed by per-joint maps from the firmware's own pitch/roll (the 2026-09-26
+// review found them unsafe: opposite elbow direction, no calibration, no linkage/collision envelope). main() now calls
+// edgeneuro::mearm::drive::command (include/edgeneuro/control/mearm_drive.hpp, host-tested): the same Path B decode as
+// the MuJoCo preview with the compiled-in calibration, the measured link-angle lines and the measured safe envelope for
+// shoulder/elbow; the base holds its rest pulse (not measured yet); the claw follows grip.
+#endif // EDGENEURO_DRIVE_SERVOS
 
 static void adc1_init_timer_triggered(void) {
     RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
@@ -855,6 +1031,11 @@ int main(void) {
     gpioa_pa0_analog();
     adc1_init_timer_triggered();
     tim2_init_1khz_trgo();
+#if EDGENEURO_DRIVE_SERVOS
+    gpioa_tim3_ch1_ch2_af();
+    gpiob_tim3_ch3_ch4_af();
+    tim3_pwm_50hz_4ch_init();
+#endif
     i2c1_init();
 
     // Proactive bus-clear before the very first transaction, not just the
@@ -946,6 +1127,35 @@ int main(void) {
     // stage.
     edgeneuro::ComplementaryFilter<float> shoulder_filter(0.98f, kDtPerTick);
     bool shoulder_filter_initialized = false;
+#if EDGENEURO_DRIVE_SERVOS
+    // One start-up ramp per servo: each starts at the rest pulse and walks to its
+    // target instead of jumping (servo_startup_ramp.hpp; rest and rates are placeholders).
+    struct {
+        edgeneuro::ServoStartupRamp base, shoulder, elbow, claw;
+    } ramps{edgeneuro::mearm::base_ramp(), edgeneuro::mearm::shoulder_ramp(), edgeneuro::mearm::elbow_ramp(),
+            edgeneuro::mearm::claw_ramp()};
+    edgeneuro::mearm::drive::Homing homing;   // R over UART (see poll_threshold_update / g_home_requested)
+    // 2026-10-03: the servos' COMMAND is made steady (1-euro on both IMUs + base hysteresis, mearm_input_filter.hpp);
+    // the ramps stay a pure safety limit. Only the servos see the filtered values; the UART keeps sending raw ones.
+    edgeneuro::mearm::ArmInputFilter arm_filter;
+    edgeneuro::mearm::Hysteresis base_hold;
+    edgeneuro::mearm::BaseRaiseFollow base_follow;   // the base follows slowly while the arm is raised (2026-10-04)
+    // Validated once at boot; nullptr (a calibration Path B rejects) makes drive::command hold shoulder/elbow at rest.
+    edgeneuro::mearm::pathb::Calibration arm_cal_storage;
+    // not const: a calibration received over UART replaces it (see g_cal_received)
+    const edgeneuro::mearm::pathb::Calibration* arm_cal =
+        edgeneuro::mearm::make_compiled_calibration(arm_cal_storage) ? &arm_cal_storage : nullptr;
+    // The base's comfortable reach (2026-10-03, compiled in by gen_calibration_header.py); the default mapping if none
+    // was measured, or if a compiled-in one is unusable.
+    edgeneuro::mearm::real::BaseReach base_reach{};
+    if (arm_cal == nullptr || !edgeneuro::mearm::make_compiled_base_reach(*arm_cal, base_reach)) {
+        base_reach = arm_cal ? edgeneuro::mearm::real::default_base_reach(*arm_cal) : edgeneuro::mearm::real::BaseReach{1.0f, -1.0f};
+    }
+    // 2026-09-28: a failed IMU must stop the real arm (the 9/27 failures: a sensor dropping out and repeating its last
+    // value, and one stuck at full scale while its reads still "completed"). Sensors made optional with O<bits> are
+    // not checked. (Constructed here, after read_optional_sensors_config() has set the flags.)
+    edgeneuro::ImuHealth imu_health(g_require_shoulder_imu, g_require_elbow_imu);
+#endif
 
     // Stage 6: two MPU6050s share I2C1, so their reads cannot run
     // concurrently -- only one ImuReader may have a transaction in flight
@@ -1031,12 +1241,10 @@ int main(void) {
     float shoulder_raw_gy = 0.0f;
     float shoulder_raw_gz = 0.0f;
 
+    g_tx_queued = true;                   // from here on, UART output is queued and pumped (see usart2_pump)
     while (1) {
-        // Also polled from inside usart2_send_byte's own TXE wait (see that
-        // function's comment for why that's the fix that actually matters
-        // -- this top-of-loop call covers the case where the loop is idle,
-        // between ADC/I2C activity, not currently blocked in a print).
-        poll_threshold_update();
+        // Every pass: feed the UART one queued byte if it is free, and read any received byte (threshold updates).
+        usart2_pump();
 
         // --- IMU: advance whichever reader is currently active every pass
         // of this loop, not just once per EMG tick -- same throughput
@@ -1236,7 +1444,7 @@ int main(void) {
 
             const bool edge = grip.update(emg_ema, kDtPerTick);
             sp = setpoint.update(grip.is_gripping() ? 1.0f : 0.0f, kDtPerTick);
-            if (edge) {
+            if (edge && uart_line_fits(kEdgeLineMax + kDiagLineMax)) {
                 usart2_send_string(grip.is_gripping() ? "EDGE -> Gripping\r\n" : "EDGE -> Released\r\n");
             }
 
@@ -1300,6 +1508,52 @@ int main(void) {
                     elbow_bend = std::acos(cos_angle);
                 }
 
+                // Drive the 4 MEArm servos from this tick's raw upper-arm vector and elbow reading through
+                // edgeneuro::mearm::drive::command (see its header: Path B decode with the compiled-in
+                // calibration -> the measured link-angle lines -> the measured safe envelope; base held at
+                // rest; claw from grip), then each servo's start-up ramp. Runs on every 10th tick (100 Hz,
+                // this block's own cadence -- so the ramps' time step is 10 ticks, NOT 1). Before the first
+                // real IMU sample the raw vector is all zero, which drive::command treats as "no valid
+                // reading" and answers with the rest pose.
+#if EDGENEURO_DRIVE_SERVOS
+                imu_health.update({shoulder_raw_ax, shoulder_raw_ay, shoulder_raw_az},
+                                  {elbow_raw_ax, elbow_raw_ay, elbow_raw_az});
+                if (g_cal_received) {
+                    g_cal_received = false;
+                    if (edgeneuro::mearm::apply_calibration_message(g_cal_parser.values(), arm_cal_storage, base_reach)) {
+                        arm_cal = &arm_cal_storage;
+                        ++g_cal_applied;
+                    } else {
+                        ++g_cal_rejected;   // the arm keeps the calibration it had
+                    }
+                }
+                if (g_home_requested) {
+                    g_home_requested = false;
+                    homing.request(ramps);
+                }
+                const auto filtered = arm_filter.update({shoulder_raw_ax, shoulder_raw_ay, shoulder_raw_az},
+                                                        {elbow_raw_ax, elbow_raw_ay, elbow_raw_az}, kServoStepDt);
+                auto sensed = edgeneuro::mearm::drive::command(arm_cal, filtered.upper, filtered.elbow_bend, sp,
+                                                               imu_health.ok(), &base_reach);
+                sensed.base = base_hold.apply(sensed.base, edgeneuro::mearm::kBaseHysteresisUs);
+                sensed.base = base_follow.apply(sensed.base, arm_cal, filtered.upper, kServoStepDt);
+                const auto cmd = homing.apply(edgeneuro::mearm::drive::only(sensed, EDGENEURO_SERVO_MASK), ramps);
+                if (!cmd.hold) {    // a failed sensor: write nothing -- every servo keeps its pulse (stops moving)
+                    TIM3->CCR1 = ramps.base.step(static_cast<float>(cmd.base), kServoStepDt);
+                    // shoulder + elbow step TOGETHER so every tick stays inside the measured envelope, not only the
+                    // target (mearm_joint_step.hpp, 2026-09-28)
+                    const auto se = edgeneuro::mearm::joint_step(ramps.shoulder, ramps.elbow, static_cast<float>(cmd.shoulder),
+                                                                 static_cast<float>(cmd.elbow), kServoStepDt);
+                    TIM3->CCR2 = se.shoulder;
+                    TIM3->CCR3 = se.elbow;
+                    TIM3->CCR4 = ramps.claw.step(static_cast<float>(cmd.claw), kServoStepDt);
+                }
+#endif
+
+                // Only if the whole line fits, keeping room for the once-a-second diag line (2026-10-03: at 115200 a
+                // ~346-byte line every 10 ms cannot all be sent; the loop must not wait for it -- skipped lines are
+                // counted in the diag line's uart_skipped_lines).
+                if (uart_line_fits(kTickLineMax + kDiagLineMax)) {
                 usart2_send_string("tick=");
                 usart2_send_uint(tick_count);
                 usart2_send_string(" grip=");
@@ -1354,6 +1608,7 @@ int main(void) {
                 usart2_send_string(" shoulder_raw_gz=");
                 usart2_send_float(shoulder_raw_gz);
                 usart2_send_string("\r\n");
+                }
 
                 if (tick_count % 1000u == 0u) {
                     // Slower diagnostic-only line, same cadence Stage 5b
@@ -1370,6 +1625,7 @@ int main(void) {
                     // IMU#1 offline, which these numbers should distinguish
                     // between a real per-device electrical problem and a
                     // shared-bus glitch.
+                    if (uart_line_fits(kDiagLineMax)) {
                     usart2_send_string("diag shoulder_completions=");
                     usart2_send_uint(shoulder_completions);
                     usart2_send_string(" elbow_completions=");
@@ -1423,7 +1679,25 @@ int main(void) {
                     usart2_send_uint(g_power_resets_shoulder);
                     usart2_send_string(" elbow_power_resets=");
                     usart2_send_uint(g_power_resets_elbow);
+                    // 2026-10-03: UART health -- lines skipped because the queue was full (expected: the line rate is
+                    // higher than 115200 can carry) and received bytes lost before they were read (should stay 0)
+                    usart2_send_string(" uart_skipped_lines=");
+                    usart2_send_uint(g_tx.skipped_lines());
+                    usart2_send_string(" uart_dropped_bytes=");
+                    usart2_send_uint(g_tx.dropped_bytes());
+                    usart2_send_string(" uart_rx_overruns=");
+                    usart2_send_uint(g_rx_overruns);
+                    // 2026-10-03: calibrations received over UART -- applied, refused by Path B, and malformed messages
+                    usart2_send_string(" cal_applied=");
+                    usart2_send_uint(g_cal_applied);
+                    usart2_send_string(" cal_rejected=");
+                    usart2_send_uint(g_cal_rejected);
+#if EDGENEURO_DRIVE_SERVOS
+                    usart2_send_string(" cal_malformed=");
+                    usart2_send_uint(g_cal_parser.rejected());
+#endif
                     usart2_send_string("\r\n");
+                    }
                     GPIOC->ODR ^= (1u << LED_PIN);
                     shoulder_completions = 0;
                     elbow_completions = 0;

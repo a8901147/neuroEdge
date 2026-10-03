@@ -19,7 +19,8 @@ import math
 from collections import deque, namedtuple
 
 WINDOW_S = 1.0
-MIN_SAMPLES = 50                 # ~0.5 s at the firmware's 100 Hz line rate: below this the RATE is low -> warning
+MIN_SAMPLES = 20                 # healthy is ~34 lines/s (2026-10-03: the firmware queues its UART output; 115200 baud
+                                 # carries ~34 of its ~346-byte lines per second): below this the RATE is low -> warning
 MIN_SAMPLES_TO_JUDGE = 10        # below this there is too little to trust anything -> fault
 FROZEN_RUN = 30                  # ~0.3 s of bit-identical readings: never happens with a live sensor
 SATURATION_G = 1.99              # the +-2 g range's full scale (32767/16384 = 1.99994)
@@ -36,7 +37,7 @@ KIND_TEXT = {
     "saturated": "讀數卡在滿刻度",
     "magnitude": "讀數大小不像重力(不是約 1 g)",
     "not_enough_data": "幾乎沒有資料,無法判斷",
-    "slow_data": "資料太少(正常每秒約 100 筆,但讀數本身正常)——常見原因:感測器接觸不良(也許是麵包板造成的),匯流排一直在自我恢復",
+    "slow_data": "資料太少(正常每秒約 30 筆,但讀數本身正常)——常見原因:感測器接觸不良(也許是麵包板造成的),匯流排一直在自我恢復",
     "implausible": "讀數不可能來自正常運作的感測器",
     "asleep": "感測器回報自己在睡眠狀態(斷電重開過,資料不會更新)",
     "dropouts": "斷線後又恢復(I2C 沒回應)——接觸不良,也許是麵包板造成的",

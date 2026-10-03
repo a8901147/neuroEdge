@@ -12,7 +12,7 @@
 // already empirically confirmed accurate to <0.5% (PRD.md Stage 3c/3d).
 // That real, measured 1ms period is why dt=0.001f below is a fact, not a
 // guess, unlike Stage 4b's I2C loop where the assumed dt turned out to be
-// off by 35% (see complementary_filter_stress_test_main.cpp).
+// off by 35% (see complementary_filter_stress_test_main.cpp (removed 2026-09-26, see git history 8f5472b)).
 //
 // Threshold can be computed at boot by ThresholdCalibrator
 // (include/edgeneuro/control/threshold_calibrator.hpp) from a short

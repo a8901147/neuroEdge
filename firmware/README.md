@@ -25,7 +25,6 @@ src/timer_adc_1khz_main.c             階段 3c/3d:TIM2 以硬體 TRGO 定時觸
 src/i2c_mpu6050_hello_main.c          階段 4a:I2C1(PB6/PB7)讀取 MPU6050/GY-521 加速度計+陀螺儀原始值
 src/complementary_filter_hello_main.cpp  階段 4b:ComplementaryFilter 融合真實 MPU6050 資料(等新模組到貨才能驗證)
 src/i2c_bus_scan_main.c               診斷工具(非 pipeline 階段):掃描 I2C1 全部位址,見 tools/check_hardware_ready.py --i2c-scan
-src/complementary_filter_stress_test_main.cpp  診斷工具(非 pipeline 階段):合成資料跑 ComplementaryFilter 迴圈,不需要真的 MPU6050
 src/emg_grip_control_main.cpp         階段 5a:真實 MyoWare 訊號驅動 GripStateMachine + SlewRateLimiter,不依賴 MPU6050
 src/phase3_control_loop_main.cpp      階段 5b:EMG+IMU 合併成真正的 1kHz 主迴圈,不阻塞 I2C 讀取狀態機
 ```

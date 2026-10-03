@@ -113,6 +113,7 @@ class Board:
             return noisy
 
     def write(self, data):
+        self.written = getattr(self, "written", b"") + bytes(data)
         return len(data)
 
     def close(self):
@@ -139,6 +140,7 @@ def run_main(board, argv_extra, ticks=600, inputs=None, patches=()):
         # (the humanoid capture time, 6 s per pose, is a local in main(): left as it is -- this adds checks only)
         st.enter_context(mock.patch("builtins.input", inputs or (lambda *a: "")))
         st.enter_context(mock.patch.object(rdl.time, "sleep", lambda s: real_sleep(min(s, 0.01))))
+        st.enter_context(mock.patch.object(rdl, "CAL_CONFIRM_TIMEOUT_S", 0.05))   # this fake board never confirms
         for p in patches:
             st.enter_context(p)
         st.enter_context(contextlib.redirect_stdout(out))
@@ -204,6 +206,30 @@ class CalibrationCaptureTest(unittest.TestCase):
         for got, want in zip(saved["forward_raw"], fx.FORWARD):
             self.assertAlmostEqual(got, want, delta=0.01)         # the redo, not the faulty recording
         self.assertNotEqual(saved["captured_at"], "2026-09-13 16:35:48")  # it did save a NEW calibration
+
+
+class CalibrationToBoardTest(unittest.TestCase):
+    """2026-10-03 (the user's choice "B", "the humanoid arm the same way"): after its calibration -- loaded with
+    --skip-calibration or captured interactively -- the humanoid path also SENDS it to the board, so a servos-ON board
+    uses the very calibration the person just made. How the humanoid arm itself is computed is unchanged."""
+
+    def test_skip_calibration_sends_the_saved_calibration_to_the_board(self):
+        import mearm_calibration_link as link
+        board = Board(fx.LEFT)
+        run_main(board, ["--skip-calibration"], ticks=50)
+        self.assertIn(link.encode(SAVED), board.written)
+
+    def test_a_fresh_interactive_calibration_is_sent_too(self):
+        import mearm_calibration_link as link
+        board = Board(fx.HANG)
+        poses = iter([(fx.HANG, False), (fx.FORWARD, True), (fx.LEFT, False), (fx.RIGHT, False)])
+
+        def fake_input(*_a):
+            raw, _ = next(poses, (fx.HANG, False))
+            board.raw = raw
+            return ""
+        _ctrl, _out, saved = run_main(board, [], inputs=fake_input, ticks=50)
+        self.assertIn(link.encode(saved), board.written)
 
 
 class RuntimeTest(unittest.TestCase):
