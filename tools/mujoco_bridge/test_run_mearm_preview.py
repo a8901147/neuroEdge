@@ -510,8 +510,11 @@ class SensorHealthTest(unittest.TestCase):
     def test_the_preview_starts_by_itself_once_the_sensors_become_healthy(self):
         frozen = self.frozen_forearm(fx.LEFT)
 
+        # frozen until the preview has actually said so, then healthy: not "the first 200 reads", which on a slower
+        # machine (CI, 2026-10-04) were used up before the health check even started. If it never warns, the board
+        # stays frozen, the preflight times out and this fails.
         def factory():
-            return ScriptedSerial(lambda n: frozen if n < 200 else self.GOOD_LEFT)
+            return ScriptedSerial(lambda n: frozen if "硬體異常" not in sys.stdout.getvalue() else self.GOOD_LEFT)
         with mock.patch.object(rdl, "MEARM_HEALTH_PREFLIGHT_MAX_S", 20.0):
             ctrl, out = run_preview(None, fx.SAVED_9_13, serial_factory=factory)
         self.assertIn("硬體異常", out)                           # it said so while waiting
