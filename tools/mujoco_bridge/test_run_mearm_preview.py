@@ -288,6 +288,18 @@ class CalibrationToBoardTest(unittest.TestCase):
         self.assertIn(link.encode(saved), b"".join(board.written))
         self.assertIn("板子已套用", out)
 
+    def test_a_fresh_calibration_drops_the_mujoco_alignment_made_for_the_old_one(self):
+        # the saved alignment maps the OLD mount's readings to the model; with new poses it would point the model wrong
+        turn = lambda v: tuple(fx._rotate(v, (1.0, 0.0, 0.0), math.radians(20.0)))
+        poses = iter([(turn(ALIGNED[k]), fx.STRAIGHT if k == "baseline_raw" else None)
+                      for k in ("baseline_raw", "forward_raw", "left_twist_raw", "right_twist_raw")])
+        board = CalibrationBoard(uart_line(fx.HANG, fx.STRAIGHT))
+        with mock.patch.object(rdl, "calibrate_pose", lambda *a, **k: next(poses)):
+            _c, out = run_preview(None, ALIGNED, ticks=30, serial_factory=lambda: board, skip_calibration=False,
+                                  cal_timeout=3.0)
+        self.assertIn("is not used this run", out)
+        self.assertIn("offline default mapping", out)
+
 
 class EmgThresholdTest(unittest.TestCase):
     """2026-10-03: --mearm never sent the board an EMG threshold, so the firmware's built-in fallback (2800) applied

@@ -33,13 +33,6 @@ inline RawPulses pulses_from_model_ctrl(float shoulder_ctrl, float elbow_ctrl) {
             1500.0f + (forearm - kForearmAt1500Deg) / kForearmSlopeDegPerUs};
 }
 
-// The model shoulder command a shoulder pulse corresponds to (inverse of the upper-arm line).
-inline float shoulder_ctrl_at_pulse(float pulse_us) {
-    using namespace angle_data;
-    const float upper = kUpperArmAt1500Deg + kUpperArmSlopeDegPerUs * (pulse_us - 1500.0f);
-    return (90.0f - upper) * kPi / 180.0f;
-}
-
 // The elbow window used to SPREAD the person's raise, continuous in the shoulder pulse and never outside the measured
 // envelope (2026-10-03: the envelope's own window steps at its measured shoulder positions, so spreading across it made
 // one degree of elbow bend jump the elbow servo up to 350 us). At each measured shoulder: the lowest top / highest

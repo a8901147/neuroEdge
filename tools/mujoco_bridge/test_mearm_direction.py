@@ -142,6 +142,10 @@ class DecodeSanityTest(unittest.TestCase):
             pb.Calibration(HANG, FORWARD, LEFT, LEFT, STRAIGHT)          # right on the left side
         with self.assertRaises(ValueError):
             pb.Calibration(HANG, HANG, LEFT, RIGHT, STRAIGHT)            # FORWARD == HANG
+        # FORWARD only 10 deg from HANG: refused by the <20 deg rule itself (FORWARD == HANG above fails earlier, in the
+        # normalisation, so it never reached that rule -- found by coverage 2026-10-04)
+        with self.assertRaisesRegex(ValueError, "<20deg"):
+            pb.Calibration(HANG, _slerp(HANG, FORWARD, 10.0 / math.degrees(CAL.tilt_forward)), LEFT, RIGHT, STRAIGHT)
         with self.assertRaises(KeyError):
             pb.make_calibration({k: v for k, v in SAVED_9_13.items() if k != "zero_elbow"})
 

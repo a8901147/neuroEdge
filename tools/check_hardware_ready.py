@@ -222,22 +222,13 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
     function isolates (c) via SWD alone, with no dependency on anything the
     app itself does, so it can't be masked by an earlier app-level failure.
 
-    Also empirically confirmed 2026-09-10, repeatedly: right after any SWD
-    flash (`flash_<target>` via `program ... reset exit` -- openocd's own
-    `reset` is a warm/pin reset), PC reliably reads stuck inside the
-    bootloader no matter how long you poll, and only a genuine physical
-    unplug-wait-replug of the board's power makes it jump to the app. Why
-    this is true is NOT confirmed -- two guesses (a "board's native USB
-    plugged into a host" theory, and later a "bootloader deliberately
-    distinguishes POR from pin reset" theory) were both written down here
-    at different points and neither held up to checking (see
-    project_bootloader_requires_power_cycle memory for the walk-back and
-    what's actually known: WeAct's bootloader binary is closed-source, so
-    the real mechanism is unverified). Treat this purely as an operating
-    rule, not an explained one: right after a flash, this check is EXPECTED
-    to read "stuck in bootloader" until a human physically power-cycles the
-    board -- so this polls for up to poll_seconds (prompting once) instead
-    of a single immediate read, giving that a real window to happen.
+    Right after an SWD flash the WeAct bootloader often does not jump to the
+    app (2026-09-10: only a physical replug worked; by 2026-10-03 even that
+    and `reset run` were unreliable; its mechanism is unknown -- the binary
+    is closed source). The reliable start since 2026-10-03 is the SWD jump
+    straight to the app's Reset_Handler (START_APP_CMD, CLAUDE.md). This
+    polls for up to poll_seconds, so a start or replug done meanwhile is
+    seen, and on failure prints that command.
     """
     print("\n--- Boot sanity check (does execution actually reach the app?) ---")
     print(
