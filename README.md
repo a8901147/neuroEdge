@@ -131,10 +131,10 @@ sentinel), reusing the same MuJoCo model/actuator wiring, reading over
 `pyserial` instead of replaying a subprocess:
 
 ```sh
-# after flashing phase3_control_loop, power-cycle the board's own power
-# supply (not just a reset -- see SESSION_LOG.md's 2026-09-11/12 entries:
-# this bootloader empirically does not run the new firmware after a plain
-# SWD/pin reset, only after power is actually removed and reapplied), then
+# after flashing phase3_control_loop, start the app with the SWD jump in
+# CLAUDE.md (2026-10-03: the WeAct bootloader often won't jump to it on its
+# own; replug and `reset run` are unreliable), confirm with
+# `tools/check_hardware_ready.py --boot-check`, then
 # connect the USB-TTL adapter (FT232RL by default; see tools/usb_serial_port.py)
 .venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py
 .venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --cp2102               # use CP2102 instead of auto-detecting
@@ -156,10 +156,12 @@ unit, unlike FT232RL's), and `--port <path>` overrides either.
 
 | Script | Use it when... |
 | --- | --- |
-| `python3 tools/check_hardware_ready.py [--i2c-scan] [--sensors] [--live-check] [--boot-check]` | Before trusting anything else in this list — confirms ST-Link/USB-TTL/serial port are all actually usable, optionally the I2C bus + both MPU6050s (`--i2c-scan`), both IMUs' live data from the running firmware without flashing anything (`--sensors`), a full live data flow (`--live-check`), or (no reflash) that execution reached the app after a manual power-cycle (`--boot-check`). |
-| `mjpython tools/mujoco_bridge/run_demo_live.py` | The actual task — full calibration + live MuJoCo control from real hardware. `--skip-calibration --skip-emg-calibration` reuses `shoulder_calibration.json` instead of re-running the pose/EMG calibration flow. |
+| `python3 tools/check_hardware_ready.py [--i2c-scan] [--sensors] [--live-check] [--boot-check]` | Before trusting anything else in this list — confirms ST-Link/USB-TTL/serial port are all actually usable, optionally the I2C bus + both MPU6050s (`--i2c-scan`), both IMUs' live data from the running firmware without flashing anything (`--sensors`), a full live data flow (`--live-check`), or (no reflash) that execution reached the app (`--boot-check`; it prints the SWD jump command if the board is still in the bootloader). |
+| `mjpython tools/mujoco_bridge/run_demo_live.py [--mearm]` | The actual task — sensor-health check, EMG + pose calibration, live MuJoCo control from real hardware; the calibration and EMG threshold are sent to the board (no re-flash). `--skip-calibration --skip-emg-calibration` reuses `shoulder_calibration.json` instead of re-running the pose/EMG calibration flow. With `--mearm` it then asks you to let the arm hang and sends R, which walks the real arm's servos to the start pose. |
 | `mjpython tools/mujoco_bridge/run_demo.py` | No hardware available, or isolating whether a problem is in the MuJoCo/control-mapping logic itself (replays a CSV instead of live serial). |
+| `mjpython tools/mujoco_bridge/calibrate_mearm_alignment.py` | Before trusting `run_demo_live.py --mearm`, or whenever the MeArm model doesn't move like your arm (sensor re-mounted/re-strapped, or lift/elbow/left-right look wrong). Interactive: the MeArm model shows a target pose, you copy it with your real arm, and the captured sensor values become the measured calibration (raw pose vectors + elbow polarity/range) saved into `shoulder_calibration.json` as `mearm_alignment` (old file backed up first). Also asks two y/n questions you answer by looking at the model (does its elbow fold mean your bend? which claw end is closed?). Board must be running `phase3_control_loop`. |
 | `mjpython tools/mujoco_bridge/run_demo_live_grip_only.py` | Testing just the MyoWare → grip path in isolation (no IMUs wired up, or ruling out shoulder/elbow tracking as a variable). |
+| `python3 tools/capture_arm_motion.py [--set base_raise]` | Recording real arm motion from both IMUs to choose filter/follow parameters from data: short recordings built around the demo task (each starts on Enter and can be redone), saved to `data/arm_motion_<timestamp>.json` with the measured motion speeds and resting noise. The default set tunes the 1-euro filter; `--set base_raise` (raises in three directions, a slow raise, a sideways swing, a still hold, a diagonal check) is what the base's slow-follow was set from. Board must be running `phase3_control_loop`. |
 | `python3 tools/watch_emg_raw.py` | The EMG signal itself seems off, or before (re)calibrating the grip threshold — watch the live `emg_min`/`emg_max` trace while actually clenching, instead of guessing timing blind. |
 | `python3 tools/watch_myoware_uart.py` | Superseded by `watch_emg_raw.py` for current firmware; only useful against the older Stage 3c/3d/5a firmware targets in `firmware/README.md`. |
 | `mjpython tools/mujoco_bridge/sensor_orientation_sanity.py` / `sensor_xy_sanity.py` | Suspect a sensor is mounted backwards or wired wrong at a fundamental level — bypasses calibration/oblique-decompose entirely, just "tilt/move the sensor, watch the shape move the same way." |
@@ -168,6 +170,133 @@ unit, unlike FT232RL's), and `--port <path>` overrides either.
 `tools/generate_sample_data.py` and `tools/convert_epn612.py` (below) are
 Stage 1 host-only data-prep tools, not live-hardware utilities — listed
 under their own section since real hardware has superseded that workflow.
+
+## Phase 4: MEArm physical actuator bring-up
+
+Firmware targets (`firmware/CMakeLists.txt`, Stage 7a-7d) for driving the
+MEArm's 4 servos (base/shoulder/elbow/claw) via TIM3's 4 PWM channels
+(PA6/PA7/PB0/PB1), one servo per channel:
+
+| Target | Use it when... |
+| --- | --- |
+| `servo_pwm_test` | First bring-up of a single servo on PA6 — sweeps 1000-2000us so it can be visually confirmed to move at all, before wiring 4. |
+| `servo_limit_finder` | Finding one servo's real safe pulse-width range by ear (UART `+`/`-`, one channel, hardcoded to PA6). |
+| `servo_pwm_4ch_test` | All 4 servos wired — moves them one at a time (base→shoulder→elbow→claw) so a miswired channel shows up as "this one didn't move," not 4 moving with no way to tell which is wrong. |
+| `servo_limit_finder_4ch` | Same as `servo_limit_finder` but for all 4 mounted servos in one session — UART `1`-`4` selects the channel, `+`/`-` nudges it. Needed because the assembled MEArm's linkage geometry caps each joint's real range well below the bare servo's own limit (community MeArm calibration data: ~90-100° per joint once mounted, vs. one bare SG92R measured here at ~194° free-spinning). |
+| `python3 tools/servo_pose_4ch.py` | Finding a safe rest pose by hand, with `servo_limit_finder_4ch` flashed: `set shoulder 1650`, `all 1500`, `show`. Never leaves the measured ranges, always moves 25 µs at a time, prints the final pose as one line. |
+| `python3 tools/measure_linkage_region.py` | Measuring the real arm's feasible shoulder×elbow region (SESSION_LOG TODO C), with `servo_limit_finder_4ch` flashed. Moves one servo at a time, one 25 µs step per ~0.8 s; **you press Enter at the first sign of binding** (buzzing, straining, links stopping), it backs off and records the pulse. Asks the cause of each stop (linkage vs. collision). Saves raw results to a new `data/mearm_linkage_<timestamp>.json` after every shoulder position (never overwrites); `--shoulders 1350,1350,1425` picks/repeats positions, `--analyze FILE...` merges runs (no hardware) and shows the repeatability. |
+| `python3 tools/gen_mearm_envelope.py` | Regenerates the real arm's safe (shoulder, elbow) pulse envelope — `include/edgeneuro/control/mearm_envelope_data.hpp` and `data/envelope_golden.csv` — from the raw measurement files listed in `SOURCES`. Coarse and conservative: one elbow window per measured shoulder position, windows INTERSECTED between them (never interpolated), shoulder limited to the measured range; every stop of any cause counts. Used by `edgeneuro::PulseEnvelope` (not wired into the firmware yet). |
+| `python3 tools/measure_servo_angles.py` | Measuring how the real arm's LINK ANGLES depend on the servo pulses (Path B's missing last step: model command → pulse). Moves one servo at a time inside the safe envelope and asks you to type each link's angle (a phone-inclinometer reading, sign supplied by you: 0 = horizontal, far end higher = positive). Part A: shoulder → upper-arm elevation; part B: elbow → forearm elevation. Saves a new `data/mearm_angles_<timestamp>.json`; `--analyze FILE` (no hardware) fits the two lines, warns about implausible slopes / outliers, and says how much of the model's shoulder travel the arm can reach. Model side: `tools/mujoco_bridge/mearm_pulse_map.py`. |
+
+### Servo <-> STM32 pin assignment
+
+Assigned bottom-to-top by physical position on the MEArm (base is the
+bottom-most servo, claw is the top-most/end-effector) — not an arbitrary
+channel-number pick:
+
+| Servo | STM32 pin | Timer channel |
+| --- | --- | --- |
+| Base | PA6 | TIM3_CH1 |
+| Shoulder | PA7 | TIM3_CH2 |
+| Elbow | PB0 | TIM3_CH3 |
+| Claw | PB1 | TIM3_CH4 |
+
+PA6/PA7/PB0/PB1 are confirmed free: PA0 is EMG ADC, PA2/PA3 are USART2,
+PB6/PB7 are I2C1 (both IMUs), PC13 is the LED (`phase3_control_loop_main.cpp`).
+
+### Wiring checklist
+
+**Current wiring (2026-10-01, the one that made the servos run smoothly — SESSION_LOG "伺服電源重新接線"):** a 4×AA
+battery box (~5 V) powers the servos only; two WAGO 221-415 lever connectors are the + and − distribution points
+(battery, the capacitor, all 4 servo red/brown wires via male dupont leads, and on the − one a wire to the Black Pill
+GND); a 1000 µF solid capacitor plus a 0.1 µF ceramic sit across the two WAGOs; the battery's thin leads go into the
+WAGOs through crimped ferrules (strip ~24 mm and fold so the copper fills the ferrule — pliers are not enough, use a
+ferrule crimper). Servo current never goes through the breadboard. **Forgetting the common ground makes the servos not
+move at all** even though the board outputs correct PWM. The checklist below is the original (USB-charger) version;
+the rules in it (separate supply, common ground, bulk capacitor) still apply.
+
+Servos need far more current (up to ~2.6A worst-case across 4 servos
+under stall) than the STM32 board's own USB/5V rail is rated for — powering
+them from the same rail as the board risks a brownout that resets the
+STM32 when a servo moves. Power is external and separate; only the PWM
+signal lines go to the STM32:
+
+- [ ] All 4 servo **signal** wires (orange/yellow) → PA6 / PA7 / PB0 / PB1 respectively (one each, no sharing)
+- [ ] All 4 servo **+5V** wires (red), paralleled together → a plain (non-fast-charge/PD) 5V/2A+ USB charger, via a cheap USB-A breakout board (splits a USB socket's VCC/GND out to header pins — only VCC/GND are used, D+/D- ignored)
+- [ ] All 4 servo **GND** wires (brown/black), paralleled together → the same charger's GND (via the same breakout board) **and** a wire to the STM32 board's own GND (common ground — without this the PWM signal has no shared reference and won't be read correctly)
+- [ ] A **bulk electrolytic capacitor (470-1000uF, 10V+ rating)** in parallel across the shared +5V/GND rail, close to the servos (mind polarity — the stripe/shorter leg is negative). Not optional: a servo's startup current draw is a millisecond-scale spike a simple charger+breakout board can't source fast enough, so voltage sags below what the servo's control chip needs *just for that spike* — too fast for a multimeter to ever show (it'll read a perfectly normal ~5V), but real enough to cause a servo to chatter/twitch/not move at all. Found the hard way on 2026-09-21 (channels 3/4 wired to PB0/PB1 tested completely dead — ruled out miswiring via direct SWD register reads and a known-good servo swap before landing on this) — see `SESSION_LOG.md`'s 2026-09-21 entry for the full trace.
+- [ ] STM32 board itself stays powered from its own USB connection (computer or a separate charger) — never the same 5V rail as the servos
+
+One already-measured bare servo (SG92R, single-channel bring-up unit,
+unmounted): grinding/mechanical limit found at pulse_us=400 and
+pulse_us=2550, center=1475 (not the textbook 1500 — per-unit factory
+calibration tolerance, see `servo_pwm_test_main.c`'s 2026-09-21 comment).
+
+Each of the 4 servos' real range once actually mounted on the assembled
+MEArm (2026-09-23, `servo_limit_finder_4ch`, written into
+`phase3_control_loop_main.cpp`'s `kBasePulseMap`/`kShoulderPulseMap`/
+`kElbowPulseMap`/`kClawPulseMap`):
+
+| Servo | Real pulse_us range |
+| --- | --- |
+| base | 500-2500 (no mechanical stop found within the bare servo's own safe range — see below) |
+| shoulder | 1200-2100 |
+| elbow | 500-1850 |
+| claw | 1300-1600 (full open to full close; driven only up to 1500) |
+
+**`phase3_control_loop` does NOT drive these servos by default (2026-09-26)**: flashing it only to view the MuJoCo
+model (`run_demo_live.py --mearm`) must not also move the physical arm. Build it with `-DEDGENEURO_DRIVE_SERVOS=ON`
+(below) to drive the arm.
+
+With servos ON, `phase3_control_loop` drives the real arm on the chip (`edgeneuro::mearm::drive::command`; reasoning
+and measurements in SESSION_LOG 2026-09-26 → 2026-10-04):
+
+- **Base**: upper-arm twist (Path B azimuth) over the whole 500–2500 µs, left = higher pulse.
+- **Shoulder/elbow** (`height_reach`): raising the arm lowers the elbow servo (claw up) across the elbow window the
+  measured envelope allows at the current shoulder pulse; bending the elbow raises the shoulder servo (reach) across
+  1500–2100. `joint_step` keeps every intermediate pose inside the envelope.
+- **Claw**: the EMG grip, 1300 (open) – 1500 µs (the measured travel is 1300–1600; 1500 is the user's limit).
+- **Steady commands, servos at full speed**: a 1-euro filter on both IMUs, a 10 µs hysteresis on the base, and the base
+  following slowly (150 µs/s) while the arm is being raised or is near hanging (`BaseRaiseFollow`,
+  `mearm_input_filter.hpp`).
+- **R** over UART walks every servo back to the start pose; `run_demo_live.py --mearm` sends it after asking you to let
+  the arm hang.
+
+**The calibration is sent, not compiled in**: `run_demo_live.py` (both `--mearm` and the humanoid path) sends the
+current calibration over UART at startup (`mearm_calibration_link`, checksummed and validated on the board, resent if
+bytes were lost) and prints whether the board applied it — a re-calibration needs no re-flash. The compiled-in one
+(`gen_calibration_header.py`, from the committed golden calibration) is only what the board boots with.
+
+```sh
+cd firmware && cmake -S . -B build-servos -DEDGENEURO_DRIVE_SERVOS=ON && cmake --build build-servos --target flash_phase3_control_loop
+```
+
+then start it with the SWD jump in `CLAUDE.md` and confirm with `check_hardware_ready.py --boot-check`.
+
+CI checks the default build has no TIM3 reference at all. (The bring-up firmwares
+`servo_pwm_test`/`servo_limit_finder*` are unaffected — they exist to drive servos.)
+
+When enabled, each servo starts at its own rest pulse — **1500 µs for base/shoulder/elbow
+and 1300 µs (open) for the claw**, picked 2026-09-26 by looking at the real arm, not
+measured as "safe" — and walks to the sensor-driven target slowly, then follows
+at full speed — see `servo_startup_ramp.hpp`. The very first pulse after power-up
+still moves a servo from wherever it was at its own full speed (open loop, no
+feedback, and SG92R does not return anywhere when unpowered) — that step cannot be
+slowed by firmware. There is no shutdown "park" routine on purpose (depends on
+operator habit).
+
+Not assumed identical across units — each was measured individually.
+Base's range resolves the earlier `shoulder_roll` concern above (task
+needs ~91°, the MeArm community's own ~90° calibration data looked
+razor-thin): this specific unit's base joint measured essentially the
+full bare-servo range (2000us, close to the unmounted servo's own
+2150us), well past what 91° needs — the community's ~90° figure looks
+like a conservative *soft limit* in their own calibration, not this
+mechanism's true mechanical stop.
+
+Pulse-width **polarity** of every channel has been checked on the real arm (2026-09-28 → 2026-10-03, SESSION_LOG):
+base left = higher pulse; raising the arm = lower elbow pulse; bending the elbow = higher shoulder pulse; grip = higher
+claw pulse.
 
 ### Sensor health is checked automatically (v1.1.0)
 
@@ -204,6 +333,41 @@ out a bad fresh calibration; it only fits while the sensors are worn/strapped th
 
 `--sensors` passes when the data is right; a flaky-but-recovering sensor is listed as `[NOTE]` with its name, and a
 low data rate (e.g. from repeated dropouts) is only a note — it doesn't affect a demo.
+
+**MeArm path** (`run_demo_live.py --mearm`, `calibrate_mearm_alignment.py`): the same checks -- neither starts on faulty
+data, the preview holds the model on a fault, and an alignment capture is redone. On the real arm, `phase3_control_loop`
+built with servos ON runs `edgeneuro::ImuHealth` every servo cycle: on a failed IMU **every servo holds its current
+pulse** (it stops, it does not move anywhere) and resumes when the data is live again.
+
+### Quick start: posing the servos by hand / measuring the linkage (needs hardware)
+
+Both tools talk to `servo_limit_finder_4ch`, so flash that first
+(`cd firmware && cmake --build build --target flash_servo_limit_finder_4ch`), start it with the SWD jump in
+`CLAUDE.md` (the bootloader often won't run it on its own), then check with
+`python3 tools/check_hardware_ready.py`. Nothing else may have the serial port open
+(a stray `miniterm` gives `Resource busy`).
+
+```sh
+cd /Users/jeremmy/Desktop/neuroEdge
+source .venv/bin/activate
+python3 tools/servo_pose_4ch.py            # pose the servos: show / set shoulder 1650 / all 1500 / q
+python3 tools/measure_linkage_region.py    # measure the feasible shoulder x elbow region (you press Enter at the first sign of binding)
+```
+
+Inside `servo_pose_4ch.py`: `show` reads the four pulses back, `rest` goes to the chosen rest pose
+(base/shoulder/elbow 1500, claw 1300), `set <channel> <µs>` walks one servo there 25 µs at a time
+(channels: 1-4 or base/shoulder/elbow/claw), `all <µs>` puts base/shoulder/elbow at <µs> and **always
+sends the claw to its own rest (1300), never to <µs>**, `+ 4` / `- 2` nudge the selected channel, `q` quits
+and prints the final pose as one line (`base=1500 shoulder=1500 elbow=1500 claw=1300`, paste-ready). It
+never leaves the measured ranges, and `rest`/`all` move the elbow before the shoulder.
+The board boots at the chosen rest pose — base/shoulder/elbow 1500 µs, claw 1300 µs (open) — so a fresh
+session starts from the same pose every time. The very first pulse after power-up still moves each servo
+from wherever it was, at its own full speed: clear the space around the arm before powering up.
+
+`measure_linkage_region.py` brings the claw to 1300 and the base to 1500 first, starts EVERY shoulder
+position from the same rest pose (elbow first, then shoulder — backlash makes a position reached from
+elsewhere unrepeatable), is back at rest whenever it asks you something, and puts the whole arm back to
+rest when it ends (also on Ctrl+C or an error).
 
 ## Real-dataset compatibility (EMG-EPN-612)
 

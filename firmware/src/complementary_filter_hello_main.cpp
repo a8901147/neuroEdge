@@ -26,7 +26,7 @@
 //     here anyway for a value that means something when read off a debugger.
 //
 // dt: measured, not a delay()-derived guess -- see kDt below and PRD.md
-// Phase 1.5 Stage 4b for how complementary_filter_stress_test_main.cpp
+// Phase 1.5 Stage 4b for how complementary_filter_stress_test_main.cpp (removed 2026-09-26, see git history 8f5472b)
 // established this loop shape's real ~163ms period. This stage's loop is
 // still far coarser than a real control loop (see next paragraph), but is
 // fine for a first "does the fusion respond sensibly to real motion" check.
@@ -310,7 +310,7 @@ int main(void) {
     }
     delay(1000000u);
 
-    // Measured, not estimated: complementary_filter_stress_test_main.cpp
+    // Measured, not estimated: complementary_filter_stress_test_main.cpp (removed 2026-09-26, see git history 8f5472b)
     // runs this same delay(400000u)-paced loop shape (I2C transaction +
     // two UART prints per iteration) and wall-clock timing over a 60s/367-
     // iteration run gave 163.4ms/iteration, not the ~250ms a delay()-only

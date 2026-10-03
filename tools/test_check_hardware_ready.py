@@ -182,6 +182,46 @@ class SensorCheckTest(unittest.TestCase):
 
 
 
+class BootCheckTest(unittest.TestCase):
+    """--boot-check (CLAUDE.md says to always run it after a flash): reads the PC over SWD -- faked here -- and says
+    whether execution reached the app, sits in the WeAct bootloader, or sits in the factory ROM bootloader."""
+
+    def run_check(self, pcs, poll_seconds=3.0):
+        import contextlib
+        import io
+        from unittest import mock
+        reads = iter(pcs)
+        clock = [0.0]
+
+        def sleep(s):
+            clock[0] += s
+        out = io.StringIO()
+        with mock.patch.object(chr_, "_read_pc", lambda: next(reads)), mock.patch("time.time", lambda: clock[0]), \
+                mock.patch("time.sleep", sleep), contextlib.redirect_stdout(out):
+            ok = chr_.check_boot_reached_app(poll_seconds)
+        return ok, out.getvalue()
+
+    def test_the_app_running_passes(self):
+        ok, out = self.run_check([0x08005E0A])
+        self.assertTrue(ok)
+        self.assertIn("[OK", out)
+
+    def test_it_keeps_polling_while_the_weact_bootloader_still_runs(self):
+        ok, _out = self.run_check([0x080001AC, 0x080001AC, 0x08005E0A])
+        self.assertTrue(ok)
+
+    def test_stuck_in_the_weact_bootloader_fails_and_gives_the_swd_jump(self):
+        ok, out = self.run_check([0x080001AC] * 10, poll_seconds=3.0)
+        self.assertFalse(ok)
+        self.assertIn(chr_.START_APP_CMD, out.split("[FAIL]")[1])
+
+    def test_the_factory_rom_bootloader_is_not_mistaken_for_the_app(self):
+        # 0x1fff0000 is numerically above the app's start address: checked first (a 2026-09-12 review bug)
+        ok, out = self.run_check([chr_.ROM_BOOTLOADER_BASE + 0x10])
+        self.assertFalse(ok)
+        self.assertIn("BOOT0", out)
+
+
 class PortInUseTest(unittest.TestCase):
     def test_a_port_that_another_program_is_also_reading_gives_a_message_not_a_traceback(self):
         # 2026-09-28, real: "device reports readiness to read but returned no data (device disconnected or multiple access

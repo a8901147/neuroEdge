@@ -340,5 +340,67 @@ class ObliqueBasisTest(unittest.TestCase):
         self.assertAlmostEqual(recovered_mag, 20.0 * deg, places=3)
 
 
+class ApplyAnchorMapTest(unittest.TestCase):
+    """Properties of the measured-anchor mapping (not pinned to any
+    particular real calibration's numbers, so re-measuring never fights
+    these tests)."""
+
+    def test_exact_at_every_anchor(self):
+        anchors = [(-0.63, -0.9), (0.0, 0.0), (1.2, 0.9)]
+        for x, y in anchors:
+            self.assertAlmostEqual(rdl.apply_anchor_map(anchors, x, -2.0, 2.0), y, places=9)
+
+    def test_caller_anchor_order_does_not_matter(self):
+        a = [(0.0, 0.0), (1.0, 1.0), (-1.0, -1.0)]
+        b = sorted(a)
+        for x in (-0.7, 0.0, 0.4, 0.9):
+            self.assertAlmostEqual(rdl.apply_anchor_map(a, x, -5, 5),
+                                   rdl.apply_anchor_map(b, x, -5, 5), places=12)
+
+    def test_clamps_to_output_range_when_extrapolating(self):
+        anchors = [(0.0, 0.0), (1.0, 1.0)]
+        self.assertAlmostEqual(rdl.apply_anchor_map(anchors, 50.0, -0.14, 0.9), 0.9)
+        self.assertAlmostEqual(rdl.apply_anchor_map(anchors, -50.0, -0.14, 0.9), -0.14)
+
+    def test_output_range_given_in_either_order(self):
+        anchors = [(0.0, 0.0), (1.0, 1.0)]
+        self.assertAlmostEqual(rdl.apply_anchor_map(anchors, 50.0, 0.9, -0.14), 0.9)
+
+    def test_reversed_polarity_is_supported(self):
+        # bigger sensor value -> smaller model ctrl (e.g. shoulder: raising
+        # the arm must LOWER the MeArm shoulder ctrl to raise the model)
+        anchors = [(0.0, 0.9), (1.28, -0.14)]
+        self.assertGreater(rdl.apply_anchor_map(anchors, 0.0, -0.14, 0.9),
+                           rdl.apply_anchor_map(anchors, 1.0, -0.14, 0.9))
+
+    def test_monotone_between_anchors(self):
+        anchors = [(-0.63, -0.9), (0.0, 0.0), (1.2, 0.9)]
+        xs = [-0.63 + i * (1.2 + 0.63) / 60 for i in range(61)]
+        ys = [rdl.apply_anchor_map(anchors, x, -2.0, 2.0) for x in xs]
+        self.assertTrue(all(b >= a - 1e-12 for a, b in zip(ys, ys[1:])))
+
+    def test_each_side_gets_its_own_slope(self):
+        # asymmetric anchors: the negative side must be steeper than the
+        # positive side, not one blended slope through both ends
+        anchors = [(-0.63, -0.9), (0.0, 0.0), (1.2, 0.9)]
+        neg_slope = rdl.apply_anchor_map(anchors, -0.3, -2, 2) / -0.3
+        pos_slope = rdl.apply_anchor_map(anchors, 0.3, -2, 2) / 0.3
+        self.assertGreater(neg_slope, pos_slope * 1.5)
+
+    def test_center_anchor_is_honored_not_replaced_by_a_two_point_fit(self):
+        # a plain 2-point fit through RIGHT/LEFT would map x=0 (hang) off
+        # center -- the 3-anchor version must put hang exactly at 0
+        self.assertAlmostEqual(
+            rdl.apply_anchor_map([(-0.63, -0.9), (0.0, 0.0), (1.2, 0.9)], 0.0, -2, 2), 0.0)
+
+    def test_rejects_fewer_than_two_anchors(self):
+        with self.assertRaises(ValueError):
+            rdl.apply_anchor_map([(0.0, 0.0)], 0.0, -1, 1)
+
+    def test_rejects_duplicate_x(self):
+        with self.assertRaises(ValueError):
+            rdl.apply_anchor_map([(0.5, 0.0), (0.5, 1.0)], 0.5, -1, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

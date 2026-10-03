@@ -1,0 +1,59 @@
+{
+  "measured_at": "2026-09-27 13:28:42",
+  "step_us": 25,
+  "shoulder_points": [
+    {
+      "pulse": 1500,
+      "angle_deg": 50.0,
+      "elbow_pulse": 1500
+    },
+    {
+      "pulse": 1575,
+      "angle_deg": 55.0,
+      "elbow_pulse": 1500
+    },
+    {
+      "pulse": 1650,
+      "angle_deg": 60.0,
+      "elbow_pulse": 1500
+    },
+    {
+      "pulse": 1725,
+      "angle_deg": 65.0,
+      "elbow_pulse": 1500
+    },
+    {
+      "pulse": 1800,
+      "angle_deg": 70.0,
+      "elbow_pulse": 1500
+    },
+    {
+      "pulse": 1650,
+      "angle_deg": 61.0,
+      "elbow_pulse": 1500
+    },
+    {
+      "pulse": 1500,
+      "angle_deg": 50.0,
+      "elbow_pulse": 1500
+    }
+  ],
+  "elbow_points": [
+    {
+      "pulse": 1500,
+      "angle_deg": 55.0,
+      "shoulder_pulse": 1575
+    },
+    {
+      "pulse": 1700,
+      "angle_deg": 53.0,
+      "shoulder_pulse": 1575
+    }
+  ],
+  "envelope_shoulders": [
+    1500,
+    1575,
+    1650,
+    1800
+  ]
+}

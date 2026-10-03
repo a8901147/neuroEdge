@@ -1,0 +1,56 @@
+{
+  "measured_at": "2026-09-26 23:43:55",
+  "step_us": 25,
+  "dwell_s": 0.8,
+  "backoff_steps": 3,
+  "records": [
+    {
+      "shoulder": 1500,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1675,
+      "elbow_down_bind": 550,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500
+    },
+    {
+      "shoulder": 1650,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1725,
+      "elbow_down_bind": 700,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500
+    },
+    {
+      "shoulder": 1800,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1750,
+      "elbow_down_bind": 800,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500
+    },
+    {
+      "shoulder": 2100,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1450,
+      "elbow_down_bind": 725,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500
+    },
+    {
+      "shoulder": 1350,
+      "shoulder_bind_at_elbow_1500": 1800,
+      "elbow_up_bind": null,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500
+    },
+    {
+      "shoulder": 1200,
+      "shoulder_bind_at_elbow_1500": 1250,
+      "elbow_up_bind": null,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500
+    }
+  ]
+}

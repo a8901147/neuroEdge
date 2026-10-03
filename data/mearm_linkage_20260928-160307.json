@@ -1,0 +1,59 @@
+{
+  "measured_at": "2026-09-28 16:06:13",
+  "step_us": 25,
+  "dwell_s": 0.8,
+  "return_dwell_s": 0.15,
+  "backoff_steps": 3,
+  "claw_rest_us": 1300,
+  "shoulders_requested": [
+    1875,
+    1950
+  ],
+  "records": [
+    {
+      "shoulder": 1875,
+      "elbow_hold": 1200,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1500,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500,
+      "elbow_up_start": 1200,
+      "elbow_down_start": 1200,
+      "shoulder_bind_cause": null,
+      "elbow_up_cause": "linkage",
+      "elbow_down_cause": null
+    },
+    {
+      "shoulder": 1950,
+      "elbow_hold": 1200,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1500,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500,
+      "elbow_up_start": 1200,
+      "elbow_down_start": 1200,
+      "shoulder_bind_cause": null,
+      "elbow_up_cause": "linkage",
+      "elbow_down_cause": null
+    }
+  ],
+  "rejected_attempts": [
+    {
+      "shoulder": 1950,
+      "elbow_hold": 1200,
+      "shoulder_bind_at_elbow_1500": null,
+      "elbow_up_bind": 1550,
+      "elbow_down_bind": null,
+      "elbow_up_limit": 1850,
+      "elbow_down_limit": 500,
+      "elbow_up_start": 1200,
+      "elbow_down_start": 1200,
+      "shoulder_bind_cause": null,
+      "elbow_up_cause": "linkage",
+      "elbow_down_cause": null,
+      "attempt": 1
+    }
+  ]
+}

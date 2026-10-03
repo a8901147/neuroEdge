@@ -11,7 +11,7 @@
 // file's header comment for the full RM0368/CMSIS-header verification of
 // every TIM3/GPIO register value used here, not repeated here.
 //
-// USART2 (PA2=TX, PA3=RX, AF7, 9600 baud) reused byte-for-byte from
+// USART2 (PA2=TX, PA3=RX, AF7, 115200 baud) reused byte-for-byte from
 // phase3_control_loop_main.cpp's already-verified usart2_init/
 // usart2_send_uint/non-blocking-RXNE-poll pattern.
 
@@ -38,7 +38,8 @@ static void usart2_init(void) {
     GPIOA->AFR[0] &= ~((0xFu << (4u * 2u)) | (0xFu << (4u * 3u)));
     GPIOA->AFR[0] |= (7u << (4u * 2u)) | (7u << (4u * 3u));
 
-    USART2->BRR = 0x0683u; // 9600 baud @ 16MHz HSI, OVER8=0
+    USART2->BRR = 0x008Bu; // 115200 baud @ 16MHz HSI, OVER8=0 -- value and RM0368 19.3.4
+                           // derivation are phase3_control_loop_main.cpp's (~0.08% error)
     USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
 }
 

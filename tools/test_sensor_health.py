@@ -183,11 +183,20 @@ class TooLittleDataTest(unittest.TestCase):
         # 2026-09-28 raw view: 26 lines/s, every reading live (|a| 0.99 g, noisy) -- only the RATE was low (a failing
         # upper arm kept stalling the firmware). The first version called that a fault and blocked the preview: too strict.
         mon = sh.HealthMonitor()
-        t = feed(mon, 60, HANG, FORE_OK, dt=0.04)                 # 25 samples/s instead of 100
+        t = feed(mon, 60, HANG, FORE_OK, dt=0.07)                 # ~14 samples/s instead of ~34 (2026-10-03 rate)
         rep = mon.report(t)
         self.assertTrue(rep.ok, rep.problems)
         self.assertEqual({(w.sensor, w.kind) for w in rep.warnings}, {("upper_arm", "slow_data"), ("forearm", "slow_data")})
         # (kept in the report for check_hardware_ready --sensors' note; not printed as a notice -- QuietKindsInWarningTextTest)
+
+    def test_the_real_line_rate_after_the_uart_fix_is_normal_not_slow(self):
+        # 2026-10-03: the firmware now queues its UART lines instead of blocking on them; 115200 baud carries ~34 of its
+        # ~346-byte lines per second (measured 34.5/s), so that -- not the old assumed 100/s -- is a healthy rate
+        mon = sh.HealthMonitor()
+        t = feed(mon, 100, HANG, FORE_OK, dt=1.0 / 34.0)
+        rep = mon.report(t)
+        self.assertTrue(rep.ok, rep.problems)
+        self.assertEqual([w for w in rep.warnings if w.kind == "slow_data"], [])
 
     def test_almost_no_data_is_still_a_fault(self):
         mon = sh.HealthMonitor()
@@ -204,7 +213,7 @@ class TooLittleDataTest(unittest.TestCase):
 class ReadyToStartTest(unittest.TestCase):
     def test_a_slow_rate_is_accepted_only_after_the_first_couple_of_seconds(self):
         mon = sh.HealthMonitor()
-        t = feed(mon, 60, HANG, FORE_OK, dt=0.04)
+        t = feed(mon, 60, HANG, FORE_OK, dt=0.07)
         rep = mon.report(t)
         self.assertFalse(sh.ready_to_start(rep, elapsed_s=0.5))
         self.assertTrue(sh.ready_to_start(rep, elapsed_s=2.5))

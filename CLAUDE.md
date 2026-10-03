@@ -30,10 +30,19 @@ cmake --build build --target flash_<name>   # needs ST-Link attached
 # for the exact list this repo's CI actually runs.
 ```
 
-After any SWD flash, the app will not run until a genuine **power-cycle**
-(unplug/replug USB) — a reset alone is not enough. Use
-`tools/check_hardware_ready.py --boot-check` to confirm the app is
-actually running before debugging further.
+After an SWD flash the WeAct bootloader often does not jump to the app
+(unplug/replug and `reset run` are both unreliable). Start the app by jumping
+straight to its Reset_Handler over SWD, bypassing the bootloader:
+
+```sh
+openocd -f firmware/openocd.cfg -c "init; reset halt; reg msp [read_memory 0x08004000 32 1]; reg pc [expr {[read_memory 0x08004004 32 1] & ~1}]; reg xPSR 0x01000000; resume; exit"
+```
+
+This needs firmware built after 2026-10-03: before that, `startup.c` never
+enabled the FPU and the apps only ran because the bootloader left it on (a
+direct jump HardFaulted with UFSR.NOCP). Always confirm with
+`tools/check_hardware_ready.py --boot-check` before debugging further. A
+standalone power-on (no ST-Link) still depends on the bootloader.
 
 ## Rules specific to this repo
 
