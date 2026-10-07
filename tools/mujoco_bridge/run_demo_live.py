@@ -924,15 +924,43 @@ def capture_emg_window(latest, seconds, tail_seconds, label, verbose=True):
     return tail if tail else samples[-5:]
 
 
-def send_emg_threshold(ser, threshold):
+def send_emg_threshold(ser, threshold, release=None):
     """Sends phase3_control_loop_main.cpp's live threshold-update command:
     "T<uint>\\n", parsed non-blockingly (one byte per main-loop pass, never
     stalling it) by that file's main loop and applied via
     GripStateMachine::set_threshold() -- see that file's kFallbackThreshold
     comment for the full design. Applies immediately; no reflash, no boot
     gate, works whether the board just booted or has been streaming for an
-    hour."""
-    ser.write(f"T{int(threshold)}\n".encode("ascii"))
+    hour.
+
+    2026-10-04: with `release`, "T<threshold>,<release>\n" -- the board then
+    grips above the threshold and lets go only below the lower release
+    threshold (GripStateMachine::set_thresholds; see emg_release_threshold)."""
+    if release is None:
+        ser.write(f"T{int(threshold)}\n".encode("ascii"))
+    else:
+        ser.write(f"T{int(threshold)},{int(release)}\n".encode("ascii"))
+
+
+# 2026-10-04: two thresholds (hysteresis), the standard cure for an on/off myoelectric switch that chatters. The user
+# found the grip let go too easily: in the 13:12 calibration the relaxed level was ~1170, the threshold 1876, and the
+# clench's lowest 10% only ~1908 (5% already below) -- a gentler hold while the arm moves dips under the threshold and
+# the 0.15 s off-debounce releases it. Gripping still needs the full threshold; letting go needs falling below a release
+# threshold this fraction of the way from the relaxed level up to the threshold (relaxed hands sit far below it).
+EMG_RELEASE_FRACTION = 0.5
+
+
+def emg_release_threshold(relaxed_mean, threshold):
+    return int(round(relaxed_mean + EMG_RELEASE_FRACTION * (threshold - relaxed_mean)))
+
+
+class EmgThreshold(int):
+    """calibrate_emg_threshold's result: the grip threshold itself (an int, as before) plus its .release threshold."""
+
+    def __new__(cls, threshold, release):
+        obj = super().__new__(cls, int(threshold))
+        obj.release = int(release)
+        return obj
 
 
 EMG_RECORD_SECONDS = 3.5
@@ -1109,8 +1137,10 @@ def calibrate_emg_threshold(ser, latest, interactive=True):
         log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std,
                              threshold, contracted_mean, contracted_std, suspect)
 
-    send_emg_threshold(ser, threshold)
-    return threshold
+    release = emg_release_threshold(relaxed_mean, threshold)
+    print(f"放開門檻={release}(握住要超過 {threshold},放開要低於 {release})")
+    send_emg_threshold(ser, threshold, release)
+    return EmgThreshold(threshold, release)
 
 
 def load_calibration_file(path):
@@ -1250,16 +1280,21 @@ def apply_emg_threshold(args, ser, latest):
             sys.exit(f"--skip-emg-calibration passed but no saved emg_threshold in "
                       f"{args.calibration_file} -- run once without this flag first.")
         emg_threshold = saved["emg_threshold"]
-        print(f"--skip-emg-calibration: loaded threshold={emg_threshold} from "
+        release = saved.get("emg_release_threshold")
+        print(f"--skip-emg-calibration: loaded threshold={emg_threshold} release={release} from "
               f"{args.calibration_file} (captured {saved.get('emg_threshold_captured_at', 'unknown time')}).")
-        send_emg_threshold(ser, emg_threshold)
+        if release is None:
+            print("--skip-emg-calibration: 這份校正沒有放開門檻(2026-10-04 之前的),握住和放開用同一個門檻。"
+                  "不加 --skip-emg-calibration 重新做一次 EMG 校正,就會有放開門檻(握住比較不容易鬆掉)。")
+        send_emg_threshold(ser, emg_threshold, release)
     else:
         emg_threshold = calibrate_emg_threshold(ser, latest, interactive=True)
         if emg_threshold is not None:
-            save_calibration_fields(args.calibration_file, {
-                "emg_threshold": emg_threshold,
-                "emg_threshold_captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            fields = {"emg_threshold": int(emg_threshold),
+                      "emg_threshold_captured_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            if getattr(emg_threshold, "release", None) is not None:
+                fields["emg_release_threshold"] = emg_threshold.release
+            save_calibration_fields(args.calibration_file, fields)
             print(f"EMG threshold saved to {args.calibration_file} -- next run can pass "
                   f"--skip-emg-calibration to reuse it instead of re-prompting.")
 

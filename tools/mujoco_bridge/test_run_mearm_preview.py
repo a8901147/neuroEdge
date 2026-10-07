@@ -332,6 +332,69 @@ class EmgThresholdTest(unittest.TestCase):
         self.assertLess(cal_i, r_i)
 
 
+class EmgReleaseThresholdTest(unittest.TestCase):
+    """2026-10-04: two thresholds. The user found the grip let go too easily: in the 13:12 calibration the relaxed level
+    was ~1170, the threshold 1876, and the clench's lowest 10% only ~1908 -- a gentler hold while the arm moves dips under
+    1876. The board now grips above the threshold and lets go only below a lower RELEASE threshold, halfway between the
+    relaxed level and the threshold. Shared by --mearm and the humanoid path (apply_emg_threshold)."""
+
+    def writes(self, events):
+        return [w for e in events if e[0] == "write" for w in [e[1]] if w.startswith(b"T")]
+
+    def test_the_release_threshold_is_halfway_between_relaxed_and_the_threshold(self):
+        self.assertEqual(rdl.emg_release_threshold(1170.0, 1876), 1523)
+        self.assertLess(rdl.emg_release_threshold(1170.0, 1876), 1876)
+        self.assertGreater(rdl.emg_release_threshold(1170.0, 1876), 1170)
+
+    def test_the_line_carries_the_release_threshold_when_there_is_one(self):
+        class Port:
+            def __init__(self):
+                self.out = b""
+
+            def write(self, b):
+                self.out += b
+        p = Port()
+        rdl.send_emg_threshold(p, 1876, 1523)
+        rdl.send_emg_threshold(p, 1876)
+        self.assertEqual(p.out, b"T1876,1523\nT1876\n")
+
+    def test_skip_sends_the_saved_release_threshold_too(self):
+        events = []
+        run_preview(uart_line(fx.HANG, fx.STRAIGHT), dict(fx.SAVED_9_13, emg_release_threshold=900), ticks=30,
+                    events=events, skip_emg=True)
+        self.assertEqual(self.writes(events), [b"T1129,900\n"])
+
+    def test_an_older_calibration_without_one_sends_the_threshold_alone_and_says_how_to_get_one(self):
+        events = []
+        _c, out = run_preview(uart_line(fx.HANG, fx.STRAIGHT), fx.SAVED_9_13, ticks=30, events=events, skip_emg=True)
+        self.assertEqual(self.writes(events), [b"T1129\n"])
+        self.assertIn("放開門檻", out)
+
+    def test_a_fresh_calibration_saves_its_release_threshold(self):
+        run_preview(uart_line(fx.HANG, fx.STRAIGHT), fx.SAVED_9_13, ticks=30, skip_emg=False,
+                    emg_calibrated=rdl.EmgThreshold(1876, 1523))
+        self.assertEqual(run_preview.last_calibration["emg_threshold"], 1876)
+        self.assertEqual(run_preview.last_calibration["emg_release_threshold"], 1523)
+
+    def test_the_calibration_itself_computes_and_sends_both(self):
+        relaxed = [(i * 0.0125, 1150, 1170 + (i % 3) * 10) for i in range(160)]
+        clench = [(i * 0.0125, 2300, 2500) for i in range(160)]
+        tails = iter([relaxed, clench])
+        sent = []
+
+        class Port:
+            def write(self, b):
+                sent.append(b)
+        with mock.patch.object(rdl, "capture_emg_window", lambda *a, **k: next(tails)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = rdl.calibrate_emg_threshold(Port(), types.SimpleNamespace(snapshot_emg_raw=lambda: (1150, 1170)),
+                                                 interactive=False)
+        mean, std = rdl.emg_mean_std([s[2] for s in relaxed])
+        self.assertEqual(int(result), int(round(mean + rdl.EMG_THRESHOLD_K * std)))
+        self.assertEqual(result.release, rdl.emg_release_threshold(mean, int(result)))
+        self.assertEqual(sent, [f"T{int(result)},{result.release}\n".encode()])
+
+
 class RunMearmPreviewEndToEndTest(unittest.TestCase):
     def test_arm_left_drives_the_model_base_left_via_path_b_default(self):
         ctrl, out = run_preview(uart_line(fx.LEFT, fx.STRAIGHT), fx.SAVED_9_13)

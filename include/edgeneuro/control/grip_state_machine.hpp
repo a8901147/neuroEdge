@@ -56,7 +56,7 @@ public:
     // -- this is what rejects a brief noise spike or a momentary twitch
     // from triggering a grip/release, not just the threshold itself.
     GripStateMachine(ValueType threshold, ValueType on_duration, ValueType off_duration) noexcept
-        : threshold_(threshold), on_duration_(on_duration), off_duration_(off_duration) {}
+        : threshold_(threshold), release_(threshold), on_duration_(on_duration), off_duration_(off_duration) {}
 
     // Returns true only on the update() call where the state actually
     // changes (a transition edge) -- false on every other call, including
@@ -65,7 +65,10 @@ public:
     // value only if the caller specifically needs to react to the moment
     // of transition (e.g. to fire an actuator command once, not every tick).
     bool update(ValueType envelope, ValueType dt) noexcept {
-        if (envelope > threshold_) {
+        // 2026-10-04: two thresholds (hysteresis) -- while gripping, only falling below the release threshold counts as
+        // letting go (equal to threshold_ unless set_thresholds() set a lower one: then exactly the old behaviour)
+        const ValueType level = state_ == State::Gripping ? release_ : threshold_;
+        if (envelope > level) {
             above_time_ += dt;
             below_time_ = ValueType{0};
         } else {
@@ -95,8 +98,15 @@ public:
     // in-progress hold shouldn't be discarded just because a fresher
     // threshold arrived -- only the comparison in the NEXT update() call
     // uses the new value.
-    void set_threshold(ValueType threshold) noexcept { threshold_ = threshold; }
+    void set_threshold(ValueType threshold) noexcept { set_thresholds(threshold, threshold); }
+    // 2026-10-04: grip above `threshold`, release only below `release` (capped at `threshold`). The user found a single
+    // threshold let go too easily: a grip held more gently while the arm moves dips under the grip threshold.
+    void set_thresholds(ValueType threshold, ValueType release) noexcept {
+        threshold_ = threshold;
+        release_ = release < threshold ? release : threshold;
+    }
     ValueType threshold() const noexcept { return threshold_; }
+    ValueType release_threshold() const noexcept { return release_; }
 
     void reset() noexcept {
         above_time_ = ValueType{0};
@@ -106,6 +116,7 @@ public:
 
 private:
     ValueType threshold_;
+    ValueType release_;
     ValueType on_duration_;
     ValueType off_duration_;
     ValueType above_time_{0};
