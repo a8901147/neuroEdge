@@ -140,3 +140,57 @@ TEST_CASE("GripStateMachine::reset clears accumulated time and returns to Releas
     REQUIRE_FALSE(edge);
     REQUIRE_FALSE(gsm.is_gripping());
 }
+
+// 2026-10-04: two thresholds (hysteresis). The user found the grip "lets go too easily": in the 2026-10-04 13:12
+// calibration the relaxed level was ~1170, the threshold 1876, and the clench's lowest 10% only ~1908 (5% of it already
+// below) -- a grip held more gently while the arm moves dips under 1876 and is released after 0.15 s. Gripping still
+// needs the full threshold; once gripping, only falling below the lower RELEASE threshold for off_duration lets go.
+TEST_CASE("GripStateMachine with a release threshold: a gentler hold between the two thresholds keeps the grip",
+          "[control][grip_hysteresis]") {
+    edgeneuro::GripStateMachine<float> g(1876.0f, 0.15f, 0.15f);
+    g.set_thresholds(1876.0f, 1523.0f);
+    for (int i = 0; i < 200; ++i) g.update(2300.0f, 0.001f);      // a firm clench
+    REQUIRE(g.is_gripping());
+    for (int i = 0; i < 2000; ++i) g.update(1700.0f, 0.001f);     // 2 s held more gently: below 1876, above 1523
+    REQUIRE(g.is_gripping());
+}
+
+TEST_CASE("GripStateMachine with a release threshold: relaxing below it still releases after off_duration",
+          "[control][grip_hysteresis]") {
+    edgeneuro::GripStateMachine<float> g(1876.0f, 0.15f, 0.15f);
+    g.set_thresholds(1876.0f, 1523.0f);
+    for (int i = 0; i < 200; ++i) g.update(2300.0f, 0.001f);
+    for (int i = 0; i < 140; ++i) g.update(1170.0f, 0.001f);      // relaxed, but not yet for 0.15 s
+    REQUIRE(g.is_gripping());
+    bool released = false;
+    for (int i = 0; i < 20; ++i) released = g.update(1170.0f, 0.001f) || released;
+    REQUIRE(released);
+    REQUIRE_FALSE(g.is_gripping());
+}
+
+TEST_CASE("GripStateMachine with a release threshold: gripping still needs the full threshold",
+          "[control][grip_hysteresis]") {
+    edgeneuro::GripStateMachine<float> g(1876.0f, 0.15f, 0.15f);
+    g.set_thresholds(1876.0f, 1523.0f);
+    for (int i = 0; i < 2000; ++i) g.update(1700.0f, 0.001f);     // above release, below grip: not a grip
+    REQUIRE_FALSE(g.is_gripping());
+}
+
+TEST_CASE("GripStateMachine: set_threshold alone means one threshold for both, exactly as before",
+          "[control][grip_hysteresis]") {
+    edgeneuro::GripStateMachine<float> g(1000.0f, 0.15f, 0.15f);
+    g.set_thresholds(1876.0f, 1523.0f);
+    g.set_threshold(1876.0f);
+    REQUIRE(g.threshold() == 1876.0f);
+    REQUIRE(g.release_threshold() == 1876.0f);
+    for (int i = 0; i < 200; ++i) g.update(2300.0f, 0.001f);
+    for (int i = 0; i < 200; ++i) g.update(1700.0f, 0.001f);      // below the single threshold: released
+    REQUIRE_FALSE(g.is_gripping());
+}
+
+TEST_CASE("GripStateMachine: a release threshold above the grip threshold is capped at it",
+          "[control][grip_hysteresis]") {
+    edgeneuro::GripStateMachine<float> g(1000.0f, 0.15f, 0.15f);
+    g.set_thresholds(1500.0f, 1800.0f);
+    REQUIRE(g.release_threshold() == 1500.0f);
+}

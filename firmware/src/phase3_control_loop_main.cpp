@@ -40,6 +40,7 @@
 #include <cstdint>
 
 #include "edgeneuro/control/grip_state_machine.hpp"
+#include "edgeneuro/control/emg_threshold_link.hpp"
 #include "edgeneuro/control/imu_health.hpp"        // used only when EDGENEURO_DRIVE_SERVOS
 #include "edgeneuro/control/mpu6050_power_check.hpp"
 #include "edgeneuro/control/mearm_drive.hpp"       // used only when EDGENEURO_DRIVE_SERVOS
@@ -280,7 +281,8 @@ static void usart2_init(void) {
 // call), same reasoning as this file's other several volatile globals used
 // purely for cross-cutting diagnostics/state.
 static edgeneuro::GripStateMachine<float> *g_grip_for_threshold_update = nullptr;
-static bool g_threshold_line_active = false;
+// "T<on>\n" or, since 2026-10-04, "T<on>,<release>\n" (two-threshold grip; emg_threshold_link.hpp, host-tested)
+static edgeneuro::emg_threshold_link::Parser g_threshold_parser;
 static volatile bool g_home_requested = false;   // set by an 'R' byte, consumed by the servo block
 // 2026-10-03: the MEArm calibration arrives over UART (mearm_calibration_link.hpp; sent by run_demo_live.py) instead of
 // only being compiled in. Every received byte goes to the parser; a complete, checksummed message raises the flag and
@@ -291,7 +293,6 @@ static volatile bool g_cal_received = false;
 #endif
 static uint32_t g_cal_applied = 0u;
 static uint32_t g_cal_rejected = 0u;      // complete messages whose calibration Path B refused
-static uint32_t g_threshold_line_value = 0;
 
 // Deliberately does NOT send any acknowledgment string: found the hard way
 // (2026-09-09) that this function is called from INSIDE usart2_send_byte's
@@ -311,23 +312,13 @@ static void poll_threshold_update(void) {
 #endif
         if (b == (uint8_t)'R') {
             // 2026-10-03: "walk every servo back to the start pose" (run_demo_live.py --mearm sends it once the person
-            // has let the arm hang; the servo block in main() picks it up -- mearm::drive::Homing). Not part of a T line.
+            // has let the arm hang; the servo block in main() picks it up -- mearm::drive::Homing). Not part of a T line
+            // (the threshold parser drops a T line it interrupts).
             g_home_requested = true;
-            g_threshold_line_active = false;
-        } else if (b == (uint8_t)'T') {
-            g_threshold_line_active = true;
-            g_threshold_line_value = 0;
-        } else if (g_threshold_line_active) {
-            if (b >= (uint8_t)'0' && b <= (uint8_t)'9') {
-                g_threshold_line_value = g_threshold_line_value * 10u + (uint32_t)(b - (uint8_t)'0');
-            } else if (b == (uint8_t)'\n') {
-                if (g_grip_for_threshold_update != nullptr) {
-                    g_grip_for_threshold_update->set_threshold((float)g_threshold_line_value);
-                }
-                g_threshold_line_active = false;
-            }
-            // any other byte mid-line (e.g. a stray '\r') is ignored, not
-            // an error -- keeps this parser tiny.
+        }
+        if (g_threshold_parser.feed(b) && g_grip_for_threshold_update != nullptr) {
+            g_grip_for_threshold_update->set_thresholds((float)g_threshold_parser.on(),
+                                                        (float)g_threshold_parser.release());
         }
     }
 }
