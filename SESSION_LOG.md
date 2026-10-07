@@ -50,3 +50,5 @@ shoulder × elbow region (09-24 → 09-27).
   now paced and resent, and 5 of 5 sends were applied. The base follows slowly while the arm is raised, cutting
   unwanted swing 3–5×. Release threshold set below the grip threshold. Recordings showed the remaining grip problem:
   arm motion alone (3848) out-reads a firm grip (1318). That is electrode placement, which no threshold can fix.
+- **10-07: robust wiring (v1.3.0).** Breadboard replaced by lever connectors: bus errors fell from ~15/s to 1 in 28 s
+  of motion. The two-threshold grip was verified with the demo motions.

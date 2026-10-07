@@ -186,7 +186,7 @@ MEArm's 4 servos (base/shoulder/elbow/claw) via TIM3's 4 PWM channels
 | `python3 tools/servo_pose_4ch.py` | Finding a safe rest pose by hand, with `servo_limit_finder_4ch` flashed: `set shoulder 1650`, `all 1500`, `show`. Never leaves the measured ranges, always moves 25 µs at a time, prints the final pose as one line. |
 | `python3 tools/measure_linkage_region.py` | Measuring the real arm's feasible shoulder×elbow region (SESSION_LOG TODO C), with `servo_limit_finder_4ch` flashed. Moves one servo at a time, one 25 µs step per ~0.8 s; **you press Enter at the first sign of binding** (buzzing, straining, links stopping), it backs off and records the pulse. Asks the cause of each stop (linkage vs. collision). Saves raw results to a new `data/mearm_linkage_<timestamp>.json` after every shoulder position (never overwrites); `--shoulders 1350,1350,1425` picks/repeats positions, `--analyze FILE...` merges runs (no hardware) and shows the repeatability. |
 | `python3 tools/gen_mearm_envelope.py` | Regenerates the real arm's safe (shoulder, elbow) pulse envelope — `include/edgeneuro/control/mearm_envelope_data.hpp` and `data/envelope_golden.csv` — from the raw measurement files listed in `SOURCES`. Coarse and conservative: one elbow window per measured shoulder position, windows INTERSECTED between them (never interpolated), shoulder limited to the measured range; every stop of any cause counts. Used by `edgeneuro::PulseEnvelope` (not wired into the firmware yet). |
-| `python3 tools/measure_servo_angles.py` | Measuring how the real arm's LINK ANGLES depend on the servo pulses (Path B's missing last step: model command → pulse). Moves one servo at a time inside the safe envelope and asks you to type each link's angle (a phone-inclinometer reading, sign supplied by you: 0 = horizontal, far end higher = positive). Part A: shoulder → upper-arm elevation; part B: elbow → forearm elevation. Saves a new `data/mearm_angles_<timestamp>.json`; `--analyze FILE` (no hardware) fits the two lines, warns about implausible slopes / outliers, and says how much of the model's shoulder travel the arm can reach. Model side: `tools/mujoco_bridge/mearm_pulse_map.py`. |
+| `python3 tools/measure_servo_angles.py` | Measuring how the real arm's LINK ANGLES depend on the servo pulses (Path B's missing last step: model command → pulse). Moves one servo at a time inside the safe envelope and asks you to type each link's angle (a phone-inclinometer reading, sign supplied by you: 0 = horizontal, far end higher = positive). Part A: shoulder → upper-arm elevation; part B: elbow → forearm elevation. Saves a new `data/mearm_angles_<timestamp>.json`; `--analyze FILE` (no hardware) fits the two lines, warns about implausible slopes / outliers, and says how much of the model's shoulder travel the arm can reach. Model side: `tools/mujoco_bridge/mearm_pulse_map.py`. Which link is which: `docs/which_link_to_measure.png`. |
 
 ### Servo <-> STM32 pin assignment
 
@@ -205,6 +205,25 @@ PA6/PA7/PB0/PB1 are confirmed free: PA0 is EMG ADC, PA2/PA3 are USART2,
 PB6/PB7 are I2C1 (both IMUs), PC13 is the LED (`phase3_control_loop_main.cpp`).
 
 ### Wiring checklist
+
+**Black Pill pin map (all connections, checked 2026-10-07 against `firmware/README.md` and the firmware):**
+
+| Pin | Function | Connects to |
+| --- | --- | --- |
+| PA0 | ADC1_IN0 | MyoWare `ENV` |
+| PA2 / PA3 | USART2 TX / RX | USB-TTL `RXD` / `TXD` (crossed); also its `GND`; its `VCC` not connected |
+| PA6 / PA7 / PB0 / PB1 | TIM3 CH1–CH4 | servo signal: base / shoulder / elbow / claw |
+| PB6 / PB7 | I2C1 SCL / SDA | both MPU6050s (in parallel) |
+| PA13 / PA14 | SWDIO / SWCLK | ST-Link (plus `GND`; ST-Link `3.3V` and `RST` not connected — OpenOCD resets over SWD) |
+| 3.3V | sensor supply | both MPU6050 `Vin`, forearm MPU6050 `AD0` (→ 0x69), MyoWare `VIN`; upper-arm `AD0` left open (0x68) |
+| GND | common ground | every device, incl. one wire from the servo − WAGO |
+
+Since 2026-10-07 the sensor side uses WAGO 221 lever connectors instead of a breadboard (3.3V, sensor GND, SDA, SCL).
+Thin dupont wire is below the WAGO 221's 0.2 mm² minimum: fold/twist it or use a crimped ferrule, and tug-test every
+wire — an I2C line that only touches intermittently shows up as bursts of timeouts / bus recoveries in the diag line.
+`check_hardware_ready.py --i2c-scan` reflashes the board with the scan firmware: flash `phase3_control_loop` back
+afterwards. A firmware that blinks the LED forever at boot means an IMU did not answer its wake-up write (code 9 =
+upper arm, 10 = forearm).
 
 **Current wiring (2026-10-01, the one that made the servos run smoothly — SESSION_LOG 09-29 → 10-01):** a 4×AA
 battery box (~5 V) powers the servos only; two WAGO 221-415 lever connectors are the + and − distribution points
