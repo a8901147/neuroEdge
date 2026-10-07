@@ -5,7 +5,7 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 2× MPU6050, MyoWare 2.0, MeArm) for each release is in its GitHub Release notes; the full story behind each item is in
 [`SESSION_LOG.md`](SESSION_LOG.md).
 
-## [1.3.0] — 2026-10-07
+## [1.3.0] — 2026-10-08
 
 A stable point for the MeArm demo task (hang → forward → left → grip a tape roll → lift → right → place): the EMG grip
 holds while the arm moves, and the hardware is documented as it is now wired. The user verified this code on the real
