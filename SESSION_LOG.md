@@ -52,3 +52,5 @@ shoulder × elbow region (09-24 → 09-27).
   arm motion alone (3848) out-reads a firm grip (1318). That is electrode placement, which no threshold can fix.
 - **10-07: robust wiring (v1.3.0).** Breadboard replaced by lever connectors: bus errors fell from ~15/s to 1 in 28 s
   of motion. The two-threshold grip was verified with the demo motions.
+- **10-08: latency on the target.** At 16 MHz the real configuration takes 15 µs per sample (1.5 % CPU). A 32-channel
+  stress test overruns 1 ms on classify ticks, so it would need the faster clock.
