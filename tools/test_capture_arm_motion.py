@@ -227,5 +227,111 @@ class InteractiveTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+# ---- EMG (2026-10-04): the calibration logs only hold a still arm; these record EMG while the arm moves ----
+
+def tick_emg(emg_min, emg_max, upper=(0.99, 0.05, 0.26), fore=(0.0, 0.6, 0.8)):
+    return (f"tick=1 emg_min={emg_min} emg_max={emg_max} elbow_raw_ax={fore[0]:.6f} elbow_raw_ay={fore[1]:.6f} "
+            f"elbow_raw_az={fore[2]:.6f} shoulder_raw_ax={upper[0]:.6f} shoulder_raw_ay={upper[1]:.6f} "
+            f"shoulder_raw_az={upper[2]:.6f}\r\n")
+
+
+class EmgBoard(FakeBoard):
+    """emg(t) -> (emg_min, emg_max)"""
+
+    def __init__(self, emg, period=0.03):
+        super().__init__(still, period)
+        self.emg = emg
+
+    def read_line(self):
+        self.t += self.period
+        return tick_emg(*self.emg(self.t))
+
+
+def emg_samples(values, dt=0.03):
+    """[(t, upper, fore, (v, v)), ...] -- a constant-width window around each value"""
+    return [(i * dt, (0.99, 0.05, 0.26), (0.0, 0.6, 0.8), (v, v)) for i, v in enumerate(values)]
+
+
+class EmgParseTest(unittest.TestCase):
+    def test_the_emg_window_is_read_from_a_real_firmware_line(self):
+        self.assertEqual(cam.parse_emg(REAL_TICK), (3411, 3429))
+
+    def test_a_line_without_emg_gives_none(self):
+        self.assertIsNone(cam.parse_emg(tick(*still(0))))
+
+    def test_recorded_samples_carry_the_emg_and_it_is_saved(self):
+        board = EmgBoard(lambda t: (600, 620))
+        samples = cam.record_phase(board.read_line, board.clock, 0.5)
+        self.assertEqual(samples[0][3], (600, 620))
+        path = Path(tempfile.mkdtemp()) / "m.json"
+        cam.save(path, {"relaxed_task": samples}, "fake")
+        self.assertEqual(json.loads(path.read_text())["phases"]["relaxed_task"][0]["emg"], [600, 620])
+
+    def test_the_accel_analysis_still_works_on_samples_with_emg(self):
+        board = EmgBoard(lambda t: (600, 620))
+        samples = cam.record_phase(board.read_line, board.clock, 2.0)
+        self.assertGreater(cam.speed_stats(samples, "upper_arm")["n"], 10)
+
+
+class EmgEventsTest(unittest.TestCase):
+    """The grip decision replayed like the firmware's GripStateMachine: grip once the envelope stays ABOVE the grip
+    threshold for 0.15 s; while gripping, release once it stays BELOW the release threshold for 0.15 s. The tick line
+    carries each 10 ms window's min/max, so the compared value is approximated by their midpoint."""
+
+    def test_a_relaxed_signal_never_grips(self):
+        ev = cam.emg_events(emg_samples([600] * 100), threshold=1500, release=1000)
+        self.assertEqual((ev["grips"], ev["releases"]), (0, 0))
+
+    def test_a_short_spike_does_not_grip_but_a_sustained_one_does(self):
+        short = [600] * 20 + [2000] * 3 + [600] * 20          # 0.09 s above
+        long = [600] * 20 + [2000] * 10 + [600] * 20          # 0.30 s above
+        self.assertEqual(cam.emg_events(emg_samples(short), 1500, 1000)["grips"], 0)
+        self.assertEqual(cam.emg_events(emg_samples(long), 1500, 1000)["grips"], 1)
+
+    def test_a_dip_between_the_two_thresholds_does_not_release(self):
+        held = [2000] * 10 + [1200] * 30 + [2000] * 10        # 1200: under the grip threshold, over the release one
+        ev = cam.emg_events(emg_samples(held), 1500, 1000)
+        self.assertEqual((ev["grips"], ev["releases"]), (1, 0))
+
+    def test_a_dip_below_the_release_threshold_releases(self):
+        ev = cam.emg_events(emg_samples([2000] * 10 + [800] * 10), 1500, 1000)
+        self.assertEqual((ev["grips"], ev["releases"]), (1, 1))
+
+    def test_a_short_dip_below_the_release_threshold_does_not_release(self):
+        ev = cam.emg_events(emg_samples([2000] * 10 + [800] * 3 + [2000] * 10), 1500, 1000)   # 0.09 s below
+        self.assertEqual((ev["grips"], ev["releases"]), (1, 0))
+
+    def test_the_window_midpoint_is_compared_not_its_peak(self):
+        # a noisy relaxed window 1000..1900 (midpoint 1450) must not count as above a 1500 grip threshold
+        wide = [(i * 0.03, (0.99, 0.05, 0.26), (0.0, 0.6, 0.8), (1000, 1900)) for i in range(50)]
+        ev = cam.emg_events(wide, 1500, 1000)
+        self.assertEqual((ev["grips"], ev["above_grip"]), (0, 0.0))
+
+    def test_time_above_and_below_the_thresholds(self):
+        ev = cam.emg_events(emg_samples([2000] * 30 + [800] * 70), 1500, 1000)
+        self.assertAlmostEqual(ev["above_grip"], 0.3)
+        self.assertAlmostEqual(ev["below_release"], 0.7)
+
+
+class EmgProtocolTest(unittest.TestCase):
+    def test_the_emg_set_records_relaxed_and_gripping_both_still_and_while_the_arm_moves(self):
+        names = [p[0] for p in cam.PHASE_SETS["emg"]]
+        for n in ("relaxed_still", "relaxed_task", "grip_still", "grip_task"):
+            self.assertIn(n, names)
+        self.assertTrue(any(n.startswith(cam.CHECK_PREFIX) for n in names))
+
+    def test_the_summary_reports_false_grips_while_relaxed_and_false_releases_while_gripping(self):
+        phases = {"relaxed_task": emg_samples([600] * 20 + [2000] * 10 + [600] * 20),
+                  "grip_task": emg_samples([2000] * 10 + [800] * 10 + [2000] * 10)}
+        text = "\n".join(cam.summary_lines(phases, emg_thresholds=(1500, 1000)))
+        self.assertRegex(text, r"誤觸[^\n]*1 次")
+        self.assertRegex(text, r"誤放開[^\n]*1 次")
+
+    def test_without_thresholds_the_summary_still_shows_the_emg_levels(self):
+        text = "\n".join(cam.summary_lines({"relaxed_task": emg_samples([600] * 10)}))
+        self.assertIn("EMG", text)
+        self.assertIn("600", text)
+
+
 if __name__ == "__main__":
     unittest.main()

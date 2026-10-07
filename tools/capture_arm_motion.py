@@ -20,6 +20,7 @@ programs using the serial port first (run_demo_live.py, watch_imu_raw.py).
     python3 tools/capture_arm_motion.py
     python3 tools/capture_arm_motion.py --port /dev/tty.usbserial-XXXXXXXX
     python3 tools/capture_arm_motion.py --set base_raise    # ~1.5 min: raising vs swinging, for the base (2026-10-04)
+    python3 tools/capture_arm_motion.py --set emg           # ~1.5 min: grip misfires / releases while the arm moves
 """
 import argparse
 import json
@@ -66,7 +67,20 @@ BASE_RAISE_PHASES = [
     ("hold_forward", "靜止：往前伸平", 8.0, "手臂往前伸直、和地面平行，停住不動。"),
     ("check_diagonal", "驗證：左下舉到右上", 12.0, "（不在任務裡）從左下方斜斜舉到右上方再回來，做 2 次。"),
 ]
-PHASE_SETS = {"filter": PHASES, "base_raise": BASE_RAISE_PHASES}
+# 2026-10-04: the EMG calibration logs only hold a STILL arm (relaxed / clenched ~2 s each). Whether the grip
+# misfires while the relaxed arm moves, or lets go while a light grip is carried through the demo, needs EMG recorded
+# while the arm moves -- the tick line already carries each 10 ms window's emg_min/emg_max.
+EMG_PHASES = [
+    ("relaxed_still", "手放鬆、手臂垂下不動", 8.0, "手完全放鬆（不要握拳），手臂自然垂下，不要動。"),
+    ("relaxed_task", "手放鬆，手臂照 demo 動", 20.0,
+     "手保持放鬆、不要握拳，手臂照 demo 的路線動：垂下→往前伸平→左擺→抬起→右擺→放下。（看會不會誤觸）"),
+    ("grip_still", "輕輕握拳、手臂不動", 8.0, "像拿著膠帶那樣輕輕握拳（不用太用力），手臂停在左前方不動。"),
+    ("grip_task", "輕輕握拳，手臂照 demo 動", 20.0,
+     "保持輕輕握拳不放開，手臂照 demo 第 5–7 步動：抬起→右擺→放下，可以重複。（看會不會誤放開）"),
+    ("grip_firm_still", "用力握拳、手臂不動", 5.0, "用力握拳（最大力氣的七八成），手臂不動。"),
+    ("check_open_close", "驗證：握拳、放開重複", 15.0, "（不在任務裡）握拳約 1 秒、放開約 1 秒，重複 5 次。"),
+]
+PHASE_SETS = {"filter": PHASES, "base_raise": BASE_RAISE_PHASES, "emg": EMG_PHASES}
 DEFAULT_SET = "filter"
 
 SPEED_CUTOFF_HZ = 1.0     # the 1-euro filter's own derivative low-pass (d_cutoff, the paper's recommended 1 Hz)
@@ -82,8 +96,15 @@ def parse_tick(text):
     return out[0], out[1]
 
 
+def parse_emg(text):
+    """(emg_min, emg_max) of the firmware's 10 ms window from one tick line (raw 12-bit ADC counts), or None."""
+    m = re.search(r"emg_min=(\d+) emg_max=(\d+)", text)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def record_phase(read_line, clock, seconds, on_second=None):
-    """[(t, upper, fore), ...] for `seconds`, t from the phase start. Lines without sensor data are skipped."""
+    """[(t, upper, fore, emg), ...] for `seconds`, t from the phase start; emg = (min, max) or None. Lines without
+    sensor data are skipped."""
     start = clock()
     samples = []
     next_tick = 1.0
@@ -94,7 +115,7 @@ def record_phase(read_line, clock, seconds, on_second=None):
             break
         up, fore = parse_tick(text)
         if up is not None or fore is not None:
-            samples.append((t, up, fore))
+            samples.append((t, up, fore, parse_emg(text)))
         if on_second and t >= next_tick:
             on_second(int(next_tick), len(samples))
             next_tick += 1.0
@@ -152,16 +173,51 @@ def save(path, phases, port):
     payload = {
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "port": port,
-        "note": "raw accel (g) from phase3_control_loop tick lines; t in s from each phase's start",
-        "phases": {name: [{"t": t, "upper_arm": list(u) if u else None, "forearm": list(f) if f else None}
-                          for t, u, f in samples]
+        "note": "raw accel (g) and the 10 ms EMG window [emg_min, emg_max] (ADC counts) from phase3_control_loop tick "
+                "lines; t in s from each phase's start",
+        "phases": {name: [{"t": s[0], "upper_arm": list(s[1]) if s[1] else None,
+                           "forearm": list(s[2]) if s[2] else None,
+                           "emg": list(s[3]) if len(s) > 3 and s[3] else None}
+                          for s in samples]
                    for name, samples in phases.items()},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=1) + "\n")
 
 
-def summary_lines(phases):
+GRIP_ON_S = GRIP_OFF_S = 0.15   # firmware kOnDuration / kOffDuration
+
+
+def emg_events(samples, threshold, release, on_s=GRIP_ON_S, off_s=GRIP_OFF_S):
+    """The grip decision replayed like GripStateMachine, starting released: grip once the value stays ABOVE `threshold`
+    for on_s; while gripping, release once it stays BELOW `release` for off_s. The firmware compares a 1 kHz EMA of
+    the envelope; the tick line only has each 10 ms window's min/max, so their midpoint stands in for it."""
+    vals = [((s[3][0] + s[3][1]) / 2.0, s[0]) for s in samples if len(s) > 3 and s[3]]
+    gripping, above, below, grips, releases = False, 0.0, 0.0, 0, 0
+    n_above = n_below = 0
+    prev_t = None
+    for v, t in vals:
+        dt = 0.0 if prev_t is None else t - prev_t
+        prev_t = t
+        n_above += v > threshold
+        n_below += v < release
+        level = release if gripping else threshold
+        if v > level:
+            above, below = above + dt, 0.0
+        else:
+            below, above = below + dt, 0.0
+        if not gripping and above >= on_s:
+            gripping, grips, above = True, grips + 1, 0.0
+        elif gripping and below >= off_s:
+            gripping, releases, below = False, releases + 1, 0.0
+    n = len(vals)
+    return {"n": n, "grips": grips, "releases": releases,
+            "above_grip": n_above / n if n else 0.0, "below_release": n_below / n if n else 0.0,
+            "min": min(v for v, _ in vals) if vals else None, "max": max(v for v, _ in vals) if vals else None,
+            "median": sorted(v for v, _ in vals)[n // 2] if vals else None}
+
+
+def summary_lines(phases, emg_thresholds=None):
     """Per phase and sensor: how fast the arm moved (g/s, about rad/s) and, for still holds, the resting noise (g)."""
     fmt = lambda v: "-" if v is None else f"{v:.3f}"
     lines = []
@@ -175,6 +231,18 @@ def summary_lines(phases):
                    f"最大 {fmt(st['max'])} g/s")
             if name.startswith(("hold_", "check_hold_")):
                 row += f"，靜止雜訊 {fmt(noise_std(samples, sensor))} g"
+            lines.append(row)
+        if any(len(s) > 3 and s[3] for s in samples):
+            th, rel = emg_thresholds if emg_thresholds else (float("inf"), float("-inf"))
+            ev = emg_events(samples, th, rel)
+            row = f"  EMG：{ev['n']} 筆，最低 {ev['min']:.0f} / 中位數 {ev['median']:.0f} / 最高 {ev['max']:.0f}"
+            if emg_thresholds:
+                row += (f"；高於抓握門檻 {th:.0f} 的時間 {ev['above_grip']:.0%}，低於放開門檻 {rel:.0f} 的時間 "
+                        f"{ev['below_release']:.0%}")
+                if name.startswith("relaxed"):
+                    row += f"；→ 誤觸（手放鬆卻判成抓握）{ev['grips']} 次"
+                elif name.startswith("grip"):
+                    row += f"；→ 抓到 {ev['grips']} 次，誤放開（還握著卻判成放開）{ev['releases']} 次"
             lines.append(row)
     return lines
 
@@ -220,6 +288,19 @@ def run_session(read_line, clock, input_fn=input, phases=PHASES, countdown_s=3.0
     return recorded
 
 
+CALIBRATION_FILE = Path(__file__).resolve().parent / "mujoco_bridge" / "shoulder_calibration.json"
+
+
+def current_emg_thresholds(path=CALIBRATION_FILE):
+    """(grip, release) from the calibration run_demo_live.py saved, or None (then the summary shows levels only)."""
+    try:
+        saved = json.loads(Path(path).read_text())
+        on = float(saved["emg_threshold"])
+        return on, float(saved.get("emg_release_threshold", on))
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def main():
     import serial
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -227,7 +308,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=None)
     parser.add_argument("--set", default=DEFAULT_SET, choices=sorted(PHASE_SETS),
-                        help="filter = the 1-euro tuning set (default); base_raise = raising vs swinging, for the base")
+                        help="filter = the 1-euro tuning set (default); base_raise = raising vs swinging, for the base; "
+                             "emg = relaxed/gripping, still and while the arm moves, for the grip thresholds")
     args = parser.parse_args()
     phase_list = PHASE_SETS[args.set]
     port = args.port or autodetect_port()
@@ -247,7 +329,7 @@ def main():
         ser.close()
     out = DATA_DIR / f"arm_motion_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     save(out, phases, port)
-    print("\n".join(summary_lines(phases)))
+    print("\n".join(summary_lines(phases, emg_thresholds=current_emg_thresholds())))
     print(f"\n存到 {out}\n把這個檔名告訴 Claude，就能用它來決定參數。")
 
 
