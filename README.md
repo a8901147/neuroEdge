@@ -206,6 +206,25 @@ PB6/PB7 are I2C1 (both IMUs), PC13 is the LED (`phase3_control_loop_main.cpp`).
 
 ### Wiring checklist
 
+**Black Pill pin map (all connections, checked 2026-10-07 against `firmware/README.md` and the firmware):**
+
+| Pin | Function | Connects to |
+| --- | --- | --- |
+| PA0 | ADC1_IN0 | MyoWare `ENV` |
+| PA2 / PA3 | USART2 TX / RX | USB-TTL `RXD` / `TXD` (crossed); also its `GND`; its `VCC` not connected |
+| PA6 / PA7 / PB0 / PB1 | TIM3 CH1–CH4 | servo signal: base / shoulder / elbow / claw |
+| PB6 / PB7 | I2C1 SCL / SDA | both MPU6050s (in parallel) |
+| PA13 / PA14 | SWDIO / SWCLK | ST-Link (plus `GND`; ST-Link `3.3V` and `RST` not connected — OpenOCD resets over SWD) |
+| 3.3V | sensor supply | both MPU6050 `Vin`, forearm MPU6050 `AD0` (→ 0x69), MyoWare `VIN`; upper-arm `AD0` left open (0x68) |
+| GND | common ground | every device, incl. one wire from the servo − WAGO |
+
+Since 2026-10-07 the sensor side uses WAGO 221 lever connectors instead of a breadboard (3.3V, sensor GND, SDA, SCL).
+Thin dupont wire is below the WAGO 221's 0.2 mm² minimum: fold/twist it or use a crimped ferrule, and tug-test every
+wire — an I2C line that only touches intermittently shows up as bursts of timeouts / bus recoveries in the diag line.
+`check_hardware_ready.py --i2c-scan` reflashes the board with the scan firmware: flash `phase3_control_loop` back
+afterwards. A firmware that blinks the LED forever at boot means an IMU did not answer its wake-up write (code 9 =
+upper arm, 10 = forearm).
+
 **Current wiring (2026-10-01, the one that made the servos run smoothly — SESSION_LOG "伺服電源重新接線"):** a 4×AA
 battery box (~5 V) powers the servos only; two WAGO 221-415 lever connectors are the + and − distribution points
 (battery, the capacitor, all 4 servo red/brown wires via male dupont leads, and on the − one a wire to the Black Pill
