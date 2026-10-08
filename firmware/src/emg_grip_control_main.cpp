@@ -1,5 +1,5 @@
 // Stage 5a: the EMG half of Phase 3's split control loop (see PRD.md
-// Section 3's Phase 3 control-architecture note), running on real
+// §3, system architecture), running on real
 // hardware for the first time -- GripStateMachine and SlewRateLimiter
 // were only ever exercised against synthetic values in Host tests
 // (tests/test_grip_state_machine.cpp, tests/test_slew_rate_limiter.cpp)
@@ -9,7 +9,7 @@
 //
 // Timer + ADC setup is copied verbatim from Stage 3c/3d
 // (timer_adc_1khz_main.c) -- TIM2 TRGO -> ADC1 EXTSEL hardware trigger,
-// already empirically confirmed accurate to <0.5% (PRD.md Stage 3c/3d).
+// already empirically confirmed accurate to <0.5% (SESSION_LOG.md, August 2026).
 // That real, measured 1ms period is why dt=0.001f below is a fact, not a
 // guess, unlike Stage 4b's I2C loop where the assumed dt turned out to be
 // off by 35% (see complementary_filter_stress_test_main.cpp (removed 2026-09-26, see git history 8f5472b)).
@@ -29,7 +29,7 @@
 //
 // kCalibrationEnabled defaults OFF so a normal power-up always reaches
 // the control loop immediately, using kFallbackThreshold (the last known-
-// good value from an actual calibration run, see PRD.md Stage 5a) instead
+// good value from an actual calibration run, see SESSION_LOG.md, August 2026) instead
 // of blocking on human/host interaction. Flip it to true, reflash, and
 // recalibrate whenever electrode placement or skin contact actually
 // changes enough to matter -- not on every boot.

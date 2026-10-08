@@ -11,7 +11,7 @@ namespace edgeneuro {
 // WindowSize=200 @ 1kHz), which is the wrong latency budget for "did the
 // user just start/stop gripping." This is the same reasoning that keeps
 // ComplementaryFilter (see fusion/complementary_filter.hpp) out of
-// Pipeline too; see PRD.md Section 3's Phase 3 control-architecture note.
+// Pipeline too; see PRD.md §3 (system architecture).
 //
 // Also deliberately simpler than a trained classifier (LdaClassifier):
 // with a single EMG channel, there is only one dimension of information

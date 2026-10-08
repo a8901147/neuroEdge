@@ -1,7 +1,7 @@
 // End-to-end integration tests: wire the *real* CsvSignalProvider up to a
 // full EdgeNeuro pipeline (real filters, real feature extraction, real
 // classifier) and replay the actual synthetic fixture files in data/,
-// exercising both PRD Architecture modes:
+// exercising both latency-benchmark modes (PRD.md §3):
 //   - EdgeNeuro<1,6>  : wearable prosthetic fusion (1x EMG + 6-axis IMU)
 //   - EdgeNeuro<32,0> : high-density sEMG stress-test mode
 //

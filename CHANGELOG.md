@@ -5,6 +5,18 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 2× MPU6050, MyoWare 2.0, MeArm) for each release is in its GitHub Release notes; the full story behind each item is in
 [`SESSION_LOG.md`](SESSION_LOG.md).
 
+## [Unreleased]
+
+### Added
+- **Pipeline latency measured on the STM32F401** ([#13]): the host benchmark's two configurations now live in a shared
+  header, and the new `pipeline_latency` firmware times them with the DWT cycle counter. At 16 MHz: `<1,6>` 15 µs per
+  sample on average (317 µs on the classify tick); `<32,0>` 134 µs on average, but its 1.54 ms classify tick overruns a
+  1 ms sample period.
+
+### Changed
+- Documentation rewritten in English to match the current code: README, firmware README, PRD (now a design and
+  requirements document) and a condensed development log. Stale references in code comments were updated.
+
 ## [1.3.0] — 2026-10-08
 
 A stable point for the MeArm demo task (hang → forward → left → grip a tape roll → lift → right → place): the EMG grip
@@ -74,6 +86,7 @@ end to end, in the MuJoCo humanoid arm.
 - DLPF and EMA tremor smoothing; EMG threshold as mean + K·std, with a long-term log of real calibration sessions.
 - Sensors can be marked optional instead of crashing when absent ([#1]); a firmware compile job in CI.
 
+[Unreleased]: https://github.com/a8901147/neuroEdge/compare/v1.3.0...HEAD
 [1.3.0]: https://github.com/a8901147/neuroEdge/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/a8901147/neuroEdge/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/a8901147/neuroEdge/compare/v1.0.0...v1.1.0
@@ -87,3 +100,4 @@ end to end, in the MuJoCo humanoid arm.
 [#7]: https://github.com/a8901147/neuroEdge/pull/7
 [#8]: https://github.com/a8901147/neuroEdge/pull/8
 [#9]: https://github.com/a8901147/neuroEdge/pull/9
+[#13]: https://github.com/a8901147/neuroEdge/pull/13

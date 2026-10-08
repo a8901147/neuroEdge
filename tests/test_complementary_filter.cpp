@@ -4,7 +4,7 @@
 // project doesn't have verified axis conventions or gyro units (deg/s vs
 // rad/s) for that Myo armband hardware. Making up an answer to check
 // against would be exactly the kind of unverified guess this project
-// avoids (see PRD's Phase 1.5 notes on the EMG-EPN-612 schema-guessing
+// avoids (see SESSION_LOG.md's August 2026 notes on the EMG-EPN-612 schema-guessing
 // episode) -- so this stays a self-contained numerical test of the
 // algorithm, independent of any specific sensor's data format.
 
@@ -127,7 +127,7 @@ TEST_CASE("ComplementaryFilter::reset clears roll/pitch state", "[fusion]") {
 // 2026-09-04: added after a real hardware session found firmware's shoulder
 // pitch/roll flipping sign between a forward-raise and a backward-extension
 // that should have been opposite -- traced to this exact formula, not the
-// sensor or the specific mount (see PRD.md/git history for the full
+// sensor or the specific mount (see SESSION_LOG.md/git history for the full
 // derivation). Kept in this file, tested the same sensor-format-independent
 // way as the rest of it (a pure synthetic rotation, not real captured
 // data): initialize() from a synthetic gravity vector rotated by a known
@@ -152,7 +152,7 @@ TEST_CASE("ComplementaryFilter pitch stays monotonic across a full real shoulder
     // decode to the IDENTICAL pitch -- this REQUIRE describes the CORRECT
     // behavior (they must differ) and is expected to FAIL against today's
     // formula; it should start passing once accel_pitch_angle is replaced
-    // with a wide-range formulation (see PRD.md's swing/twist notes).
+    // with a wide-range formulation (see SESSION_LOG.md, 09-01 → 09-05).
     REQUIRE(pitch_for_angle_deg(110.0f) != Approx(pitch_for_angle_deg(70.0f)).margin(1e-3));
 
     // Full-range monotonicity: a real shoulder's flexion/extension sweep

@@ -33,8 +33,7 @@ FetchContent_Declare(
 FetchContent_Populate(cmsis_core)
 
 # Defines <name>, <name>.bin (via objcopy, printing arm-none-eabi-size on
-# every build), and a flash_<name> target (openocd, needs ST-Link attached
-# -- not available until Phase 1.5's ST-Link arrives, see PRD.md).
+# every build), and a flash_<name> target (openocd, needs ST-Link attached).
 function(firmware_add_target name)
     add_executable(${name} ${ARGN})
     target_compile_definitions(${name} PRIVATE STM32F401xC)
@@ -113,25 +112,22 @@ firmware_add_target(complementary_filter_hello src/startup.c src/complementary_f
 # target's own file header for why this exists.
 firmware_add_target(i2c_bus_scan src/startup.c src/i2c_bus_scan_main.c)
 
-# Stage 5a: the EMG half of Phase 3's split control loop (GripStateMachine +
-# SlewRateLimiter) on real MyoWare hardware, independent of the
-# still-blocked MPU6050 side. See this target's own file header.
+# Stage 5a: the EMG half of the control loop (GripStateMachine +
+# SlewRateLimiter) on real MyoWare hardware, before the IMUs were added.
+# See this target's own file header.
 firmware_add_target(emg_grip_control src/startup.c src/emg_grip_control_main.cpp)
 
-# Stage 5b: EMG + IMU combined into the real Phase 3 loop shape, with a
-# non-blocking I2C1 read state machine (necessary since a blocking 14-byte
-# read takes longer than one EMG tick). Targets the LCD1602 stand-in
-# address until a working MPU6050 arrives -- see this target's own file
-# header for why.
+# The product firmware: 1 kHz EMG + two MPU6050s (0x68/0x69) read by a
+# non-blocking I2C1 state machine (a blocking 14-byte read takes longer than
+# one EMG tick), streaming over USART2 and, when enabled below, driving the
+# four MEArm servos. See firmware/README.md.
 firmware_add_target(phase3_control_loop src/startup.c src/phase3_control_loop_main.cpp)
 
 # The real-MEArm servo outputs (TIM3 CH1-4 on PA6/PA7/PB0/PB1) are OFF by
-# default (2026-09-26 review): flashing phase3_control_loop -- needed just to
-# run `run_demo_live.py --mearm` against the MuJoCo model -- must not also move
-# the physical arm. The firmware's servo mapping still drives shoulder/elbow
-# independently (ignoring the linkage coupling, SESSION_LOG TODO C) and from
-# different signals than the tested Path B, so turn it on only deliberately:
-#   cmake -S firmware -B firmware/build -DEDGENEURO_DRIVE_SERVOS=ON
+# default (2026-09-26 review): flashing phase3_control_loop just to watch the
+# MuJoCo model must not also move the physical arm. Turn them on deliberately
+# (CI checks the default build has no TIM3 access):
+#   cmake -S firmware -B firmware/build-servos -DEDGENEURO_DRIVE_SERVOS=ON
 option(EDGENEURO_DRIVE_SERVOS "Drive the 4 MEArm servos from phase3_control_loop" OFF)
 if(EDGENEURO_DRIVE_SERVOS)
     target_compile_definitions(phase3_control_loop PRIVATE EDGENEURO_DRIVE_SERVOS=1)

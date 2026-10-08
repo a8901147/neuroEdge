@@ -1,7 +1,7 @@
 // Graphical counterpart to src/main.cpp: same <1,6> wearable-fusion engine,
 // same CSV fixture, same 1kHz real-time pacing and NoHeapGuard discipline —
 // but rendered as real ImPlot line charts in a native GLFW/OpenGL window
-// instead of an ASCII terminal bar. Per PRD 4.3, this is turnkey/off-the-shelf
+// instead of an ASCII terminal bar. This is turnkey/off-the-shelf
 // (ImGui + ImPlot via CMake FetchContent): no custom web frontend, no DOM.
 
 #include <GLFW/glfw3.h>

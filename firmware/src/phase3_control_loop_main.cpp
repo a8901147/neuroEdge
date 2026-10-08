@@ -4,7 +4,7 @@
 // the blocking mpu6050_read_regs() every prior IMU stage used.
 //
 // Why non-blocking is mandatory here, not just nicer: EMG's TIM2+ADC1
-// trigger fires every 1ms (hardware-verified, PRD.md Stage 3c/3d). A
+// trigger fires every 1ms (hardware-verified, SESSION_LOG.md, August 2026). A
 // full 14-byte I2C read at 100kHz takes ~1.5-2ms -- longer than one tick
 // -- so doing it as one blocking call would stall EMG sampling for more
 // than a full tick period every time. Instead, mpu6050_read_step() below
@@ -21,7 +21,7 @@
 //
 // ImuReader's target address: originally validated against the
 // LCD1602/PCF8574 backpack's address (0x27) while both original
-// MPU6050/GY-521 units were dead (PRD.md Stage 4b) -- the LCD ACKs
+// MPU6050/GY-521 units were dead (SESSION_LOG.md, August 2026) -- the LCD ACKs
 // address+W, accepts any byte as if it were a register address (PCF8574
 // doesn't have registers, it just latches GPIO state), and ACKs address+R,
 // returning whatever's on its input pins. Not real sensor data, but real
@@ -204,7 +204,7 @@ static constexpr uint8_t kMpu6050ConfigReg = 0x1Au;
 static constexpr uint8_t kDlpfCfg6 = 0x06u;
 
 // I2C1 Fast Mode (400kHz, register math below) was tried once a real
-// MPU6050 arrived (PRD.md Stage 5c) and measured a real ~3.4x throughput
+// MPU6050 arrived (SESSION_LOG.md, August 2026) and measured a real ~3.4x throughput
 // win (592/s -> 2028/s completions) -- but a second test on the same
 // wiring immediately after a physical disturbance (shaking the board to
 // look at IMU jitter) got stuck BUSY at 400kHz on wiring that worked fine
@@ -226,8 +226,8 @@ static constexpr uint32_t kI2cTriseFastMode400k = 6u;     // unused, see above
 static constexpr uint32_t kI2cCcr100k = 0x50u;
 static constexpr uint32_t kI2cTrise100k = 0x11u;
 
-// Diagnostic-only globals, readable via `openocd ... mdw` -- see PRD.md
-// Stage 5b debugging notes.
+// Diagnostic-only globals, readable via `openocd ... mdw` -- see
+// SESSION_LOG.md, August 2026.
 volatile int g_imu_state_at_timeout = -1;
 volatile uint32_t g_sr1_at_timeout = 0xFFFFFFFFu;
 volatile uint32_t g_sr2_at_timeout = 0xFFFFFFFFu;
@@ -1110,7 +1110,7 @@ int main(void) {
     // static/global state (verified when this was first ported to the
     // Host-side src/mujoco_bridge_demo.cpp prototype), so two instances
     // don't cross-talk. No post-fusion IirFilter smoothing here (Stage 5b
-    // had one, alpha=0.5, but PRD.md's own notes flag it as never actually
+    // had one, alpha=0.5, but the project notes flagged it as never actually
     // validated against real jitter) -- this matches the already-tested
     // Host-side prototype exactly, which also streams filter.roll()/
     // pitch() directly, so firmware and the Python-side math stay in
@@ -1309,7 +1309,7 @@ int main(void) {
                 // wrong for this mount: a live forward-raise test showed
                 // the motion landing almost entirely on the filter's roll
                 // output (0.1->1.9rad) while pitch barely moved (0.03->
-                // -0.3rad, wrong sign too) -- see PRD.md/git history for
+                // -0.3rad, wrong sign too) -- see SESSION_LOG.md/git history for
                 // the full [CORR] trace this was diagnosed from.
                 //
                 // Geometric derivation (not just re-measured empirically --
