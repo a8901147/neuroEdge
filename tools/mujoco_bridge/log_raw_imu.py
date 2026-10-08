@@ -76,11 +76,12 @@ SETTLE_TAIL_SECONDS = 2.5  # average only the last N seconds of the hold -- give
 # actually changes shoulder_raw by a meaningful amount, or only elbow_raw
 # (which would mean the twist is happening at the wrist, not the shoulder).
 POSES = [
-    ("BASELINE", "手臂自然垂下,手肘打直(這就是基準姿勢本身,零點)"),
-    ("FORWARD", "從 BASELINE 手臂往前伸直,手肘打直,不轉手腕"),
-    ("LEFT_TWIST", "從 BASELINE 手臂往左甩到底,手肘打直,同時大拇指轉朝上"),
-    ("RIGHT_TWIST", "從 BASELINE 手臂往右甩到底,手肘打直,同時大拇指轉朝下"),
-    ("LEFT_NO_TWIST", "(對照組,非校正姿勢) 從 BASELINE 手臂往左甩到底,手肘打直,手腕不要轉,跟 LEFT_TWIST 比較用"),
+    ("BASELINE", "arm hanging naturally, elbow straight (the reference pose itself, the zero)"),
+    ("FORWARD", "from BASELINE, raise the arm straight forward, elbow straight, without turning the wrist"),
+    ("LEFT_TWIST", "from BASELINE, swing the arm fully left, elbow straight, turning the thumb up"),
+    ("RIGHT_TWIST", "from BASELINE, swing the arm fully right, elbow straight, turning the thumb down"),
+    ("LEFT_NO_TWIST", "(control, not a calibration pose) from BASELINE, swing the arm fully left, elbow straight, "
+                      "without turning the wrist; compared against LEFT_TWIST"),
 ]
 
 
@@ -146,7 +147,7 @@ def record_pose(latest, seconds):
         remaining = t_end - time.time()
         shown = int(remaining) + 1
         if shown != last_shown:
-            print(f"  ...錄製中,還剩 {shown} 秒", flush=True)
+            print(f"  ...recording, {shown} s left", flush=True)
             last_shown = shown
         shoulder, elbow = latest.snapshot()
         if shoulder is not None:
@@ -193,9 +194,9 @@ def average_tail(samples, tail_seconds):
             sh = [sum(v[i] for v in second_half) / len(second_half) for i in range(3)]
             drift = max(abs(sh[i] - fh[i]) for i in range(3))
             if drift > 0.05:
-                print(f"  警告:這段錄製的『穩定期』內部,shoulder raw 還在漂移"
-                      f"(前半段 vs 後半段最大差異 {drift:.3f}g)——這個姿勢可能還沒真的定住,"
-                      f"考慮重錄、保持動作更久再結束。")
+                print(f"  Warning: shoulder raw was still drifting during this recording's settled part "
+                      f"(first half vs second half differ by up to {drift:.3f} g): the pose may not have been held "
+                      f"still. Consider re-recording and holding the pose longer.")
 
     return (sx, sy, sz), (ex, ey, ez)
 
@@ -222,10 +223,10 @@ def main():
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
     reader.start()
 
-    print("等待第一筆感測器資料...")
+    print("Waiting for the first sensor data...")
     if not wait_for_first_sample(latest):
-        sys.exit("10 秒內沒收到任何資料,檢查硬體連線/電源後重試")
-    print("資料流正常,開始。\n")
+        sys.exit("No data within 10 s; check the hardware connections and power, then retry")
+    print("Data is streaming. Starting.\n")
 
     # Resume support: load whatever's already saved (e.g. from a run that
     # got interrupted -- see the incremental save below, added 2026-09-03
@@ -239,17 +240,17 @@ def main():
         with open(out_path) as f:
             results = json.load(f)
         if results:
-            print(f"發現先前的錄製結果({', '.join(results.keys())}),會跳過這些、只錄剩下的。\n")
+            print(f"Found earlier recordings ({', '.join(results.keys())}); skipping those and recording only the rest.\n")
 
     for name, instruction in POSES:
         done = len(results.get(name, [])) if args.repeats > 1 else (1 if name in results else 0)
         if done >= args.repeats:
-            print(f"=== {name} === (已有資料,跳過)")
+            print(f"=== {name} === (already recorded, skipping)")
             continue
         for rep in range(done, args.repeats):
             label = f"{name} ({rep + 1}/{args.repeats})" if args.repeats > 1 else name
             print(f"=== {label} ===")
-            # 2026-09-05: this used to hardcode "手垂下" as the universal
+            # 2026-09-05: this used to hardcode "hang the arm down" as the universal
             # return-to-neutral instruction before every pose, which made
             # sense when POSES[0] (REST) really was "arm hangs down" --
             # but broke silently once POSES[0] became BASELINE ("arm
@@ -261,22 +262,22 @@ def main():
             # again. POSES[0] itself (the reference pose) has no prior
             # pose to return to, so it skips this line entirely.
             if name == POSES[0][0]:
-                print(f"請擺出「{instruction}」的姿勢。")
+                print(f"Take this pose: \"{instruction}\".")
             else:
-                print(f"請先回到「{POSES[0][0]}」姿勢({POSES[0][1]})。")
-            print("準備好後按 Enter。")
+                print(f"First return to the \"{POSES[0][0]}\" pose ({POSES[0][1]}).")
+            print("Press Enter when ready.")
             input()
-            print(f"3 秒後開始 -- 接下來請做:「{instruction}」,並保持住直到錄製結束。")
+            print(f"Starting in 3 s. Next: \"{instruction}\", and hold it until recording ends.")
             for n in (3, 2, 1):
                 print(f"  {n}...", flush=True)
                 time.sleep(1.0)
-            print("開始錄製!請維持姿勢。")
+            print("Recording! Hold the pose.")
             samples = record_pose(latest, RECORD_SECONDS)
             shoulder_avg, elbow_avg = average_tail(samples, SETTLE_TAIL_SECONDS)
             if shoulder_avg is None:
-                print("  警告:這段完全沒收到資料,跳過。")
+                print("  Warning: no data at all during this recording; skipping.")
                 continue
-            print(f"  完成 -- shoulder raw(ax,ay,az)=({shoulder_avg[0]:+.3f},{shoulder_avg[1]:+.3f},{shoulder_avg[2]:+.3f})  "
+            print(f"  done -- shoulder raw(ax,ay,az)=({shoulder_avg[0]:+.3f},{shoulder_avg[1]:+.3f},{shoulder_avg[2]:+.3f})  "
                   f"elbow raw(ax,ay,az)=({elbow_avg[0]:+.3f},{elbow_avg[1]:+.3f},{elbow_avg[2]:+.3f})\n")
             entry = {
                 "shoulder_raw_avg": shoulder_avg,
@@ -297,9 +298,9 @@ def main():
             with open(args.out, "w") as f:
                 json.dump(results, f, indent=2)
 
-    print(f"全部完成,結果存到 {args.out}")
+    print(f"All done; results saved to {args.out}")
 
-    print("\n=== 總覽 ===")
+    print("\n=== Summary ===")
     for name, data in results.items():
         entries = data if isinstance(data, list) else [data]
         for i, entry in enumerate(entries):

@@ -230,7 +230,7 @@ class AlignmentFlowTest(unittest.TestCase):
     def test_a_right_twist_on_the_wrong_side_is_retried(self):
         poses = GOOD_POSES[:3] + [(LEFT, ELBOW_STRAIGHT)] + GOOD_POSES[3:]   # 2nd RIGHT attempt = LEFT again
         _s, live, fake, out, _ = run_scripted_flow(poses, ["y", "y"])
-        self.assertIn("右甩", out)
+        self.assertIn("swing right", out)
         self.assertAlmostEqual(self._live_at(live, fake, RIGHT, ELBOW_STRAIGHT)[0], -cma.BASE_SWING, places=6)
 
     def test_claw_answer_selects_which_end_is_closed(self):
@@ -246,7 +246,7 @@ class AlignmentFlowTest(unittest.TestCase):
     def test_too_small_forward_raise_is_retried_not_accepted(self):
         poses = [(HANG, ELBOW_STRAIGHT), (HANG, ELBOW_STRAIGHT)] + GOOD_POSES[1:]   # 2nd = a FORWARD that never moved
         _s, live, fake, out, _ = run_scripted_flow(poses, ["y", "y"])
-        self.assertIn("動作太小", out)
+        self.assertIn("movement too small", out)
         self.assertAlmostEqual(self._live_at(live, fake, FORWARD, ELBOW_STRAIGHT)[1], cma.SH_HIGH_ELEV, places=6)
 
     def test_gives_up_after_repeated_bad_poses_instead_of_looping_forever(self):
@@ -265,7 +265,7 @@ class CaptureRobustnessTest(unittest.TestCase):
         cap = saved["mearm_alignment"]["captures"]
         for got, want in zip(cap["forward_raw"], FORWARD):
             self.assertAlmostEqual(got, want, places=6)
-        self.assertIn("中斷", out)
+        self.assertIn("interrupted", out)
 
     def test_repeated_stalls_give_up_instead_of_looping_forever(self):
         poses = [GOOD_POSES[0]] + [StalePose(FORWARD, ELBOW_STRAIGHT)] * cma.MAX_RETRIES
@@ -333,8 +333,8 @@ class SensorHealthDuringCalibrationTest(unittest.TestCase):
         saved, _live, _f, out, _l = run_scripted_flow(poses, ["y", "y"])
         for got, want in zip(saved["mearm_alignment"]["captures"]["forward_raw"], FORWARD):
             self.assertAlmostEqual(got, want, places=6)          # the redo, not the faulty attempt
-        self.assertIn("硬體異常", out)
-        self.assertIn("前臂", out)
+        self.assertIn("HARDWARE FAULT", out)
+        self.assertIn("forearm", out)
 
     def test_repeated_faulty_captures_give_up_instead_of_saving(self):
         poses = [GOOD_POSES[0]] + [FrozenForearmPose(FORWARD, ELBOW_STRAIGHT)] * cma.MAX_RETRIES
@@ -349,7 +349,7 @@ class SensorHealthDuringCalibrationTest(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             with self.assertRaises(RuntimeError) as cm:
                 cma.wait_for_valid_data(fake)
-        self.assertIn("前臂", str(cm.exception))
+        self.assertIn("forearm", str(cm.exception))
 
     def test_it_starts_by_itself_once_the_sensors_are_healthy(self):
         fake = FakeLatest()
@@ -360,7 +360,7 @@ class SensorHealthDuringCalibrationTest(unittest.TestCase):
         with mock.patch.object(cma, "HEALTH_PREFLIGHT_MAX_S", 10.0), mock.patch.object(cma, "HEALTH_REPEAT_WARNING_S", 0.1), \
                 contextlib.redirect_stdout(out):
             cma.wait_for_valid_data(fake)                        # returns: no exception
-        self.assertIn("硬體異常", out.getvalue())
+        self.assertIn("HARDWARE FAULT", out.getvalue())
 
 
 class MainLoopTest(unittest.TestCase):
@@ -395,7 +395,7 @@ class MainLoopTest(unittest.TestCase):
 
     def test_an_aborted_flow_ends_the_loop_with_a_message(self):
         _ctrl, out = self._run_main(lambda state, latest, args: state.request_abort(), self._good_serial)
-        self.assertIn("校正中止", out)
+        self.assertIn("Calibration aborted", out)
 
     def test_the_model_shows_the_target_pose_until_the_flow_goes_live_then_follows_it(self):
         def flow(state, latest, args):

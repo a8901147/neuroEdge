@@ -79,7 +79,8 @@ def _settle(board, ch, expected, progress, retries):
             time.sleep(RETURN_DWELL_S)
         actual = sp.read_state(board, ch)
     if actual != expected:
-        raise WalkFailed(f"{sp.NAMES[ch - 1]} 走不到 {expected}(讀回 {actual})。序列線是不是掉了步數或板子沒有回應?")
+        raise WalkFailed(f"{sp.NAMES[ch - 1]} did not reach {expected} (read back {actual}). Did the serial link drop "
+                         f"steps, or is the board not responding?")
     return actual
 
 
@@ -130,36 +131,36 @@ def _measure_position(board, stop_requested, s, dwell_s, log, flush_input, progr
            "elbow_down_bind": None, "elbow_up_limit": e_hi, "elbow_down_limit": e_lo,
            "elbow_up_start": None, "elbow_down_start": None,
            "shoulder_bind_cause": None, "elbow_up_cause": None, "elbow_down_cause": None}
-    log(f"\n=== 肩膀 {s} ===  (看到/聽到任何異常就『立刻按 Enter』)")
+    log(f"\n=== shoulder {s} ===  (press Enter AT ONCE on anything abnormal you see or hear)")
     w = walk(board, SHOULDER, s, stop_requested, dwell_s, flush=flush_input, progress=progress)   # 2.
     if w.result == "stopped":
         rec["shoulder_bind_at_elbow_1500"] = w.stopped_at
-        log(f"  肩膀自己就卡住了(手肘在 {elbow_hold}):約 {w.stopped_at}。跳過這個位置。")
+        log(f"  the shoulder itself bound (elbow at {elbow_hold}): at about {w.stopped_at}. Skipping this position.")
         if ask_cause:
             rec["shoulder_bind_cause"] = ask_cause("shoulder", w.stopped_at)
         walk(board, SHOULDER, REST_US, None, progress=progress)
         return rec
-    log("  手肘往上掃(數字變大)…")
+    log("  sweeping the elbow up (increasing pulse)...")
     rec["elbow_up_start"] = sp.read_state(board, ELBOW)
     up = walk(board, ELBOW, e_hi, stop_requested, dwell_s, flush=flush_input, progress=progress)   # 3.
     if up.result == "stopped":
         rec["elbow_up_bind"] = up.stopped_at
-        log(f"  往上在 {up.stopped_at} 停下。")
+        log(f"  stopped going up at {up.stopped_at}.")
         if ask_cause:
             rec["elbow_up_cause"] = ask_cause("elbow_up", up.stopped_at)
     else:
-        log(f"  一路走到 {e_hi} 都沒事。")
+        log(f"  reached {e_hi} with no problem.")
     walk(board, ELBOW, elbow_hold, None, progress=progress)
-    log("  手肘往下掃(數字變小)…")
+    log("  sweeping the elbow down (decreasing pulse)...")
     rec["elbow_down_start"] = sp.read_state(board, ELBOW)
     down = walk(board, ELBOW, e_lo, stop_requested, dwell_s, flush=flush_input, progress=progress)  # 4.
     if down.result == "stopped":
         rec["elbow_down_bind"] = down.stopped_at
-        log(f"  往下在 {down.stopped_at} 停下。")
+        log(f"  stopped going down at {down.stopped_at}.")
         if ask_cause:
             rec["elbow_down_cause"] = ask_cause("elbow_down", down.stopped_at)
     else:
-        log(f"  一路走到 {e_lo} 都沒事。")
+        log(f"  reached {e_lo} with no problem.")
     walk(board, ELBOW, elbow_hold, None, progress=progress)
     # back at the rest pose before anything is asked: the servos hold their pulse, and the person may take a while
     walk(board, SHOULDER, REST_US, None, progress=progress)
@@ -177,11 +178,12 @@ def safe_finish(board, progress=None, log=print):
     """return_to_rest for every way a run can end (done, Ctrl+C, an error): it must not raise, and if the
     arm cannot be put back it says so instead of leaving the person thinking it was."""
     try:
-        log("  手臂回到休息姿勢(夾爪 1300)…")
+        log("  arm returning to the rest pose (claw 1300)...")
         return_to_rest(board, progress)
-        log("  已回到休息姿勢。")
+        log("  back at the rest pose.")
     except (WalkFailed, sp.BoardNotAnswering, KeyboardInterrupt, OSError) as exc:
-        log(f"  警告:手臂回不到休息姿勢({exc})——請確認手臂位置,必要時用 servo_pose_4ch.py 的 rest 指令。")
+        log(f"  Warning: the arm could not return to the rest pose ({exc}). Check the arm; if needed use servo_pose_4ch.py's "
+            f"rest command.")
 
 
 def measure(board, stop_requested, shoulders=DEFAULT_SHOULDERS, save=lambda records: None,
@@ -208,9 +210,9 @@ def measure(board, stop_requested, shoulders=DEFAULT_SHOULDERS, save=lambda reco
             if rejected_out is not None:
                 rejected_out.append(dict(rec, attempt=attempt))     # evidence, kept apart from the measurements
                 save(records)                                       # ...and written out now, not at the end
-            log(f"  重測肩膀 {s}(第 {attempt}/{max_attempts} 次被你退回)")
+            log(f"  re-measuring shoulder {s} (you rejected attempt {attempt}/{max_attempts})")
         else:
-            log(f"  肩膀 {s} 連續 {max_attempts} 次被退回,這個位置不記錄。")
+            log(f"  shoulder {s} was rejected {max_attempts} times in a row; this position is not recorded.")
     return_to_rest(board, progress)
     return records
 
@@ -277,7 +279,7 @@ def load_records(paths):
     for path in paths:
         data = json.loads(Path(path).read_text())
         if not isinstance(data, dict) or not isinstance(data.get("records"), list):
-            raise ValueError(f"{path} 不是量測結果檔(沒有 records)")
+            raise ValueError(f"{path} is not a measurement file (no records)")
         records.extend(data["records"])
     return records
 
@@ -300,39 +302,40 @@ def fit_line(points):
 
 def summarize(records, margin_steps=3, out=print):
     w = windows(records, margin_steps)
-    out("\n肩膀    手肘可動窗口(已扣安全邊界)          次數  上緣重複差  下緣重複差")
+    out("\nshoulder  elbow window (safety margin applied)       runs  top spread  bottom spread")
     fmt = lambda v: "   -" if v is None else f"{v:4d}"
     for x in sorted(w, key=lambda x: x["shoulder"]):
-        out(f"{x['shoulder']:5d}   {x['lo']:6.0f} ~ {x['hi']:6.0f}   (寬 {x['hi'] - x['lo']:5.0f})   {x['n']:3d}     "
+        out(f"{x['shoulder']:5d}     {x['lo']:6.0f} ~ {x['hi']:6.0f}   (width {x['hi'] - x['lo']:5.0f})  {x['n']:3d}     "
             f"{fmt(x['up_spread'])}        {fmt(x['down_spread'])}")
     selfs = [r for r in records if r["shoulder_bind_at_elbow_1500"] is not None]
     if selfs:
-        label = {"collision": "碰撞", "linkage": "連桿", "unsure": "不確定"}
-        out("肩膀自己停下(手肘在 1500 時走不到的位置;這是肩膀的安全界線):")
+        label = {"collision": "collision", "linkage": "linkage", "unsure": "unsure"}
+        out("The shoulder bound by itself (positions it cannot reach with the elbow at 1500; the shoulder's safe limit):")
         for r in selfs:
-            out(f"  想去 {r['shoulder']} → 停在 {r['shoulder_bind_at_elbow_1500']}  "
-                f"({label.get(r.get('shoulder_bind_cause'), '未標原因')})")
+            out(f"  aimed for {r['shoulder']} -> stopped at {r['shoulder_bind_at_elbow_1500']}  "
+                f"({label.get(r.get('shoulder_bind_cause'), 'cause unlabelled')})")
         stops = [r["shoulder_bind_at_elbow_1500"] for r in selfs]
         if len(stops) >= 2:
-            out(f"  這些停止點的重複差 {max(stops) - min(stops)} µs")
+            out(f"  these stops repeat within {max(stops) - min(stops)} µs")
     collisions = [(x["shoulder"], e, p) for x in w for e, p in x["collisions"]]
     if collisions:
-        out("碰撞造成的停止(不算連桿限位,已從上面的窗口排除): " +
-            ", ".join(f"肩膀 {s_} {e} {p}" for s_, e, p in collisions))
+        out("Stops caused by a collision (not a linkage limit; excluded from the windows above): " +
+            ", ".join(f"shoulder {s_} {e} {p}" for s_, e, p in collisions))
     env = safe_envelope(records, margin_steps)
-    out("\n安全包絡(給實體手臂限位用:任何原因的停止都算,已扣安全邊界):")
-    out(f"  肩膀: {env['shoulder_lo']} ~ {env['shoulder_hi']}"
-        + ("" if env["shoulder_lo_tested"] else "   (下限未測:只是伺服機自己的範圍)")
-        + ("" if env["shoulder_hi_tested"] else "   (上限未測:只是伺服機自己的範圍)"))
+    out("\nSafe envelope (limits for the real arm: a stop of any cause counts; safety margin applied):")
+    out(f"  shoulder: {env['shoulder_lo']} ~ {env['shoulder_hi']}"
+        + ("" if env["shoulder_lo_tested"] else "   (lower limit untested: only the servo's own range)")
+        + ("" if env["shoulder_hi_tested"] else "   (upper limit untested: only the servo's own range)"))
     for x in sorted(env["windows"], key=lambda x: x["shoulder"]):
-        out(f"  肩膀 {x['shoulder']:5d}: 手肘 {x['lo']:5.0f} ~ {x['hi']:5.0f}")
+        out(f"  shoulder {x['shoulder']:5d}: elbow {x['lo']:5.0f} ~ {x['hi']:5.0f}")
     lo_lim, hi_lim = sp.RANGES[ELBOW]
-    for name, key in (("上緣 hi", "hi"), ("下緣 lo", "lo")):
+    for name, key in (("top hi", "hi"), ("bottom lo", "lo")):
         f = fit_line([(x["shoulder"], x[key]) for x in w if x[key] not in (lo_lim, hi_lim)])
         if f:
-            out(f"{name}: 手肘 = {f['intercept']:.0f} + {f['slope']:.3f} × 肩膀   (最大誤差 {f['max_residual']:.0f} µs, {f['n']} 點)")
+            out(f"{name}: elbow = {f['intercept']:.0f} + {f['slope']:.3f} × shoulder   (max residual {f['max_residual']:.0f} µs, "
+                f"{f['n']} points)")
         else:
-            out(f"{name}: 有真正卡住的點不到 3 個,還不能擬合直線")
+            out(f"{name}: fewer than 3 real binding points, cannot fit a line yet")
 
 
 def default_out_path(now=None):
@@ -342,7 +345,7 @@ def default_out_path(now=None):
 
 def check_output_path(path, overwrite=False):
     if Path(path).exists() and not overwrite:
-        raise FileExistsError(f"{path} 已經存在,不會覆蓋(要覆蓋請加 --overwrite,或換一個 --out)")
+        raise FileExistsError(f"{path} already exists and will not be overwritten (pass --overwrite, or choose another --out)")
 
 
 def parse_shoulders(text, elbow_hold=REST_US):
@@ -356,11 +359,11 @@ def parse_shoulders(text, elbow_hold=REST_US):
     for token in text.split(","):
         token = token.strip()
         if not token.lstrip("-").isdigit():
-            raise ValueError(f"'{token}' 不是整數")
+            raise ValueError(f"'{token}' is not an integer")
         v = int(token)
         if not (lo + 100 < v <= top if elbow_hold < REST_US else lo + 100 < v < top):
-            raise ValueError(f"肩膀 {v} 太靠近行程兩端(允許 {lo + 100} 到 {top} 之間"
-                             f"{'' if elbow_hold < REST_US else ',不含;手肘讓開(--elbow-hold 小於 1500)時上限可到 ' + str(hi)})")
+            raise ValueError(f"shoulder {v} is too close to the ends of travel (allowed: between {lo + 100} and {top}"
+                             f"{'' if elbow_hold < REST_US else ', exclusive; with the elbow out of the way (--elbow-hold below 1500) the upper limit is ' + str(hi)})")
         out.append(v)
     return tuple(out)
 
@@ -375,11 +378,11 @@ def parse_elbow_hold(text):
     shoulder 1500 (500..1500, SESSION_LOG 2026-09-27) and away from the elbow's own end of travel."""
     token = text.strip()
     if not token.isdigit():
-        raise ValueError(f"'{token}' 不是整數")
+        raise ValueError(f"'{token}' is not an integer")
     v = int(token)
     lo, hi = ELBOW_HOLD_RANGE
     if not lo <= v <= hi:
-        raise ValueError(f"--elbow-hold {v} 超出允許範圍 {lo}~{hi}(肩膀 1500 時量過的手肘安全範圍內)")
+        raise ValueError(f"--elbow-hold {v} is outside the allowed {lo}-{hi} (the elbow's safe range measured at shoulder 1500)")
     return v
 
 
@@ -389,12 +392,12 @@ def ask_ok(rec, input_fn=input, drain=None, out=print):
     if drain:
         drain()             # a queued Enter must not silently accept a bad result
     if rec["shoulder_bind_at_elbow_1500"] is not None:
-        out(f"  記錄: 肩膀 {rec['shoulder']} 自己卡住,約 {rec['shoulder_bind_at_elbow_1500']}")
+        out(f"  record: shoulder {rec['shoulder']} bound by itself, at about {rec['shoulder_bind_at_elbow_1500']}")
     else:
-        up = rec["elbow_up_bind"] if rec["elbow_up_bind"] is not None else f"沒卡住(到 {rec['elbow_up_limit']})"
-        down = rec["elbow_down_bind"] if rec["elbow_down_bind"] is not None else f"沒卡住(到 {rec['elbow_down_limit']})"
-        out(f"  記錄: 肩膀 {rec['shoulder']}  手肘往上停在 {up},往下停在 {down}")
-    return input_fn("  這個位置 OK 嗎?  Enter=OK   r=重測: ").strip().lower() != "r"
+        up = rec["elbow_up_bind"] if rec["elbow_up_bind"] is not None else f"no binding (reached {rec['elbow_up_limit']})"
+        down = rec["elbow_down_bind"] if rec["elbow_down_bind"] is not None else f"no binding (reached {rec['elbow_down_limit']})"
+        out(f"  record: shoulder {rec['shoulder']}  elbow stopped going up at {up}, going down at {down}")
+    return input_fn("  Is this position OK?  Enter=OK   r=re-measure: ").strip().lower() != "r"
 
 
 def ask_cause_cli(where, pulse, input_fn=input, drain=None, out=print):
@@ -403,11 +406,11 @@ def ask_cause_cli(where, pulse, input_fn=input, drain=None, out=print):
     if drain:
         drain()
     while True:
-        answer = input_fn(f"  剛才在 {where} {pulse} 停下的原因?  l=連桿卡住/嗡嗡/吃力(Enter 也是)  "
-                          f"c=碰到底板/桌面/別的零件  ?=不確定: ").strip().lower()
+        answer = input_fn(f"  Why did it stop at {where} {pulse}?  l=linkage binding/buzzing/straining (also Enter)  "
+                          f"c=hit the base/table/another part  ?=unsure: ").strip().lower()
         if answer in CAUSES:
             return CAUSES[answer]
-        out("  看不懂,請輸入 l、c 或 ?")
+        out("  unrecognized, type l, c or ?")
 
 
 def _stdin_stop(dwell_s):
@@ -443,17 +446,17 @@ def load_rejected(paths):
 def summarize_rejected(rejected, out=print):
     if not rejected:
         return
-    show = lambda v: "沒卡住" if v is None else str(v)
-    out("\n被退回的嘗試(不列入上面的窗口與包絡,但同一位置的表現不一致本身就是資訊):")
+    show = lambda v: "no binding" if v is None else str(v)
+    out("\nRejected attempts (not in the windows or envelope above, but inconsistency at one position is information too):")
     for r in rejected:
-        out(f"  肩膀 {r['shoulder']} 第 {r.get('attempt', '?')} 次: 手肘往上 {show(r.get('elbow_up_bind'))}, "
-            f"往下 {show(r.get('elbow_down_bind'))}")
+        out(f"  shoulder {r['shoulder']} attempt {r.get('attempt', '?')}: elbow up {show(r.get('elbow_up_bind'))}, "
+            f"down {show(r.get('elbow_down_bind'))}")
 
 
 def analyze(paths, margin_steps=3, out=print):
     """No hardware: merge one or more measurement files and print the combined table."""
     records = load_records(paths)
-    out(f"{len(records)} 筆記錄,來自 {len(paths)} 個檔案")
+    out(f"{len(records)} record(s) from {len(paths)} file(s)")
     summarize(records, margin_steps, out=out)
     summarize_rejected(load_rejected(paths), out=out)
 
@@ -489,14 +492,18 @@ def main():
     from usb_serial_port import autodetect_port
     board = serial.Serial(args.port or autodetect_port(prefer_cp2102=args.cp2102), sp.BAUD, timeout=0.5)
     state = {ch: sp.read_state(board, ch) for ch in sp.RANGES}
-    print("目前脈寬: " + "  ".join(f"{sp.NAMES[ch - 1]}={v}" for ch, v in state.items()))
-    print(f"\n肩膀位置: {list(shoulders)}  (肩膀移動時手肘停在 {elbow_hold})\n結果存到: {out_path}")
-    print(f"\n這會動肩膀和手肘(一次一顆、每 {DWELL_S} 秒一步 25 µs),夾爪會先慢慢走到 {CLAW_REST_US}(張開)"
-          f"、底座走到 1500,之後都不再動;結束(或中斷)時整隻手臂會回到休息姿勢。\n"
-          f"請清空手臂周圍。看到或聽到任何異常(嗡嗡聲、吃力、連桿卡住或彎曲、碰到東西)就『立刻按一次 Enter』,\n"
-          f"工具會退回一小段,然後問你停下的原因(l=連桿卡住/嗡嗡, c=碰到底板或桌面, ?=不確定)——\n"
-          f"碰撞不是連桿耦合,會另外記錄。每個位置做完會問 OK 嗎,誤按了就輸入 r 重測。Ctrl+C 可隨時結束。")
-    input("準備好就按 Enter 開始: ")
+    print("Current pulse widths: " + "  ".join(f"{sp.NAMES[ch - 1]}={v}" for ch, v in state.items()))
+    print(f"\nShoulder positions: {list(shoulders)}  (the elbow stays at {elbow_hold} while the shoulder moves)\n"
+          f"Results go to: {out_path}")
+    print(f"\nThis moves the shoulder and elbow (one servo at a time, one 25 µs step every {DWELL_S} s). The claw first "
+          f"walks slowly to {CLAW_REST_US} (open)\nand the base to 1500, and neither moves again; at the end (or on an "
+          f"interruption) the whole arm returns to the rest pose.\n"
+          f"Clear the space around the arm. On anything abnormal (buzzing, straining, a link binding or bending, hitting "
+          f"something) press Enter ONCE, AT ONCE:\nthe tool backs off a little and asks why it stopped (l=linkage "
+          f"binding/buzzing, c=hit the base or table, ?=unsure).\nCollisions are not linkage coupling and are recorded "
+          f"separately. After each position it asks whether it was OK; type r to re-measure after a false press. "
+          f"Ctrl+C stops at any time.")
+    input("Press Enter to start: ")
     _drain_stdin()
 
     rejected = []
@@ -520,19 +527,20 @@ def main():
                           elbow_hold=elbow_hold,
                           ask_cause=lambda where, pulse: ask_cause_cli(where, pulse, drain=_drain_stdin))
     except KeyboardInterrupt:
-        print("\n中斷。已存的部分結果仍在檔案裡。")
+        print("\nInterrupted. The partial results saved so far are in the file.")
         interrupted = True
     except WalkFailed as exc:
-        print(f"\n中止:{exc}\n已存的部分結果仍在檔案裡。")
+        print(f"\nAborted: {exc}\nThe partial results saved so far are in the file.")
         interrupted = True
     if interrupted:
         safe_finish(board, progress=None, log=log)            # a normal run already returned to rest itself
-    print(f"\n原始結果存在 {out_path}")
+    print(f"\nRaw results saved in {out_path}")
     if records:
         summarize(records)
     summarize_rejected(rejected)
     if records or rejected:
-        print(f"\n要把多次量測合併看重複性: python3 tools/measure_linkage_region.py --analyze {out_path} <其他檔案>")
+        print(f"\nTo merge several runs and see the repeatability: python3 tools/measure_linkage_region.py --analyze {out_path} "
+              f"<other files>")
 
 
 if __name__ == "__main__":

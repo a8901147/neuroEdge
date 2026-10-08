@@ -75,24 +75,25 @@ def ask_signed_angle(prompt, far_end, input_fn=None, out=print):
         except ValueError:
             value = math.nan
         if math.isfinite(value) and value < 0:
-            out("  不用打負號:先輸入手機顯示的數字,下一題我會問高還是低。")
+            out("  No minus sign needed: type the number the phone shows; the next question asks higher or lower.")
             continue
         if math.isfinite(value) and value <= MAX_ABS_ANGLE_DEG:
             break
-        out(f"  看不懂。請輸入 0 到 {MAX_ABS_ANGLE_DEG:.0f} 之間的數字(度),或 q 結束。")
+        out(f"  unrecognized. Type a number from 0 to {MAX_ABS_ANGLE_DEG:.0f} (degrees), or q to quit.")
     if value == 0.0:
         return 0.0                                                       # horizontal: there is no sign to give
     while True:
-        answer = ask(f"  這根連桿的{far_end}端,比另一端 高還是低?(h=高, l=低, q 結束): ").strip().lower()
+        answer = ask(f"  Is the {far_end} end of this link higher or lower than the other end? "
+                     f"(h=higher, l=lower, q to quit): ").strip().lower()
         if answer == "q":
             return None
         if answer in ("h", "l"):
             return value if answer == "h" else -value
-        out("  看不懂。請輸入 h(高)或 l(低)。")
+        out("  unrecognized. Type h (higher) or l (lower).")
 
 
 def _prompt(link):
-    return f"  {link}的仰角是幾度?(手機顯示的數字,不用打負號,水平=0;q 結束): "
+    return f"  {link}: elevation in degrees? (the number the phone shows, no minus sign, horizontal = 0; q to quit): "
 
 
 def measure(board, table, out_path, log=print):
@@ -114,13 +115,13 @@ def measure(board, table, out_path, log=print):
     try:
         mlr.return_to_rest(board)
         go(ELBOW, SHOULDER_ELBOW_US, SHOULDER)
-        log(f"\n=== 第一部分:肩膀 → 上臂角度(手肘固定在 {SHOULDER_ELBOW_US})===")
+        log(f"\n=== Part 1: shoulder -> upper-arm angle (elbow held at {SHOULDER_ELBOW_US}) ===")
         for pulse in SHOULDER_POINTS:
             go(SHOULDER, pulse, ELBOW)
             actual = sp.read_state(board, SHOULDER)
             elbow_now = sp.read_state(board, ELBOW)
-            log(f"\n肩膀現在在 {actual} µs。")
-            angle = ask_signed_angle(_prompt("上臂(肩膀轉軸到手肘轉軸那根連桿)"), "手肘")
+            log(f"\nShoulder now at {actual} µs.")
+            angle = ask_signed_angle(_prompt("Upper arm (the link from the shoulder pivot to the elbow pivot)"), "elbow")
             if angle is None:
                 stopped = True
                 break
@@ -130,13 +131,13 @@ def measure(board, table, out_path, log=print):
         if not stopped:
             mlr.return_to_rest(board)
             go(SHOULDER, ELBOW_SHOULDER_US, ELBOW)
-            log(f"\n=== 第二部分:手肘 → 前臂角度(肩膀固定在 {ELBOW_SHOULDER_US})===")
+            log(f"\n=== Part 2: elbow -> forearm angle (shoulder held at {ELBOW_SHOULDER_US}) ===")
             for pulse in ELBOW_POINTS:
                 go(ELBOW, pulse, SHOULDER)
                 actual = sp.read_state(board, ELBOW)
                 shoulder_now = sp.read_state(board, SHOULDER)
-                log(f"\n手肘現在在 {actual} µs。")
-                angle = ask_signed_angle(_prompt("前臂(手肘轉軸到夾爪那根連桿)"), "夾爪")
+                log(f"\nElbow now at {actual} µs.")
+                angle = ask_signed_angle(_prompt("Forearm (the link from the elbow pivot to the claw)"), "claw")
                 if angle is None:
                     break
                 data["elbow_points"].append({"pulse": actual, "angle_deg": angle, "typed_deg": abs(angle),
@@ -164,23 +165,25 @@ def hysteresis(data):
 
 def report(data, out=print):
     fits = {}
-    for name, key in (("肩膀→上臂", "shoulder_points"), ("手肘→前臂", "elbow_points")):
+    for name, key in (("shoulder -> upper arm", "shoulder_points"), ("elbow -> forearm", "elbow_points")):
         try:
             f = _fit(data[key])
         except ValueError as exc:
-            out(f"{name}: 讀數不夠或不能用({exc};至少要 3 筆、且不能全在同一個脈寬)")
+            out(f"{name}: not enough usable readings ({exc}; needs at least 3, not all at the same pulse width)")
             continue
         fits[key] = f
-        out(f"{name}: 仰角 = {f['at_1500']:+.1f}° + {f['slope']:+.4f}°/µs × (脈寬 − 1500)   "
-            f"({f['n']} 筆,最大誤差 {f['max_residual']:.1f}°)")
+        out(f"{name}: elevation = {f['at_1500']:+.1f}° + {f['slope']:+.4f}°/µs × (pulse − 1500)   "
+            f"({f['n']} readings, max residual {f['max_residual']:.1f}°)")
         if not pm.slope_is_plausible(f["slope"]):
-            out(f"  ⚠ 斜率 {f['slope']:+.4f}°/µs 不合理(SG92R 約 0.09°/µs,連桿可放大或縮小,但差十倍多半是單位或打字錯誤)")
+            out(f"  ⚠ slope {f['slope']:+.4f}°/µs is implausible (an SG92R is about 0.09°/µs; the linkage can scale that, "
+                f"but a tenfold difference is usually a unit or typing error)")
         if f["max_residual"] > RESIDUAL_WARN_DEG:
-            out(f"  ⚠ 最大誤差 {f['max_residual']:.1f}° 超過 {RESIDUAL_WARN_DEG:.0f}°:有一筆讀數可能打錯、或連桿不是直線關係")
+            out(f"  ⚠ max residual {f['max_residual']:.1f}° exceeds {RESIDUAL_WARN_DEG:.0f}°: a reading may be mistyped, "
+                f"or the link is not linear")
     h = hysteresis(data)
-    for name, key in (("肩膀", "shoulder"), ("手肘", "elbow")):
+    for name, key in (("shoulder", "shoulder"), ("elbow", "elbow")):
         if not math.isnan(h[key]):
-            out(f"{name}來回一趟後,同一個脈寬(1500)的角度差 {h[key]:.1f}°(間隙/回彈)")
+            out(f"{name}: after a round trip, the angle at the same pulse (1500) differs by {h[key]:.1f}° (backlash)")
     if "shoulder_points" in fits:
         fs = fits["shoulder_points"]
         fe = fits.get("elbow_points", fs)
@@ -192,8 +195,9 @@ def report(data, out=print):
         model_range = (pb.SHOULDER_RAISED, pb.SHOULDER_REST)
         share = m.shoulder_travel_share(table_range, model_range)
         lo, hi = m.reachable_shoulder_ctrl(table_range)
-        out(f"\n肩膀脈寬 {table_range[0]}~{table_range[1]}(量過的安全範圍)對應到模型肩膀指令 {lo:+.3f}~{hi:+.3f} rad,"
-            f"約佔模型肩膀行程({model_range[0]:+.3f}~{model_range[1]:+.3f})的 {share * 100:.0f}%。")
+        out(f"\nShoulder pulses {table_range[0]}-{table_range[1]} (the measured safe range) map to model shoulder commands "
+            f"{lo:+.3f} to {hi:+.3f} rad, about {share * 100:.0f}% of the model's shoulder travel "
+            f"({model_range[0]:+.3f} to {model_range[1]:+.3f}).")
 
 
 def main():
@@ -206,7 +210,7 @@ def main():
     if args.analyze:
         data = json.loads(args.analyze.read_text())
         if not isinstance(data, dict) or "shoulder_points" not in data:
-            sys.exit(f"{args.analyze} 不是角度量測檔")
+            sys.exit(f"{args.analyze} is not an angle measurement file")
         report(data)
         return
     out_path = args.out or default_out_path()
@@ -218,15 +222,17 @@ def main():
     from usb_serial_port import autodetect_port
     table = env.build_table(mlr.load_records([env.ROOT / "data" / n for n in env.SOURCES]))
     board = serial.Serial(args.port or autodetect_port(prefer_cp2102=args.cp2102), sp.BAUD, timeout=0.5)
-    print("目前脈寬: " + "  ".join(f"{sp.NAMES[ch - 1]}={sp.read_state(board, ch)}" for ch in sp.RANGES))
-    print(f"\n結果存到: {out_path}\n")
-    print("怎麼量角度:把手機平貼在連桿側面,長邊沿著連桿(兩個轉軸螺絲的連線)。\n"
-          "每一個位置會問兩題:(1) 手機顯示的角度數字(不用打負號);(2) 這根連桿的遠端(上臂:手肘那頭;前臂:夾爪那頭)"
-          "比另一端『高還是低』——正負號只由你眼睛看到的這一題決定,不由手機決定。q 結束,已量的會保留。")
-    print("手臂會一次一顆、一步一步慢慢移動,只在量過的安全包絡內。請清空手臂周圍。")
-    input("準備好就按 Enter 開始: ")
+    print("Current pulse widths: " + "  ".join(f"{sp.NAMES[ch - 1]}={sp.read_state(board, ch)}" for ch in sp.RANGES))
+    print(f"\nResults go to: {out_path}\n")
+    print("How to measure: hold the phone flat against the side of the link, long edge along the link (the line "
+          "between its two pivot screws).\nEach position asks two questions: (1) the angle the phone shows (no minus "
+          "sign); (2) whether the link's far end (upper arm: the elbow end; forearm: the claw end) is higher or lower "
+          "than the other end. Only your eyes decide the sign, not the phone. q quits; what was measured is kept.")
+    print("The arm moves one servo at a time, slowly, step by step, only inside the measured safe envelope. Clear the "
+          "space around the arm.")
+    input("Press Enter to start: ")
     data = measure(board, table, out_path)
-    print(f"\n原始結果存在 {out_path}\n")
+    print(f"\nRaw results saved in {out_path}\n")
     report(data)
 
 

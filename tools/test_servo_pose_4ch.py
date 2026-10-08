@@ -120,7 +120,7 @@ class SessionTest(unittest.TestCase):
         board, out = self.run_session(["set 4 2500"])
         self.assertEqual(board.pulse[3], 1500)                                 # the claw's limit (user, 2026-10-03)
         self.assertIn("1500", out)
-        self.assertIn("範圍", out)
+        self.assertIn("range", out)
 
     def test_plus_and_minus_move_the_selected_channel(self):
         board, _ = self.run_session(["3", "+ 2", "- 1"])
@@ -159,7 +159,7 @@ class SessionTest(unittest.TestCase):
     def test_a_bad_command_does_not_touch_the_board(self):
         board, out = self.run_session(["set 9 1500", "banana"])
         self.assertEqual([c for c in board.writes if c in "+-"], [])
-        self.assertIn("看不懂", out)
+        self.assertIn("unrecognized", out)
 
     def test_quitting_prints_the_final_pose_as_a_paste_ready_line(self):
         _, out = self.run_session(["all 1500"])

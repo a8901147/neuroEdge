@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sensor_health as sh  # noqa: E402
 
-NAMES = {"upper_arm": ("上臂", "0x68", "shoulder"), "forearm": ("前臂", "0x69", "elbow")}
+NAMES = {"upper_arm": ("upper arm", "0x68", "shoulder"), "forearm": ("forearm", "0x69", "elbow")}
 
 
 def _raw(text, fw):
@@ -65,15 +65,15 @@ class Window:
 
 
 def format_row(row, verdict=None):
-    parts = [f"{row['lines_per_s']:5.1f} 行/秒"]
+    parts = [f"{row['lines_per_s']:5.1f} lines/s"]
     for name, (label, addr, _fw) in NAMES.items():
         r = row[name]
         if r["last"] is None:
-            parts.append(f"{label}({addr}): 沒有資料")
+            parts.append(f"{label} ({addr}): no data")
             continue
         x, y, z = r["last"]
-        parts.append(f"{label}({addr}): ({x:+.3f},{y:+.3f},{z:+.3f}) |a|={r['g']:.2f}g "
-                     f"筆數={r['samples']} 不同值={r['distinct']} 最大變動={r['spread']:.3f}")
+        parts.append(f"{label} ({addr}): ({x:+.3f},{y:+.3f},{z:+.3f}) |a|={r['g']:.2f}g "
+                     f"samples={r['samples']} distinct={r['distinct']} spread={r['spread']:.3f}")
     text = "  |  ".join(parts)
     hw = row.get("hw")
     if hw:
@@ -83,9 +83,9 @@ def format_row(row, verdict=None):
             fields = " ".join(f"{k}={c[k]}" for k in ("nacks", "timeouts", "rewakes", "pwr_mgmt_1", "power_resets")
                               if c.get(k) is not None)
             hw_parts.append(f"{label} {fields}")
-        text += "\n      韌體回報: " + "  |  ".join(hw_parts)
+        text += "\n      firmware reports: " + "  |  ".join(hw_parts)
     if verdict:
-        text += f"\n      (健康檢查的判斷,僅供對照: {verdict})"
+        text += f"\n      (health-check verdict, for reference only: {verdict})"
     return text
 
 
@@ -98,7 +98,7 @@ def main():
     args = parser.parse_args()
     port = args.port or autodetect_port()
     ser = serial.Serial(port, 115200, timeout=0.2)
-    print(f"讀取 {port}(不燒錄、只讀)。Ctrl+C 結束。")
+    print(f"Reading {port} (nothing is flashed, read only). Ctrl+C to stop.")
     monitor = sh.HealthMonitor()
     win, start = Window(), time.monotonic()
     try:
@@ -115,8 +115,8 @@ def main():
                 verdict = None
                 if not args.no_verdict:
                     rep = monitor.report(now)
-                    verdict = "正常" if rep.ok and not rep.warnings else \
-                        "; ".join(f"{NAMES[p.sensor][0]}:{sh.KIND_TEXT[p.kind]}"
+                    verdict = "OK" if rep.ok and not rep.warnings else \
+                        "; ".join(f"{NAMES[p.sensor][0]}: {sh.KIND_TEXT[p.kind]}"
                                   for p in list(rep.problems) + list(rep.warnings))
                 print(format_row(win.summary(now - start), verdict), flush=True)
                 win, start = Window(), now

@@ -15,7 +15,7 @@ class ScanVerdictTest(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_one_imu_missing_fails_and_says_which(self):
-        for found, missing, where in (([0x69], "0x68", "上臂"), ([0x68], "0x69", "前臂")):
+        for found, missing, where in (([0x69], "0x68", "upper arm"), ([0x68], "0x69", "forearm")):
             ok, lines = chr_.evaluate_scan(found, busy_before=0, scan_done=1)
             self.assertFalse(ok, found)
             text = "\n".join(lines)
@@ -80,12 +80,12 @@ class SensorCheckTest(unittest.TestCase):
     def test_the_real_frozen_forearm_fails_and_names_it(self):
         ok, lines = chr_.run_sensor_check(*stream(self.HANG, lambda i: (1.999939, 0.0, 0.0), completions=(250, 246)))
         self.assertFalse(ok)
-        self.assertIn("前臂", "\n".join(lines))
+        self.assertIn("forearm", "\n".join(lines))
 
     def test_the_real_dropped_upper_arm_fails_and_names_it(self):
         ok, lines = chr_.run_sensor_check(*stream(lambda i: (0.179, 0.057, 0.093), self.FORE, completions=(0, 250)))
         self.assertFalse(ok)
-        self.assertIn("上臂", "\n".join(lines))
+        self.assertIn("upper arm", "\n".join(lines))
 
     def test_dropouts_with_correct_data_pass_with_a_note_naming_the_sensor(self):
         # (the 9/28 upper arm: 353 re-wakes since boot, yet its readings looked normal between drop-outs)
@@ -103,9 +103,9 @@ class SensorCheckTest(unittest.TestCase):
         text = "\n".join(lines)
         self.assertTrue(ok, lines)
         self.assertIn("[NOTE]", text)
-        self.assertIn("上臂", text)
-        self.assertIn("斷線", text)
-        self.assertIn("麵包板", text)                              # the user's wording: it may be the breadboard
+        self.assertIn("upper arm", text)
+        self.assertIn("dropped out", text)
+        self.assertIn("breadboard", text)                              # the user's wording: it may be the breadboard
 
     def test_the_real_firmware_line_is_parsed_into_both_sensors(self):
         up, fore = chr_.parse_tick_raw(REAL_TICK)
@@ -125,7 +125,7 @@ class SensorCheckTest(unittest.TestCase):
         ok, lines = chr_.run_sensor_check(sparse, clock)
         # a slow rate alone does not fail the check for a prototype demo (user, 2026-09-28) -- it is only mentioned
         self.assertTrue(ok, lines)
-        self.assertIn("較慢", "\n".join(lines))
+        self.assertIn("slow data", "\n".join(lines))
 
     def test_with_sparse_data_it_waits_for_a_diag_line_and_names_the_flaky_sensor(self):
         # the real 9/28 case: the firmware's clock slows while the bus keeps recovering, so its "once a second" diag line
@@ -148,8 +148,8 @@ class SensorCheckTest(unittest.TestCase):
         ok, lines = chr_.run_sensor_check(read_line, clock)
         text = "\n".join(lines)
         self.assertTrue(ok, lines)                               # data right -> pass (option A) ...
-        self.assertIn("上臂", text)                              # ... with the upper arm named in the note
-        self.assertIn("斷線", text)                              # the hardware's own account: upper arm time-outs
+        self.assertIn("upper arm", text)                              # ... with the upper arm named in the note
+        self.assertIn("dropped out", text)                              # the hardware's own account: upper arm time-outs
         self.assertGreater(clock(), 4.9)                         # it kept reading past the 3 s until the diag line
 
     def test_a_failure_lists_only_what_caused_it(self):
@@ -164,8 +164,8 @@ class SensorCheckTest(unittest.TestCase):
         ok, lines = chr_.run_sensor_check(sparse, clock)
         text = "\n".join(lines)
         self.assertFalse(ok)
-        self.assertIn("前臂", text)
-        self.assertNotIn("資料太少", text)
+        self.assertIn("forearm", text)
+        self.assertNotIn("too little data", text)
 
     def test_a_silent_board_fails_with_a_hint_about_the_firmware(self):
         state = {"t": 0.0}
@@ -245,7 +245,7 @@ class PortInUseTest(unittest.TestCase):
         with mock.patch.object(serial, "Serial", Busy), contextlib.redirect_stdout(out):
             ok = chr_.check_sensors("/dev/fake")
         self.assertFalse(ok)
-        self.assertIn("其他程式", out.getvalue())
+        self.assertIn("another program", out.getvalue())
 
 if __name__ == "__main__":
     unittest.main()

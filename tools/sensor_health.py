@@ -29,19 +29,20 @@ MAGNITUDE_OK_G = (0.7, 1.3)
 NO_DATA_AFTER_S = 0.5
 DIAG_VALID_S = 2.5
 
-SENSORS = {"upper_arm": ("上臂", "0x68"), "forearm": ("前臂", "0x69")}
+SENSORS = {"upper_arm": ("upper arm", "0x68"), "forearm": ("forearm", "0x69")}
 KIND_TEXT = {
-    "no_data": "沒有收到讀數",
-    "no_response": "沒有回應(I2C 讀取成功 0 次)",
-    "frozen": "讀數凍結(一直是同一個數字)",
-    "saturated": "讀數卡在滿刻度",
-    "magnitude": "讀數大小不像重力(不是約 1 g)",
-    "not_enough_data": "幾乎沒有資料,無法判斷",
-    "slow_data": "資料太少(正常每秒約 30 筆,但讀數本身正常)——常見原因:感測器接觸不良(也許是麵包板造成的),匯流排一直在自我恢復",
-    "implausible": "讀數不可能來自正常運作的感測器",
-    "asleep": "感測器回報自己在睡眠狀態(斷電重開過,資料不會更新)",
-    "dropouts": "斷線後又恢復(I2C 沒回應)——接觸不良,也許是麵包板造成的",
-    "power_reset": "剛才斷電重開過,韌體已自動重新喚醒",
+    "no_data": "no readings received",
+    "no_response": "not responding (0 successful I2C reads)",
+    "frozen": "readings frozen (the same value every time)",
+    "saturated": "readings stuck at full scale",
+    "magnitude": "reading magnitude is not gravity-like (not about 1 g)",
+    "not_enough_data": "almost no data, cannot judge",
+    "slow_data": "too little data (normally about 30 readings/s, though the readings themselves look fine). Common cause: "
+                 "a poor sensor contact (maybe the breadboard), with the bus recovering over and over",
+    "implausible": "readings no working sensor could produce",
+    "asleep": "the sensor reports it is asleep (it lost power and restarted; its data will not update)",
+    "dropouts": "dropped out and came back (no I2C response): a poor contact, maybe the breadboard",
+    "power_reset": "lost power and restarted just now; the firmware woke it again",
 }
 HARDWARE_WARNING_S = 5.0          # a hardware warning stays shown this long after its last event
 
@@ -128,10 +129,10 @@ class HealthMonitor:
             if c.get("rewakes") is not None and prev.get("rewakes") is not None:
                 woke = max(0, c["rewakes"] - prev["rewakes"])
             if lost or woke:
-                self._hw_events[name]["dropouts"] = (t, f"過去 1 秒沒回應 {lost} 次,重新喚醒 {woke} 次")
+                self._hw_events[name]["dropouts"] = (t, f"in the last second: {lost} missed reads, {woke} re-wakes")
             if c.get("power_resets") is not None and prev.get("power_resets") is not None \
                     and c["power_resets"] > prev["power_resets"]:
-                self._hw_events[name]["power_reset"] = (t, f"累計 {c['power_resets']} 次")
+                self._hw_events[name]["power_reset"] = (t, f"{c['power_resets']} in total")
             self._pwr[name] = c.get("pwr_mgmt_1")
         self._hw_prev = hw
 
@@ -176,10 +177,10 @@ class HealthMonitor:
             if self._watching_since is not None and now - self._watching_since < WINDOW_S:
                 pass                                              # not watched a full window since a gap: no rate verdict
             elif len(good) < MIN_SAMPLES_TO_JUDGE:
-                problems.append(Problem(name, "not_enough_data", f"最近 1 秒只收到 {len(good)} 筆"))
+                problems.append(Problem(name, "not_enough_data", f"only {len(good)} readings in the last second"))
             elif len(good) < MIN_SAMPLES:
                 # 2026-09-28: live, plausible readings arriving slowly are still usable -- a warning, not a fault
-                slow.append(Problem(name, "slow_data", f"最近 1 秒只收到 {len(good)} 筆"))
+                slow.append(Problem(name, "slow_data", f"only {len(good)} readings in the last second"))
             pwr = self._pwr.get(name)
             if pwr is not None and pwr & 0x40:
                 problems.append(Problem(name, "asleep", f"PWR_MGMT_1 = 0x{pwr:02x}"))
@@ -216,17 +217,17 @@ def ready_to_start(report, elapsed_s):
 def format_warning(report):
     lines = []
     if not report.ok:
-        lines.append("⚠ 硬體異常:感測器資料不可信,畫面/手臂的動作會是錯的——請先檢查硬體。")
+        lines.append("⚠ HARDWARE FAULT: the sensor data cannot be trusted, so the model/arm would move wrongly. Check the hardware first.")
         for p in report.problems:
             label, addr = SENSORS[p.sensor]
-            lines.append(f"   - {label} MPU6050({addr}):{KIND_TEXT[p.kind]}  [{p.detail}]")
+            lines.append(f"   - {label} MPU6050 ({addr}): {KIND_TEXT[p.kind]}  [{p.detail}]")
     shown = [w for w in report.warnings if w.kind not in QUIET_KINDS]     # a slow rate alone is not worth a notice
     if shown:
-        lines.append("⚠ 硬體注意:感測器有狀況(資料仍在更新,但可能不準)——請檢查接線。")
+        lines.append("⚠ Hardware note: a sensor has a problem (data still updating, but possibly inaccurate). Check the wiring.")
         for w in shown:
             label, addr = SENSORS[w.sensor]
-            lines.append(f"   - {label} MPU6050({addr}):{KIND_TEXT[w.kind]}  [{w.detail}]")
-    return "\n".join(lines) if lines else "感測器狀態正常。"
+            lines.append(f"   - {label} MPU6050 ({addr}): {KIND_TEXT[w.kind]}  [{w.detail}]")
+    return "\n".join(lines) if lines else "Sensors OK."
 
 
 def implausible_problems(upper, fore, ignore=()):
@@ -266,7 +267,7 @@ class WarningPrinter:
             return format_warning(Report(True, [], shown))
         if not key and self._key:
             self._key = ()
-            return "✓ 感測器沒有再斷線。"
+            return "✓ No more sensor dropouts."
         self._key = key if key else self._key
         return None
 

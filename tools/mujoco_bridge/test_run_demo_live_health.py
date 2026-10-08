@@ -155,15 +155,15 @@ class StartTest(unittest.TestCase):
     def test_healthy_sensors_start_normally_and_say_so(self):
         ctrl, out, _ = run_main(Board(fx.LEFT), ["--skip-calibration"])
         self.assertIsNotNone(ctrl)
-        self.assertIn("感測器狀態正常", out)
+        self.assertIn("Sensors OK", out)
 
     def test_faulty_sensors_at_start_block_it_with_a_clear_warning(self):
         board = Board()
         board.frozen_forearm = True
         with self.assertRaises(SystemExit) as cm:
             run_main(board, ["--skip-calibration"], patches=[mock.patch.object(rdl, "HEALTH_PREFLIGHT_MAX_S", 1.0)])
-        self.assertIn("前臂", str(cm.exception))
-        self.assertIn("不可信", str(cm.exception))
+        self.assertIn("forearm", str(cm.exception))
+        self.assertIn("cannot be trusted", str(cm.exception))
 
     def test_it_continues_by_itself_once_the_sensors_are_healthy(self):
         board = Board(fx.LEFT)
@@ -173,7 +173,7 @@ class StartTest(unittest.TestCase):
         ctrl, out, _ = run_main(board, ["--skip-calibration"],
                                 patches=[mock.patch.object(rdl, "HEALTH_PREFLIGHT_MAX_S", 20.0),
                                          mock.patch.object(rdl, "HEALTH_REPEAT_WARNING_S", 0.1)])
-        self.assertIn("硬體異常", out)
+        self.assertIn("HARDWARE FAULT", out)
         self.assertIsNotNone(ctrl)
 
     def test_a_sensor_marked_optional_is_not_counted_as_faulty(self):
@@ -182,7 +182,7 @@ class StartTest(unittest.TestCase):
         ctrl, out, _ = run_main(board, ["--skip-calibration", "--optional-sensors", "elbow"],
                                 patches=[mock.patch.object(rdl, "HEALTH_PREFLIGHT_MAX_S", 3.0)])
         self.assertIsNotNone(ctrl)
-        self.assertNotIn("前臂 MPU6050", out)
+        self.assertNotIn("forearm MPU6050", out)
 
 
 class CalibrationCaptureTest(unittest.TestCase):
@@ -201,8 +201,8 @@ class CalibrationCaptureTest(unittest.TestCase):
             return ""
 
         _ctrl, out, saved = run_main(board, [], inputs=fake_input, ticks=50)
-        self.assertIn("硬體異常", out)
-        self.assertIn("重錄", out)
+        self.assertIn("HARDWARE FAULT", out)
+        self.assertIn("re-record", out)
         for got, want in zip(saved["forward_raw"], fx.FORWARD):
             self.assertAlmostEqual(got, want, delta=0.01)         # the redo, not the faulty recording
         self.assertNotEqual(saved["captured_at"], "2026-09-13 16:35:48")  # it did save a NEW calibration
@@ -241,7 +241,7 @@ class RuntimeTest(unittest.TestCase):
                 board.raw, board.frozen_forearm = fx.RIGHT, True
         threading.Timer(1.2, swing_right_with_a_frozen_forearm).start()
         ctrl, out, _ = run_main(board, ["--skip-calibration"], ticks=1400)
-        self.assertIn("硬體異常", out)
+        self.assertIn("HARDWARE FAULT", out)
         self.assertGreater(ctrl["roll"], 0.0)          # still on the LEFT side: the RIGHT swing was not followed
 
     def test_it_recovers_and_follows_again(self):
@@ -257,7 +257,7 @@ class RuntimeTest(unittest.TestCase):
         threading.Timer(1.0, fault).start()
         threading.Timer(1.6, recover).start()
         ctrl, out, _ = run_main(board, ["--skip-calibration"], ticks=2600)
-        self.assertIn("恢復", out)
+        self.assertIn("back to normal", out)
         self.assertLess(ctrl["roll"], 0.0)             # now following the RIGHT arm
 
 
@@ -279,8 +279,8 @@ class HardwareWarningTest(unittest.TestCase):
         threading.Timer(1.0, flaky).start()
         threading.Timer(1.5, swing_right).start()
         ctrl, out, _ = run_main(board, ["--skip-calibration"], ticks=2600)
-        self.assertIn("上臂", out)
-        self.assertIn("斷線", out)
+        self.assertIn("upper arm", out)
+        self.assertIn("dropped out", out)
         self.assertLess(ctrl["roll"], 0.0)              # it FOLLOWED the swing to the right: not held
 
 

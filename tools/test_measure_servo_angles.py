@@ -49,13 +49,13 @@ class Person:
             raise AssertionError("the tool kept re-prompting: " + prompt)
         if self.script:
             return self.script.pop(0)
-        if "高還是低" in prompt:
+        if "higher or lower" in prompt:
             return "h" if self.last_true >= 0 else "l"
         self.pulses_when_asked.append(tuple(self.board.pulse))
         s, e = self.board.pulse[1], self.board.pulse[2]
-        link = "上臂" if "上臂" in prompt else "前臂"
-        a, k = self.upper if link == "上臂" else self.forearm
-        p = s if link == "上臂" else e
+        link = "upper" if "Upper arm" in prompt else "forearm"
+        a, k = self.upper if link == "upper" else self.forearm
+        p = s if link == "upper" else e
         self.last_true = a + k * (p - 1500) + self.noise
         return f"{abs(self.last_true):.2f}"                       # what a phone app shows: no sign
 
@@ -127,21 +127,21 @@ class ProtocolTest(unittest.TestCase):
         person.script = ["abc", "", "12x"]                       # three bad answers before the first good one
         data, _p, out = run(person, board)
         self.assertEqual(len(data["shoulder_points"]), len(msa.SHOULDER_POINTS))
-        self.assertGreaterEqual(out.count("看不懂"), 3)
+        self.assertGreaterEqual(out.count("unrecognized"), 3)
 
     def test_an_impossible_angle_is_asked_again(self):
         board = FakeBoard(start=(1500, 1500, 1500, 1300))
         person = Person(board)
         person.script = ["400", "999"]                          # beyond 180: typos
         _d, _p, out = run(person, board)
-        self.assertGreaterEqual(out.count("看不懂"), 2)
+        self.assertGreaterEqual(out.count("unrecognized"), 2)
 
     def test_a_typed_minus_sign_is_refused_with_its_own_message_and_asked_again(self):
         board = FakeBoard(start=(1500, 1500, 1500, 1300))
         person = Person(board)
         person.script = ["-40"]
         data, _p, out = run(person, board)
-        self.assertIn("負號", out)
+        self.assertIn("minus sign", out)
         self.assertEqual(len(data["shoulder_points"]), len(msa.SHOULDER_POINTS))
 
     def test_q_stops_saves_what_there_is_and_returns_to_rest(self):
@@ -210,11 +210,11 @@ class ProtocolTest(unittest.TestCase):
         board = FakeBoard(start=(1500, 1500, 1500, 1300))
         person = Person(board)
         run(person, board)
-        first = next(p for p in person.prompts if "上臂" in p)
-        later = next(p for p in person.prompts if "前臂" in p)
+        first = next(p for p in person.prompts if "Upper arm" in p)
+        later = next(p for p in person.prompts if "Forearm" in p)
         for text in (first, later):
-            self.assertIn("水平", text)
-            self.assertIn("不用", text)                        # "no minus sign needed: the sign is asked next"
+            self.assertIn("horizontal", text)
+            self.assertIn("no minus sign", text)                        # "no minus sign needed: the sign is asked next"
 
 
 def mlr_moves(writes):
@@ -235,7 +235,7 @@ class SignTest(unittest.TestCase):
     def ask(self, answers):
         it = iter(answers)
         out = []
-        r = msa.ask_signed_angle("  上臂:", "手肘", input_fn=lambda prompt: next(it), out=out.append)
+        r = msa.ask_signed_angle("  upper arm:", "elbow", input_fn=lambda prompt: next(it), out=out.append)
         return r, out
 
     def test_high_means_positive_and_low_means_negative(self):
@@ -247,17 +247,17 @@ class SignTest(unittest.TestCase):
     def test_the_sign_is_never_taken_from_the_number_typed(self):
         r, out = self.ask(["-55", "55", "l"])                     # a typed minus is refused, then answered properly
         self.assertEqual(r, -55.0)
-        self.assertTrue(any("負號" in line for line in out))
+        self.assertTrue(any("minus sign" in line for line in out))
 
     def test_zero_is_horizontal_and_needs_no_sign(self):
         answers = iter(["0"])
-        r = msa.ask_signed_angle("  ", "手肘", input_fn=lambda p: next(answers), out=lambda *_: None)
+        r = msa.ask_signed_angle("  ", "elbow", input_fn=lambda p: next(answers), out=lambda *_: None)
         self.assertEqual(r, 0.0)
 
     def test_a_bad_sign_answer_is_asked_again_not_guessed(self):
         r, out = self.ask(["55", "x", "", "up", "l"])
         self.assertEqual(r, -55.0)
-        self.assertGreaterEqual(sum("看不懂" in line for line in out), 3)
+        self.assertGreaterEqual(sum("unrecognized" in line for line in out), 3)
 
     def test_q_at_either_question_stops(self):
         self.assertIsNone(self.ask(["q"])[0])
@@ -266,9 +266,9 @@ class SignTest(unittest.TestCase):
     def test_the_sign_question_names_the_end_to_look_at(self):
         seen = []
         answers = iter(["55", "h"])
-        msa.ask_signed_angle("  上臂:", "手肘", input_fn=lambda p: seen.append(p) or next(answers), out=lambda *_: None)
-        self.assertIn("手肘", seen[1])
-        self.assertIn("高還是低", seen[1])
+        msa.ask_signed_angle("  upper arm:", "elbow", input_fn=lambda p: seen.append(p) or next(answers), out=lambda *_: None)
+        self.assertIn("elbow", seen[1])
+        self.assertIn("higher or lower", seen[1])
 
     def test_a_forearm_below_horizontal_is_recorded_negative_end_to_end(self):
         board = FakeBoard(start=(1500, 1500, 1500, 1300))
@@ -330,22 +330,22 @@ class AnalysisTest(unittest.TestCase):
         d = self.data(upper=(55.0, -0.5))                       # five times too steep: a units mistake (still within +-180)
         out = []
         msa.report(d, out=out.append)
-        self.assertIn("不合理", "\n".join(out))
+        self.assertIn("implausible", "\n".join(out))
         d = self.data()
         d["shoulder_points"][2]["angle_deg"] += 15.0            # one wildly wrong reading
         out = []
         msa.report(d, out=out.append)
-        self.assertIn("超過", "\n".join(out))                  # the WARNING (every report line mentions 誤差 anyway)
+        self.assertIn("exceeds", "\n".join(out))               # the WARNING (every report line mentions the residual anyway)
         clean = []
         msa.report(self.data(), out=clean.append)
-        self.assertNotIn("超過", "\n".join(clean))             # and a clean fit does not warn
-        self.assertNotIn("不合理", "\n".join(clean))
+        self.assertNotIn("exceeds", "\n".join(clean))             # and a clean fit does not warn
+        self.assertNotIn("implausible", "\n".join(clean))
 
     def test_the_report_states_how_much_of_the_models_shoulder_travel_the_arm_can_reach(self):
         out = []
         msa.report(self.data(), out=out.append)
         text = "\n".join(out)
-        self.assertIn("肩膀", text)
+        self.assertIn("shoulder", text)
         self.assertRegex(text, r"\d+%")
         self.assertIn("1500", text)
         self.assertIn("1800", text)
@@ -354,7 +354,7 @@ class AnalysisTest(unittest.TestCase):
         d = {"shoulder_points": [{"pulse": 1500, "angle_deg": 55.0}], "elbow_points": []}
         out = []
         msa.report(d, out=out.append)
-        self.assertIn("不夠", "\n".join(out))
+        self.assertIn("not enough", "\n".join(out))
 
 
 class OptionsTest(unittest.TestCase):

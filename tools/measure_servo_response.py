@@ -27,16 +27,17 @@ OPENOCD_CFG = REPO / "firmware" / "openocd.cfg"
 DATA_DIR = REPO / "data"
 CCR1_ADDR = 0x40000434            # TIM3 base 0x40000400 + CCR1 offset 0x34 (CCR2..4 follow, 4 bytes apart)
 RATE_LIMIT_STEP_US = 55           # the ramp allows ~60 us per 10 ms servo update; a step this big is AT the limit
-SERVOS = ("底座", "肩膀", "手肘", "夾爪")
+SERVOS = ("base", "shoulder", "elbow", "claw")
 
 # (name, label, seconds, what to do) -- the still holds are where the base was seen to swing (2026-10-03: upper arm
 # nearly hanging, base 1446..2500), then the demo task itself, then free motion as a check.
 PHASES = [
-    ("hold_hang", "靜止：手臂垂下", 10.0, "手臂自然垂下，完全不要動。"),
-    ("hold_half", "靜止：往前抬一半", 10.0, "手臂往前抬到大約 45 度，停住不動。"),
-    ("hold_forward", "靜止：往前伸平", 10.0, "手臂往前伸直、和地面平行，停住不動。"),
-    ("task", "demo 任務", 25.0, "照 demo 做一遍：垂下→往前伸平→左擺→握拳→抬起→右擺→放下，每個姿勢停 2 秒。"),
-    ("check_free", "驗證：自由動作", 15.0, "（不在任務裡）隨意地動，快慢都有。"),
+    ("hold_hang", "Still: arm hanging", 10.0, "Let the arm hang naturally and do not move at all."),
+    ("hold_half", "Still: raised halfway forward", 10.0, "Raise the arm forward to about 45 degrees and keep still."),
+    ("hold_forward", "Still: forward, level", 10.0, "Hold the arm straight forward, level with the floor, and keep still."),
+    ("task", "Demo task", 25.0,
+     "Do the demo once: hang -> forward -> swing left -> grip -> lift -> swing right -> place, pausing 2 s at each pose."),
+    ("check_free", "Check: free movement", 15.0, "(not in the task) Move freely, fast and slow."),
 ]
 
 
@@ -80,14 +81,14 @@ def summary_lines(phases):
     for name, samples in phases.items():
         label = next((p[1] for p in PHASES if p[0] == name), name)
         dur = samples[-1][0] if samples else 0.0
-        lines.append(f"\n【{label}】{len(samples)} 筆 / {dur:.1f} 秒")
+        lines.append(f"\n[{label}] {len(samples)} samples / {dur:.1f} s")
         for ch, servo in enumerate(SERVOS):
             st = channel_stats(samples, ch)
             if not st["n"]:
-                lines.append(f"  {servo}：沒有資料")
+                lines.append(f"  {servo}: no data")
                 continue
-            lines.append(f"  {servo}：{st['min']}~{st['max']} µs（範圍 {st['spread']}，標準差 {st['std']:.1f}），"
-                         f"每步最大 {st['max_step']} µs，撞到速度上限 {st['at_rate_limit']} 次")
+            lines.append(f"  {servo}: {st['min']}-{st['max']} µs (spread {st['spread']}, std {st['std']:.1f}), "
+                         f"largest step {st['max_step']} µs, at the rate limit {st['at_rate_limit']} times")
     return lines
 
 
@@ -95,15 +96,15 @@ def run_protocol(record, input_fn=input, out=print, sleep=time.sleep, phases=PHA
     results = {}
     for i, (name, label, seconds, what) in enumerate(phases, 1):
         while True:
-            out(f"\n[{i}/{len(phases)}] {label}（{seconds:.0f} 秒）\n   {what}")
-            input_fn("   準備好就按 Enter 開始：")
+            out(f"\n[{i}/{len(phases)}] {label} ({seconds:.0f} s)\n   {what}")
+            input_fn("   Press Enter to start: ")
             for c in (3, 2, 1):
                 out(f"   {c}…")
                 sleep(1.0)
-            out("   錄製中…")
+            out("   recording...")
             samples = record(seconds)
-            out(f"   錄完：{len(samples)} 筆")
-            if input_fn("   保留這段嗎？ Enter=保留  r=重錄：").strip().lower() == "r":
+            out(f"   done: {len(samples)} samples")
+            if input_fn("   Keep this phase? Enter=keep  r=re-record: ").strip().lower() == "r":
                 continue
             results[name] = samples
             break
@@ -115,7 +116,7 @@ def save(phases, data_dir=DATA_DIR, name=None):
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / (name or time.strftime("servo_response_%Y%m%d-%H%M%S.json"))
     if path.exists():
-        raise FileExistsError(f"{path} 已經存在，不會覆蓋")
+        raise FileExistsError(f"{path} already exists and will not be overwritten")
     path.write_text(json.dumps({"measured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                                 "columns": ["t_s", "base_us", "shoulder_us", "elbow_us", "claw_us"],
                                 "phases": {k: [list(s) for s in v] for k, v in phases.items()}}, indent=1) + "\n")
@@ -124,15 +125,17 @@ def save(phases, data_dir=DATA_DIR, name=None):
 
 def main():
     print(__doc__.split("\n\n")[0])
-    print("\n伺服電源要開著（伺服會照常跟著你動）。韌體要是伺服版的 phase3_control_loop，ST-Link 要接著。")
+    print("\nThe servo supply must be on (the servos follow you as usual). The board must run the servo build of "
+          "phase3_control_loop, with the ST-Link connected.")
     test = record_swd(0.5)
     if not test:
-        sys.exit("讀不到 TIM3 暫存器——ST-Link 有接嗎？板子有在跑嗎？（可用 check_hardware_ready.py --boot-check 確認）")
-    print(f"ST-Link OK（0.5 秒讀到 {len(test)} 筆）。")
+        sys.exit("Cannot read the TIM3 registers. Is the ST-Link connected and the board running? "
+                 "(check with check_hardware_ready.py --boot-check)")
+    print(f"ST-Link OK ({len(test)} samples in 0.5 s).")
     phases = run_protocol(record_swd)
     path = save(phases)
     print("\n".join(summary_lines(phases)))
-    print(f"\n已存到 {path}")
+    print(f"\nSaved to {path}")
 
 
 if __name__ == "__main__":

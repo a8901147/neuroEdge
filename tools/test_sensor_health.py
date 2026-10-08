@@ -138,15 +138,15 @@ class MessageTest(unittest.TestCase):
         mon = sh.HealthMonitor()
         t = feed(mon, 300, HANG, lambda i: (1.999939, 0.0, 0.0))
         text = sh.format_warning(mon.report(t))
-        self.assertIn("前臂", text)
-        self.assertIn("凍結", text)
-        self.assertIn("不可信", text)
+        self.assertIn("forearm", text)
+        self.assertIn("frozen", text)
+        self.assertIn("cannot be trusted", text)
         self.assertIn("0x69", text)
 
     def test_a_healthy_report_formats_as_ok(self):
         mon = sh.HealthMonitor()
         t = feed(mon, 300, HANG, FORE_OK)
-        self.assertIn("正常", sh.format_warning(mon.report(t)))
+        self.assertIn("OK", sh.format_warning(mon.report(t)))
 
 
 class PlausibleTest(unittest.TestCase):
@@ -246,14 +246,14 @@ class QuietPrototypeTest(unittest.TestCase):
         printed = [t for t in [i * 0.5 for i in range(0, 130)] if p.update(rep, t)]
         self.assertEqual(printed[0], 0.0)
         self.assertEqual(len(printed), 3)                          # at 0 s, ~30 s, ~60 s -- not 22 times
-        self.assertIn("上臂", p.update(rep, 200.0))
+        self.assertIn("upper arm", p.update(rep, 200.0))
 
     def test_a_new_kind_of_trouble_is_said_at_once(self):
         p = sh.WarningPrinter()
         p.update(self.report_with([("upper_arm", "dropouts", "17")]), 0.0)
         text = p.update(self.report_with([("upper_arm", "dropouts", "17"), ("forearm", "power_reset", "1")]), 1.0)
         self.assertIsNotNone(text)
-        self.assertIn("前臂", text)
+        self.assertIn("forearm", text)
 
     def test_the_pre_use_check_does_not_fail_on_a_slow_rate_alone(self):
         rep = self.report_with([("upper_arm", "slow_data", "20")])
@@ -305,9 +305,9 @@ class HardwareSignalTest(unittest.TestCase):
         self.assertEqual([(w.sensor, w.kind) for w in rep.warnings], [("upper_arm", "dropouts")])
         self.assertIn("4", rep.warnings[0].detail)
         text = sh.format_warning(rep)
-        self.assertIn("上臂", text)
-        self.assertIn("斷線", text)
-        self.assertIn("也許是麵包板造成的", text)
+        self.assertIn("upper arm", text)
+        self.assertIn("dropped out", text)
+        self.assertIn("maybe the breadboard", text)
 
     def test_a_timeout_counts_as_a_dropout_too(self):
         mon, t = self.monitor_with([diag(), diag(timeouts=(0, 2))])
@@ -317,7 +317,7 @@ class HardwareSignalTest(unittest.TestCase):
         mon, t = self.monitor_with([diag(resets=(0, 0)), diag(resets=(0, 1))])
         kinds = {(w.sensor, w.kind) for w in mon.report(t).warnings}
         self.assertIn(("forearm", "power_reset"), kinds)
-        self.assertIn("重開", sh.format_warning(mon.report(t)))
+        self.assertIn("restarted", sh.format_warning(mon.report(t)))
 
     def test_the_firmwares_not_read_yet_value_is_not_mistaken_for_asleep(self):
         # 2026-09-28 bug, seen on the real board: pwr_mgmt_1=4294967295 means "not read yet"; its SLEEP bit is "set"
@@ -380,19 +380,19 @@ class FromLatestSampleTest(unittest.TestCase):
 
 
 class QuietKindsInWarningTextTest(unittest.TestCase):
-    """2026-09-28 v1.1.0 hardware test: run_demo_live printed '資料太少 [26 筆]' as a hardware notice at start and inside
+    """2026-09-28 v1.1.0 hardware test: run_demo_live printed 'too little data [26 readings]' as a hardware notice at start and inside
     the fault warning, although a slow-but-correct rate does not matter for the demo (user) -- WarningPrinter already
     kept it quiet, format_warning did not."""
 
     def test_slow_data_alone_is_not_printed_as_a_notice(self):
-        rep = sh.Report(True, [], [sh.Problem("upper_arm", "slow_data", "最近 1 秒只收到 26 筆")])
-        self.assertNotIn("資料太少", sh.format_warning(rep))
-        self.assertNotIn("硬體注意", sh.format_warning(rep))
+        rep = sh.Report(True, [], [sh.Problem("upper_arm", "slow_data", "only 26 readings in the last second")])
+        self.assertNotIn("too little data", sh.format_warning(rep))
+        self.assertNotIn("Hardware note", sh.format_warning(rep))
 
     def test_a_fault_warning_lists_the_fault_and_real_notices_but_not_the_rate(self):
         rep = sh.Report(False, [sh.Problem("upper_arm", "frozen", "30 identical readings")],
-                        [sh.Problem("upper_arm", "slow_data", "最近 1 秒只收到 24 筆"),
-                         sh.Problem("upper_arm", "dropouts", "過去 1 秒沒回應 705 次,重新喚醒 1 次")])
+                        [sh.Problem("upper_arm", "slow_data", "only 24 readings in the last second"),
+                         sh.Problem("upper_arm", "dropouts", "in the last second: 705 missed reads, 1 re-wakes")])
         text = sh.format_warning(rep)
         self.assertIn(sh.KIND_TEXT["frozen"], text)
         self.assertIn(sh.KIND_TEXT["dropouts"], text)
