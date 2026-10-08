@@ -68,6 +68,13 @@ firmware_add_target(blink src/startup.c src/main.c)
 # same shape the real Stm32AdcProvider will eventually have.
 firmware_add_target(footprint_check src/startup.c src/footprint_check_main.cpp)
 
+# On-target per-tick latency of the same two pipeline configurations the host
+# Google Benchmark measures (include/edgeneuro/bench/latency_configs.hpp), with
+# the DWT cycle counter. A 64-sample synthetic buffer instead of 256 so the
+# 32-channel engine fits in 64 KB SRAM (see the header).
+firmware_add_target(pipeline_latency src/startup.c src/pipeline_latency_main.cpp)
+target_compile_definitions(pipeline_latency PRIVATE EDGENEURO_BENCH_SAMPLES=64)
+
 # Stage 2: answers unknown #1 -- does NoHeapGuard actually stay at
 # malloc_count == 0 on this target's real ARM GCC codegen, not just Host's.
 # LED solid ON = pass, fast blink = a real allocation was caught.
