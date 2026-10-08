@@ -32,6 +32,7 @@ RuntimeError under plain CPython on macOS.
 """
 
 import argparse
+import collections
 import json
 import math
 import re
@@ -513,9 +514,14 @@ STALE_AFTER_SECONDS = 0.5
 STATUS_HEARTBEAT_SECONDS = 30.0
 
 
+# Everything one control step uses, taken from ONE UART line in one call (LatestSample.snapshot_frame).
+Frame = collections.namedtuple("Frame", "grip shoulder_pitch shoulder_roll elbow shoulder_raw elbow_raw")
+
+
 class LatestSample:
     def __init__(self):
-        self._lock = threading.Lock()
+        # Re-entrant: batch() holds it across the update_*() calls for one line, which each take it again.
+        self._lock = threading.RLock()
         self.grip = 0.0
         self.gripping = False
         self.shoulder_pitch = 0.0
@@ -702,6 +708,19 @@ class LatestSample:
         with self._lock:
             return self.grip, self.shoulder_pitch, self.shoulder_roll, self.elbow
 
+    def batch(self):
+        """Hold the lock across every update_*() call for ONE UART line, so snapshot_frame() never mixes two lines."""
+        return self._lock
+
+    def snapshot_frame(self):
+        """One consistent Frame for a control step: the step must check and use the SAME data (2026-10-08: a step that
+        checked one line and then read the sensors again applied the next line unchecked -- CI's intermittent
+        test_a_fault_mid_session failure)."""
+        with self._lock:
+            return Frame(self.grip, self.shoulder_pitch, self.shoulder_roll, self.elbow,
+                         (self.shoulder_raw_ax, self.shoulder_raw_ay, self.shoulder_raw_az),
+                         (self.elbow_raw_ax, self.elbow_raw_ay, self.elbow_raw_az))
+
     def seconds_since_update(self):
         with self._lock:
             return time.monotonic() - self.last_update_monotonic
@@ -769,38 +788,39 @@ def reader_thread_main(ser, latest):
             for line in lines:
                 match = LINE_RE.search(line)
                 if match:
-                    latest.update(
-                        float(match.group("grip")),
-                        match.group("gripping") == "1",
-                        float(match.group("shoulder_pitch")),
-                        float(match.group("shoulder_roll")),
-                        float(match.group("elbow")),
-                    )
-                    raw_match = SHOULDER_RAW_RE.search(line)
-                    if raw_match:
-                        latest.update_shoulder_raw(
-                            float(raw_match.group("shoulder_raw_ax")),
-                            float(raw_match.group("shoulder_raw_ay")),
-                            float(raw_match.group("shoulder_raw_az")),
+                    with latest.batch():        # one line = one atomic update (see snapshot_frame)
+                        latest.update(
+                            float(match.group("grip")),
+                            match.group("gripping") == "1",
+                            float(match.group("shoulder_pitch")),
+                            float(match.group("shoulder_roll")),
+                            float(match.group("elbow")),
                         )
-                        latest.update_shoulder_raw_gyro(
-                            float(raw_match.group("shoulder_raw_gx")),
-                            float(raw_match.group("shoulder_raw_gy")),
-                            float(raw_match.group("shoulder_raw_gz")),
-                        )
-                    elbow_raw_match = ELBOW_RAW_RE.search(line)
-                    if elbow_raw_match:
-                        latest.update_elbow_raw(
-                            float(elbow_raw_match.group("elbow_raw_ax")),
-                            float(elbow_raw_match.group("elbow_raw_ay")),
-                            float(elbow_raw_match.group("elbow_raw_az")),
-                        )
-                    emg_raw_match = EMG_RAW_RE.search(line)
-                    if emg_raw_match:
-                        latest.update_emg_raw(
-                            int(emg_raw_match.group("emg_min")),
-                            int(emg_raw_match.group("emg_max")),
-                        )
+                        raw_match = SHOULDER_RAW_RE.search(line)
+                        if raw_match:
+                            latest.update_shoulder_raw(
+                                float(raw_match.group("shoulder_raw_ax")),
+                                float(raw_match.group("shoulder_raw_ay")),
+                                float(raw_match.group("shoulder_raw_az")),
+                            )
+                            latest.update_shoulder_raw_gyro(
+                                float(raw_match.group("shoulder_raw_gx")),
+                                float(raw_match.group("shoulder_raw_gy")),
+                                float(raw_match.group("shoulder_raw_gz")),
+                            )
+                        elbow_raw_match = ELBOW_RAW_RE.search(line)
+                        if elbow_raw_match:
+                            latest.update_elbow_raw(
+                                float(elbow_raw_match.group("elbow_raw_ax")),
+                                float(elbow_raw_match.group("elbow_raw_ay")),
+                                float(elbow_raw_match.group("elbow_raw_az")),
+                            )
+                        emg_raw_match = EMG_RAW_RE.search(line)
+                        if emg_raw_match:
+                            latest.update_emg_raw(
+                                int(emg_raw_match.group("emg_min")),
+                                int(emg_raw_match.group("emg_max")),
+                            )
                     continue
                 diag_match = DIAG_LINE_RE.search(line)
                 if diag_match:
@@ -1730,8 +1750,10 @@ def run_mearm_preview(args):
                         print("\n" + hw_text)
                 # ...and the instant per-sample guard: a reading no live sensor can produce is never applied, even in the
                 # fraction of a second before the monitor has seen enough of them to raise the loud warning above.
-                if not sensor_fault and not (sensor_health.plausible(latest.snapshot_shoulder_raw())
-                                             and sensor_health.plausible(latest.snapshot_elbow_raw())):
+                # ONE frame per step: the guard checks exactly the data the pose below is computed from.
+                frame = latest.snapshot_frame()
+                if not sensor_fault and not (sensor_health.plausible(frame.shoulder_raw)
+                                             and sensor_health.plausible(frame.elbow_raw)):
                     hold_this_step = True
                 else:
                     hold_this_step = sensor_fault
@@ -1744,8 +1766,7 @@ def run_mearm_preview(args):
                         time.sleep(wait)
                     continue
 
-                grip, _old_shoulder_pitch, _old_shoulder_roll, elbow = latest.snapshot()
-                shoulder_raw = latest.snapshot_shoulder_raw()
+                grip, elbow, shoulder_raw = frame.grip, frame.elbow, frame.shoulder_raw
 
                 # Same zero-vector guard as the wait loop above (defense in
                 # depth -- e.g. a mid-session I2C bus recovery could in
@@ -2240,8 +2261,10 @@ def main():
             while viewer.is_running():
                 step_start = time.time()
 
-                grip, old_shoulder_pitch, old_shoulder_roll, elbow = latest.snapshot()
-                shoulder_raw = latest.snapshot_shoulder_raw()
+                # ONE frame per step: the health guard below checks exactly the data the arm is computed from.
+                frame = latest.snapshot_frame()
+                grip, old_shoulder_pitch, old_shoulder_roll, elbow = frame[:4]
+                shoulder_raw = frame.shoulder_raw
                 is_stale, port_error = latest.status()
 
                 # 2026-09-28 sensor-health guard (checks only -- nothing about how the arm is computed changes): on a
@@ -2264,7 +2287,7 @@ def main():
                     hw_text = hw_warnings.update(report, now_m)     # drop-outs / resets the firmware saw: tell, don't hold
                     if hw_text:
                         print("\n" + hw_text)
-                if sensor_fault or sensor_health.implausible_problems(shoulder_raw, latest.snapshot_elbow_raw(),
+                if sensor_fault or sensor_health.implausible_problems(shoulder_raw, frame.elbow_raw,
                                                                        ignore=health_ignore):
                     if port_error is not None:
                         sys.exit(f"\nserial port failed: {port_error}\n"
