@@ -79,7 +79,8 @@ def _settle(board, ch, expected, progress, retries):
             time.sleep(RETURN_DWELL_S)
         actual = sp.read_state(board, ch)
     if actual != expected:
-        raise WalkFailed(f"{sp.NAMES[ch - 1]} did not reach {expected} (read back {actual}). Did the serial link drop steps, or is the board not responding?")
+        raise WalkFailed(f"{sp.NAMES[ch - 1]} did not reach {expected} (read back {actual}). Did the serial link drop "
+                         f"steps, or is the board not responding?")
     return actual
 
 
@@ -181,7 +182,8 @@ def safe_finish(board, progress=None, log=print):
         return_to_rest(board, progress)
         log("  back at the rest pose.")
     except (WalkFailed, sp.BoardNotAnswering, KeyboardInterrupt, OSError) as exc:
-        log(f"  Warning: the arm could not return to rest ({exc}); check its position and use servo_pose_4ch.py's rest command if needed.")
+        log(f"  Warning: the arm could not return to the rest pose ({exc}). Check the arm; if needed use servo_pose_4ch.py's "
+            f"rest command.")
 
 
 def measure(board, stop_requested, shoulders=DEFAULT_SHOULDERS, save=lambda records: None,
@@ -330,7 +332,8 @@ def summarize(records, margin_steps=3, out=print):
     for name, key in (("top hi", "hi"), ("bottom lo", "lo")):
         f = fit_line([(x["shoulder"], x[key]) for x in w if x[key] not in (lo_lim, hi_lim)])
         if f:
-            out(f"{name}: elbow = {f['intercept']:.0f} + {f['slope']:.3f} × shoulder   (max error {f['max_residual']:.0f} µs, {f['n']} points)")
+            out(f"{name}: elbow = {f['intercept']:.0f} + {f['slope']:.3f} × shoulder   (max residual {f['max_residual']:.0f} µs, "
+                f"{f['n']} points)")
         else:
             out(f"{name}: fewer than 3 real binding points, cannot fit a line yet")
 
@@ -490,12 +493,16 @@ def main():
     board = serial.Serial(args.port or autodetect_port(prefer_cp2102=args.cp2102), sp.BAUD, timeout=0.5)
     state = {ch: sp.read_state(board, ch) for ch in sp.RANGES}
     print("Current pulse widths: " + "  ".join(f"{sp.NAMES[ch - 1]}={v}" for ch, v in state.items()))
-    print(f"\nShoulder positions: {list(shoulders)}  (elbow held at {elbow_hold} while the shoulder moves)\nSaved to: {out_path}")
-    print(f"\nThis moves the shoulder and elbow (one at a time, one 25 µs step every {DWELL_S} s). The claw first moves slowly to {CLAW_REST_US} (open)"
-          f" and the base to 1500; neither moves after that. At the end (or on interruption) the whole arm returns to rest.\n"
-          f"Clear the space around the arm. If you see or hear anything unusual (buzzing, strain, a linkage jamming or bending, a collision), press Enter once, immediately.\n"
-          f"The tool backs off a little, then asks why it stopped (l = linkage jammed/buzzing, c = hit the base or the table, ? = unsure);\n"
-          f"a collision is not linkage coupling and is recorded separately. After each position it asks whether it is OK; type r to redo it. Ctrl+C stops at any time.")
+    print(f"\nShoulder positions: {list(shoulders)}  (the elbow stays at {elbow_hold} while the shoulder moves)\n"
+          f"Results go to: {out_path}")
+    print(f"\nThis moves the shoulder and elbow (one servo at a time, one 25 µs step every {DWELL_S} s). The claw first "
+          f"walks slowly to {CLAW_REST_US} (open)\nand the base to 1500, and neither moves again; at the end (or on an "
+          f"interruption) the whole arm returns to the rest pose.\n"
+          f"Clear the space around the arm. On anything abnormal (buzzing, straining, a link binding or bending, hitting "
+          f"something) press Enter ONCE, AT ONCE:\nthe tool backs off a little and asks why it stopped (l=linkage "
+          f"binding/buzzing, c=hit the base or table, ?=unsure).\nCollisions are not linkage coupling and are recorded "
+          f"separately. After each position it asks whether it was OK; type r to re-measure after a false press. "
+          f"Ctrl+C stops at any time.")
     input("Press Enter to start: ")
     _drain_stdin()
 
@@ -532,7 +539,8 @@ def main():
         summarize(records)
     summarize_rejected(rejected)
     if records or rejected:
-        print(f"\nTo combine runs and check repeatability: python3 tools/measure_linkage_region.py --analyze {out_path} <other files>")
+        print(f"\nTo merge several runs and see the repeatability: python3 tools/measure_linkage_region.py --analyze {out_path} "
+              f"<other files>")
 
 
 if __name__ == "__main__":

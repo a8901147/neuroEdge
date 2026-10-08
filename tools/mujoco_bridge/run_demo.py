@@ -5,7 +5,7 @@ src/mujoco_bridge_demo.cpp against a CSV fixture. The arm reaches for and
 grasps a physical object on tools/mujoco_bridge/arm_hand_scene.xml's pedestal
 -- a real contact-based pickup, not just finger curl overlapping a mesh.
 Sensor count matches the confirmed real Phase 3 hardware budget (2x MPU6050 +
-1x MyoWare, PRD.md Section 3).
+1x MyoWare, PRD.md §4).
 
 Must run as `mjpython run_demo.py`, not plain `python3` -- launch_passive
 raises RuntimeError under plain CPython on macOS.

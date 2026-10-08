@@ -72,7 +72,7 @@ def format_row(row, verdict=None):
             parts.append(f"{label} ({addr}): no data")
             continue
         x, y, z = r["last"]
-        parts.append(f"{label}({addr}): ({x:+.3f},{y:+.3f},{z:+.3f}) |a|={r['g']:.2f}g "
+        parts.append(f"{label} ({addr}): ({x:+.3f},{y:+.3f},{z:+.3f}) |a|={r['g']:.2f}g "
                      f"samples={r['samples']} distinct={r['distinct']} spread={r['spread']:.3f}")
     text = "  |  ".join(parts)
     hw = row.get("hw")
@@ -116,7 +116,7 @@ def main():
                 if not args.no_verdict:
                     rep = monitor.report(now)
                     verdict = "OK" if rep.ok and not rep.warnings else \
-                        "; ".join(f"{NAMES[p.sensor][0]}:{sh.KIND_TEXT[p.kind]}"
+                        "; ".join(f"{NAMES[p.sensor][0]}: {sh.KIND_TEXT[p.kind]}"
                                   for p in list(rep.problems) + list(rep.warnings))
                 print(format_row(win.summary(now - start), verdict), flush=True)
                 win, start = Window(), now

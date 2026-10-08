@@ -181,7 +181,8 @@ def main():
         if time.time() > deadline:
             sys.exit("No data within 10 s; check the hardware connections and power, then retry")
         time.sleep(0.05)
-    print("Data is flowing. Red stripe = local +X, blue stripe = local +Y; shoulder = square plate, elbow = disc. Starting.\n")
+    print("Data is streaming. Red stripe = local +X, blue stripe = local +Y; shoulder = square plate, elbow = disc. "
+          "Starting.\n")
 
     model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
     data = mujoco.MjData(model)

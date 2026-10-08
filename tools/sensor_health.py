@@ -32,15 +32,16 @@ DIAG_VALID_S = 2.5
 SENSORS = {"upper_arm": ("upper arm", "0x68"), "forearm": ("forearm", "0x69")}
 KIND_TEXT = {
     "no_data": "no readings received",
-    "no_response": "no response (0 successful I2C reads)",
-    "frozen": "reading frozen (always the same number)",
-    "saturated": "reading stuck at full scale",
-    "magnitude": "reading does not look like gravity (not about 1 g)",
+    "no_response": "not responding (0 successful I2C reads)",
+    "frozen": "readings frozen (the same value every time)",
+    "saturated": "readings stuck at full scale",
+    "magnitude": "reading magnitude is not gravity-like (not about 1 g)",
     "not_enough_data": "almost no data, cannot judge",
-    "slow_data": "too little data (normally about 30 per second, but the readings themselves are fine): usually a poor sensor contact (maybe the breadboard) with the bus recovering again and again",
-    "implausible": "reading cannot come from a working sensor",
+    "slow_data": "too little data (normally about 30 readings/s, though the readings themselves look fine). Common cause: "
+                 "a poor sensor contact (maybe the breadboard), with the bus recovering over and over",
+    "implausible": "readings no working sensor could produce",
     "asleep": "the sensor reports it is asleep (it lost power and restarted; its data will not update)",
-    "dropouts": "dropped out and came back (no I2C answer): a poor contact, maybe the breadboard",
+    "dropouts": "dropped out and came back (no I2C response): a poor contact, maybe the breadboard",
     "power_reset": "lost power and restarted just now; the firmware woke it again",
 }
 HARDWARE_WARNING_S = 5.0          # a hardware warning stays shown this long after its last event
@@ -219,13 +220,13 @@ def format_warning(report):
         lines.append("⚠ HARDWARE FAULT: the sensor data cannot be trusted, so the model/arm would move wrongly. Check the hardware first.")
         for p in report.problems:
             label, addr = SENSORS[p.sensor]
-            lines.append(f"   - {label} MPU6050({addr}):{KIND_TEXT[p.kind]}  [{p.detail}]")
+            lines.append(f"   - {label} MPU6050 ({addr}): {KIND_TEXT[p.kind]}  [{p.detail}]")
     shown = [w for w in report.warnings if w.kind not in QUIET_KINDS]     # a slow rate alone is not worth a notice
     if shown:
         lines.append("⚠ Hardware note: a sensor has a problem (data still updating, but possibly inaccurate). Check the wiring.")
         for w in shown:
             label, addr = SENSORS[w.sensor]
-            lines.append(f"   - {label} MPU6050({addr}):{KIND_TEXT[w.kind]}  [{w.detail}]")
+            lines.append(f"   - {label} MPU6050 ({addr}): {KIND_TEXT[w.kind]}  [{w.detail}]")
     return "\n".join(lines) if lines else "Sensors OK."
 
 

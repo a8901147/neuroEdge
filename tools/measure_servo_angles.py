@@ -83,7 +83,8 @@ def ask_signed_angle(prompt, far_end, input_fn=None, out=print):
     if value == 0.0:
         return 0.0                                                       # horizontal: there is no sign to give
     while True:
-        answer = ask(f"  Is the {far_end} end of this link higher or lower than the other end? (h = higher, l = lower, q = quit): ").strip().lower()
+        answer = ask(f"  Is the {far_end} end of this link higher or lower than the other end? "
+                     f"(h=higher, l=lower, q to quit): ").strip().lower()
         if answer == "q":
             return None
         if answer in ("h", "l"):
@@ -174,9 +175,11 @@ def report(data, out=print):
         out(f"{name}: elevation = {f['at_1500']:+.1f}° + {f['slope']:+.4f}°/µs × (pulse − 1500)   "
             f"({f['n']} readings, max residual {f['max_residual']:.1f}°)")
         if not pm.slope_is_plausible(f["slope"]):
-            out(f"  ⚠ Slope {f['slope']:+.4f}°/µs is implausible (an SG92R is about 0.09°/µs; the linkage scales it, but a tenfold difference is most likely a unit or typing error)")
+            out(f"  ⚠ slope {f['slope']:+.4f}°/µs is implausible (an SG92R is about 0.09°/µs; the linkage can scale that, "
+                f"but a tenfold difference is usually a unit or typing error)")
         if f["max_residual"] > RESIDUAL_WARN_DEG:
-            out(f"  ⚠ Max error {f['max_residual']:.1f}° exceeds {RESIDUAL_WARN_DEG:.0f}°: a reading may be mistyped, or the link is not linear")
+            out(f"  ⚠ max residual {f['max_residual']:.1f}° exceeds {RESIDUAL_WARN_DEG:.0f}°: a reading may be mistyped, "
+                f"or the link is not linear")
     h = hysteresis(data)
     for name, key in (("shoulder", "shoulder"), ("elbow", "elbow")):
         if not math.isnan(h[key]):
@@ -192,8 +195,9 @@ def report(data, out=print):
         model_range = (pb.SHOULDER_RAISED, pb.SHOULDER_REST)
         share = m.shoulder_travel_share(table_range, model_range)
         lo, hi = m.reachable_shoulder_ctrl(table_range)
-        out(f"\nShoulder pulses {table_range[0]} to {table_range[1]} (the measured safe range) map to model shoulder commands {lo:+.3f} to {hi:+.3f} rad,"
-            f" about {share * 100:.0f}% of the model's shoulder travel ({model_range[0]:+.3f} to {model_range[1]:+.3f}).")
+        out(f"\nShoulder pulses {table_range[0]}-{table_range[1]} (the measured safe range) map to model shoulder commands "
+            f"{lo:+.3f} to {hi:+.3f} rad, about {share * 100:.0f}% of the model's shoulder travel "
+            f"({model_range[0]:+.3f} to {model_range[1]:+.3f}).")
 
 
 def main():
@@ -219,11 +223,13 @@ def main():
     table = env.build_table(mlr.load_records([env.ROOT / "data" / n for n in env.SOURCES]))
     board = serial.Serial(args.port or autodetect_port(prefer_cp2102=args.cp2102), sp.BAUD, timeout=0.5)
     print("Current pulse widths: " + "  ".join(f"{sp.NAMES[ch - 1]}={sp.read_state(board, ch)}" for ch in sp.RANGES))
-    print(f"\nSaved to: {out_path}\n")
-    print("How to measure an angle: lay the phone flat against the side of the link, its long edge along the link (the line between the two pivot screws).\n"
-          "Each position asks two things: (1) the angle the phone shows (no minus sign); (2) whether the link's far end (upper arm: the elbow end; forearm: the claw end) "
-          "is higher or lower than the other end. Only this second answer, from what you see, sets the sign. q quits and keeps what was measured.")
-    print("The arm moves slowly, one servo and one step at a time, only inside the measured safe envelope. Clear the space around the arm.")
+    print(f"\nResults go to: {out_path}\n")
+    print("How to measure: hold the phone flat against the side of the link, long edge along the link (the line "
+          "between its two pivot screws).\nEach position asks two questions: (1) the angle the phone shows (no minus "
+          "sign); (2) whether the link's far end (upper arm: the elbow end; forearm: the claw end) is higher or lower "
+          "than the other end. Only your eyes decide the sign, not the phone. q quits; what was measured is kept.")
+    print("The arm moves one servo at a time, slowly, step by step, only inside the measured safe envelope. Clear the "
+          "space around the arm.")
     input("Press Enter to start: ")
     data = measure(board, table, out_path)
     print(f"\nRaw results saved in {out_path}\n")

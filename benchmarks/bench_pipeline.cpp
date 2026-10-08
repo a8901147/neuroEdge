@@ -1,4 +1,4 @@
-// Google Benchmark suite validating PRD section 5's performance gate:
+// Google Benchmark suite behind PRD.md §6 (R1, R7):
 // <32,0> continuous per-sample latency < 0.1ms, and malloc_count == 0 for
 // every mode, using the same NoHeapGuard counter the unit tests use.
 

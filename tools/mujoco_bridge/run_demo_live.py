@@ -1284,8 +1284,9 @@ def apply_emg_threshold(args, ser, latest):
         print(f"--skip-emg-calibration: loaded threshold={emg_threshold} release={release} from "
               f"{args.calibration_file} (captured {saved.get('emg_threshold_captured_at', 'unknown time')}).")
         if release is None:
-            print("--skip-emg-calibration: this calibration has no release threshold (it predates 2026-10-04), so grip and release use the same threshold. "
-                  "Recalibrate the EMG (without --skip-emg-calibration) to get a release threshold, which makes a held grip less likely to let go.")
+            print("--skip-emg-calibration: this calibration has no release threshold (it predates 2026-10-04), so grip "
+                  "and release use the same threshold. Recalibrate the EMG (without --skip-emg-calibration) to get a "
+                  "release threshold, which makes a held grip less likely to let go.")
         send_emg_threshold(ser, emg_threshold, release)
     else:
         emg_threshold = calibrate_emg_threshold(ser, latest, interactive=True)
@@ -1473,11 +1474,13 @@ def send_calibration_to_board(ser, latest, saved, timeout_s=None):
                 break
             time.sleep(0.05)
         if not damaged:
-            print("⚠ The board did not confirm the calibration (not the servo firmware, or an older one?); the real arm keeps its previous calibration.")
+            print("⚠ The board did not confirm the calibration (not the servo firmware, or an older one?); "
+                  "the real arm keeps its previous calibration.")
             return False
         if attempt < CAL_SEND_ATTEMPTS:
             print(f"Bytes were lost while sending the calibration; resending (attempt {attempt + 1})...")
-    print(f"⚠ All {CAL_SEND_ATTEMPTS} calibration sends were corrupted on the way (serial wiring?); the real arm keeps its previous calibration.")
+    print(f"⚠ The calibration was corrupted in transit on all {CAL_SEND_ATTEMPTS} attempts (serial wiring?); "
+          "the real arm keeps its previous calibration.")
     return False
 
 

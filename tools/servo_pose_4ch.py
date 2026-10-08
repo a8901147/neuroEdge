@@ -125,7 +125,8 @@ def read_state(board, ch, wait=0.3):
             if m:
                 return int(m.group(1))
     raise BoardNotAnswering(
-        "The board does not respond. Is servo_limit_finder_4ch the firmware on it? Was the board power-cycled (unplugged and replugged) after flashing?")
+        "the board does not respond. Is servo_limit_finder_4ch the firmware on it, and did the app start after flashing "
+        "(check with check_hardware_ready.py --boot-check)?")
 
 
 def _walk(board, ch, target_us):

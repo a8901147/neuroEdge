@@ -9,11 +9,12 @@ namespace edgeneuro::mearm {
 // so host tests can check their safety properties (tests/test_mearm_servo_maps.cpp).
 // Pulse ranges = measured on the assembled arm with servo_limit_finder_4ch
 // (SESSION_LOG 2026-09-21/22), each measured with the OTHER servos at centre.
-// The shoulder x elbow COMBINATION is NOT measured yet (SESSION_LOG TODO C):
-// the two are coupled by the claw-levelling linkage, so do not drive both
-// independently on the real arm until that is done.
+// The shoulder x elbow COMBINATION is limited further by the measured envelope
+// (mearm_envelope_data.hpp): the two are coupled by the claw-levelling linkage.
 //
-// Polarity: shoulder inferred, base/elbow/claw unverified live.
+// Polarity, checked on the real arm (2026-09-28 -> 10-03): base left = higher pulse,
+// raising the arm = lower elbow pulse, bending the elbow = higher shoulder pulse,
+// grip = higher claw pulse.
 // Value ranges are the human-side sensor ranges (run_demo_live.py's).
 constexpr unsigned kBaseLoUs = 500u, kBaseHiUs = 2500u;
 constexpr unsigned kShoulderLoUs = 1200u, kShoulderHiUs = 2100u;

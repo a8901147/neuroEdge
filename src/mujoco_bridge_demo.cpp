@@ -7,7 +7,7 @@
 // Deliberately bypasses include/edgeneuro/pipeline.hpp's EdgeNeuro<>/
 // Pipeline/LdaClassifier path (used by src/main.cpp and src/gui_demo.cpp) --
 // that's the Phase 1 engine-generality demo, not the real product's control
-// logic. PRD.md Section 3's "Phase 3 control-architecture" note documents
+// logic. PRD.md §3 (system architecture) explains
 // why the real device uses GripStateMachine (EMG) + ComplementaryFilter
 // (IMU) + SlewRateLimiter (smoothing) instead: window-based classification
 // has 200ms-class latency, wrong for continuous orientation tracking or
@@ -16,8 +16,8 @@
 //
 // Iteration 2 extends iteration 1's single-IMU/wrist-only demo to a full
 // shoulder+elbow reach, matching the confirmed real Phase 3 sensor budget of
-// 2 MPU6050 IMUs (upper arm + forearm) + 1 MyoWare EMG (PRD.md Section 3,
-// 2026-08-22 revision) -- see PRD.md for the full sensor-to-DOF mapping and
+// 2 MPU6050 IMUs (upper arm + forearm) + 1 MyoWare EMG (PRD.md §3-4)
+// -- see PRD.md §5 for the sensor-to-DOF mapping and
 // its explicit yaw-unobservable (no magnetometer) limitation. This fully
 // replaces iteration 1's behavior in this file (not kept side-by-side): the
 // old wearable_1emg_6imu.csv 6-channel format is superseded here by

@@ -1,307 +1,150 @@
-# Product Requirements Document (PRD)
+# EdgeNeuro: Design and Requirements
 
-**Project Name:** EdgeNeuro: Modular & Zero-Allocation Real-Time BCI Engine
-**Author:** Chang-Jui Tseng
-**Date:** August 2026
+**Author:** Chang-Jui Tseng · **Last updated:** 2026-10-08 (v1.3.0 + on-target latency)
 
-## 1. Summary
+This document covers what the system is for, how it is built, the requirements it has to meet, and how each one is
+checked. Commands are in [README.md](README.md) and [firmware/README.md](firmware/README.md); the dated record of how
+the design got here is in [SESSION_LOG.md](SESSION_LOG.md).
 
-EdgeNeuro is a real-time C++20 signal-processing pipeline for EMG and IMU data, aimed at prosthetic control on a microcontroller. Its stages are chosen at compile time (C++20 concepts and templates), so the pipeline allocates no memory at run time and needs no virtual calls. Development goes step by step: first the engine on a PC, then a MuJoCo simulation, then the STM32 hardware.
+## 1. Problem and goal
 
-## 2. Problem
+Myoelectric prosthetic arms are costly, and many users abandon them (Biddiss & Chau, 2007). Part of the reason is
+control: users switch modes to move one joint at a time, grips drop or trigger when the arm moves, and multi-gesture
+pattern recognition needs many EMG channels and per-user training. Delay matters too: Farrell & Weir (2007) found
+100–125 ms to be the best controller delay for myoelectric control.
 
-Three gaps make prosthetic control algorithms hard to move onto embedded hardware:
+**Goal:** natural, simultaneous control of an arm (direction, height, reach and grip) from inexpensive wearable sensors
+(one EMG channel, two IMUs), with every computation on a low-cost microcontroller, smooth enough and reliable enough
+for a real pick-and-place task. The benchmark task, on a 4-servo MeArm:
 
-1. **Memory.** A microcontroller without an operating system cannot afford garbage collection or heap allocation in the control loop.
-2. **Modularity costs speed.** Swapping algorithms through virtual functions adds indirection; firmware therefore usually hard-codes them.
-3. **Hard to reproduce.** Trying an algorithm usually needs a large local setup and gives no end-to-end view.
+> arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place.
 
-## 3. Architecture
+Everything is tuned toward this task without being specific to it: there are no hard-coded poses, and the calibration
+and parameters come from the person's own recordings.
 
-Each stage is a C++20 concept, resolved at compile time. The value type (`float`, `int32_t`) and the channel counts are template parameters, `template <size_t EmgChannels, size_t ImuChannels>`:
-* **Wearable mode, `EdgeNeuro<1, 6>`:** one EMG channel (grip) and a 6-axis IMU (arm orientation).
-* **Stress mode, `EdgeNeuro<32, 0>`:** 32 EMG channels, to test the zero-allocation design at scale.
+**Scope:** a research platform. An able-bodied person controls a desktop arm and MuJoCo models; the system has not
+been tested with prosthesis users.
 
-> **Control architecture for Phase 3 (2026-08-17): EMG and IMU do not share one `classifier_.classify()` decision.** Mode A above, which feeds all channels into one classifier, shows that `EdgeNeuro<>` is generic; it is not the control logic for the arm. Arm orientation must follow the IMUs continuously (a 200-sample window at 1 kHz would add 200 ms), while the grip is a discrete event decided over a short time. **Phase 3 therefore runs two independent paths:** the IMUs bypass `Pipeline` (`ComplementaryFilter` → orientation), and the EMG goes through a grip decision. `ComplementaryFilter` does not need an `ImuFilterT` slot.
->
-> **The EMG path uses a threshold state machine, not `LdaClassifier` (2026-08-17):** Phase 3 has one MyoWare 2.0 on its `ENV` output, already rectified and low-passed in hardware. One channel carries one dimension (how hard the muscle contracts), so a multi-class classifier adds only window latency. A threshold with on and off durations, the usual approach in commercial myoelectric hands, reacts in 50–150 ms. `LdaClassifier` and `Pipeline` stay for a later multi-channel setup.
->
-> **Two IMUs for Phase 3 (2026-08-22):** one MPU6050 on the upper arm and one on the forearm. The upper-arm roll/pitch drives the shoulder (2 DOF); forearm pitch minus upper-arm pitch drives the elbow (1 DOF). Both are 6-axis, so yaw stays unobservable, and the elbow formula holds only for motion roughly in one plane. Verified in the MuJoCo simulation (Phase 2), not yet on the hardware.
+## 2. Approach
 
-| Layer | Role | Requirement |
-| --- | --- | --- |
-| **Provider concept** | Supplies samples. | The host (`CsvSignalProvider`) and the target (`Stm32AdcProvider`) plug in through the same interface. |
-| **Pipeline core** | Moves data, owns memory. | A lock-free SPSC ring buffer on `std::array` (no `std::vector` in the loop), for handing samples from an interrupt to the main loop. Tested on the host with two threads under TSan. |
-| **Filter concept** | Pre-processing. | `process()` and `reset()`; separate filters for EMG and IMU channels. IIR (direct form II) and pass-through to start. |
-| **Feature concept** | Time-domain features. | MAV (mean absolute value) and RMS to start. |
-| **Classifier concept** | Intent decoding. | LDA with weights loaded at start-up. |
+- **Run the control on the microcontroller.** The STM32 computes the servo commands itself; the PC only calibrates and
+  visualizes.
+- **Deterministic, allocation-free C++.** Header-only C++20 with templates and concepts, so there are no virtual calls
+  and no heap use in the hot loop. The same headers compile for the host (where they are tested) and for the
+  Cortex-M4F.
+- **Validate in simulation and on hardware together.** The live sensor stream drives MuJoCo models (a twin of the MeArm
+  and a Unitree G1 humanoid arm and hand) next to the real arm, so a mapping problem can be told apart from a
+  mechanical one.
+- **Raw data decides.** Thresholds, filters and register values are settled with captured raw sensor data, never with
+  an algorithm's own output.
 
-## 4. Functional requirements
-
-### 4.1 C++ engine
-
-* **Swappable stages:** changing one `using Engine = Pipeline<FilterA, FeatureB>` line changes the algorithm.
-* **Deterministic memory:** no heap allocation after start-up.
-
-### 4.2 Recorded and synthetic signal streams
-
-* A CSV reader for EMG and IMU streams. The bundled test data are synthetic (`tools/generate_sample_data.py`, alternating contraction and rest), because Ninapro data may not be redistributed; the reader accepts real Ninapro CSV exports unchanged.
-* **Fused stream:** `1-Ch EMG + 6-Axis IMU`, one sample every 1 ms (1000 Hz).
-* **Stress stream:** `32-Ch EMG`, for the benchmarks.
-* **Real recordings:** the public [EMG-EPN-612](https://zenodo.org/records/4421500) dataset (Myo armband: 8 EMG channels plus 10 IMU values) runs through `CsvSignalProvider` after conversion with `tools/convert_epn612.py`; one user's 298,710 rows match between the Python output and the C++ reader. EMG and IMU arrive on independent clocks (992 EMG to 249 IMU samples, about 3.98:1), as they will from an ADC and an I2C sensor; the slower IMU stream is held between its samples (zero-order hold), with no change to the engine. Classification accuracy is not evaluated yet.
-
-### 4.3 Visualization and MuJoCo simulation
-
-* **Oscilloscope:** a terminal view with no dependencies, and an optional ImGui + ImPlot window (`EDGENEURO_BUILD_GUI_DEMO=ON`, fetched with CMake FetchContent). Both run the same engine on the same stream.
-* **MuJoCo:** once the engine is stable, the decoded output drives a simulated hand in MuJoCo.
-
-
-
-## 5. Validation
-
-
-| Check | Tool | Pass criterion |
-| --- | --- | --- |
-| **Unit tests** | `Catch2` + `llvm-cov` | Over 90 % coverage of the core math and concept interfaces. **Measured:** 46 test cases over `include/edgeneuro/`; line 95.56 %, branch 90.32 % (re-measured 2026-08-12 with `fusion/complementary_filter.hpp`, 100 % covered by 7 new test cases, one of them on real EMG-EPN-612 data). The uncovered lines are the `bad_alloc` path, an unused sized-delete overload, and the `NoHeapGuard` abort path, which `test_no_heap_guard.cpp` checks in a forked child. Measuring coverage found two real bugs: `CsvSignalProvider` silently truncated rows with extra columns, and the firmware's bump allocator returned unaligned memory and threw where no unwind tables exist. Both fixed and tested. |
-| **No allocation, no undefined behaviour** | Sanitizers + `NoHeapGuard` | ASan, UBSan and TSan, plus a test that `malloc_count == 0` in the loop. ASan and TSan cannot share a binary and the allocation hook conflicts with them, so each runs from its own CMake preset (`debug-heapguard`, `sanitize-asan-ubsan`, `sanitize-tsan`, `release-bench`). |
-| **Latency** | `Google Benchmark` | `<1, 6>` and `<32, 0>`: under 0.1 ms per sample with 32 channels, `malloc_count == 0`. |
-
-## 6. Roadmap
-
-The engine is built and verified on the PC first. Phase 1 passed its checks (zero allocation, latency, sanitizers) in August 2026.
-
-**Revised order (August 2026):** `malloc_count == 0` on the host does not show that the STM32F401 build allocates nothing, fits in its SRAM, or gets a usable EMG signal; MuJoCo cannot answer those questions. A short hardware feasibility check (Phase 1.5) therefore comes before the MuJoCo work.
+## 3. System architecture
 
 ```
-+-----------------------------------------------------------------------------------+
-| Phase 1: engine on the PC (done)                                                 |
-| C++20 concepts, lock-free ring buffer, zero allocation                           |
-+-----------------------------------------------------------------------------------+
-                                        |
-                         Phase 1 verified
-                                        v
-+-----------------------------------------------------------------------------------+
-| Phase 1.5: hardware feasibility check (current)                                  |
-| Zero allocation, memory footprint and EMG quality on the target; no actuation    |
-+-----------------------------------------------------------------------------------+
-                                        |
-                         its results set the priorities of Phase 2 and Phase 3
-                                        v
-+-----------------------------------------------------------------------------------+
-| Phase 2: MuJoCo simulation                                                       |
-| The decoded output drives a simulated hand                                        |
-+-----------------------------------------------------------------------------------+
-                                        |
-                         simulation verified before hardware
-                                        v
-+-----------------------------------------------------------------------------------+
-| Phase 3 and 4: STM32                                                             |
-| Firmware on the microcontroller, then actuation                                  |
-+-----------------------------------------------------------------------------------+
+Sensors                       STM32F401 (1 kHz loop, zero heap)                         Outputs
+MyoWare ENV ─ADC─▶ EMA ─▶ GripStateMachine (2 thresholds, 150 ms debounce) ─▶ claw servo
+MPU6050 ×2  ─I2C─▶ raw gravity vectors ─▶ 1€ filter ─▶ Path B decode (tilt, azimuth)
+                                                     ─▶ height/reach mapping ─▶ envelope ─▶ shoulder, elbow servos
+                                                     ─▶ base mapping, hysteresis, slow follow ─▶ base servo
+                   health checks ─▶ hold all servos on a sensor fault
+                   UART ◀▶ PC: raw stream out; calibration, thresholds, R (home) in
+PC (Python)        calibration · MuJoCo MeArm twin · MuJoCo Unitree G1 arm+hand
 ```
 
-### Stage 1: Host-side engine and MuJoCo simulation (no hardware)
-No hardware is needed: the engine, the tests and the simulation all run on a PC.
+The library has two layers:
 
-* **Phase 1: engine (C++20, PC) — done (results in §5)**
-  * C++20 concepts for `SignalProvider`, `Filter`, `Feature`, `Classifier`, and a `ValueType` parameter.
-  * A lock-free ring buffer on `std::array`.
-  * `CsvSignalProvider` streams recorded data as if it came from a sensor; checked with the EMG-EPN-612 recordings.
-  * `Catch2` tests; ASan, UBSan, TSan and `NoHeapGuard` (`malloc_count == 0`); `Google Benchmark`: 7.10 ns per tick for `<1,6>`, 38.9 ns for `<32,0>`. All four presets pass; line coverage 95.38 %.
-  * A terminal view (`src/main.cpp`) and an ImGui + ImPlot window (`src/gui_demo.cpp`) show the signals and the allocation count.
+1. **A generic pipeline, `EdgeNeuro<EmgChannels, ImuChannels, Window, Provider, Filters, Feature, Classifier>`.** It is
+   assembled at compile time from strategies checked by C++20 concepts: IIR and pass-through filters, MAV/RMS
+   features, an LDA classifier, a CSV provider, and a lock-free SPSC ring buffer. It shows that the DSP stays modular at
+   zero runtime cost and with zero allocation, and it is what the latency benchmarks measure (`<1,6>` and `<32,0>`).
+2. **The real control path** (`include/edgeneuro/control/`, `filters/`, `fusion/`). The hardware has one EMG channel,
+   and one channel only carries "how hard is this muscle working". A window-and-classify step would add a window's
+   worth of latency and gain nothing, so the grip is a threshold state machine and the arm follows the IMUs
+   continuously. Neither goes through the windowed pipeline.
 
-* **Phase 1.5: hardware feasibility check — current**
-  * Target: **STM32F401RCT6 Black Pill** (Cortex-M4F, 256 KB Flash, 64 KB SRAM, single-precision FPU, matching `ValueType = float`) and one **MyoWare 2.0** (one channel, open/close only).
-  * Deliberately narrow (no IMU, PWM or closed loop yet). It answers four questions:
-    1. ✅ `NoHeapGuard` sees `malloc_count == 0` on the board with the `arm-none-eabi-gcc` build. **Passed on the STM32F401, 2026-08-14** (Stage 2 below).
-    2. ✅ The pipeline fits in 64 KB SRAM / 256 KB Flash (`arm-none-eabi-size`), with a wide margin.
-    3. ✅ A timer-triggered ADC samples at 1 kHz. **Passed on the STM32F401, 2026-08-15** (Stage 3c/3d below).
-    4. Is the MyoWare signal good enough? **Conditionally passed (2026-08-15, Stage 3e):** the signal follows real contractions, but the range is narrow; gain is adjusted later.
-  * Toolchain: plain CMake + `arm-none-eabi-gcc` in `firmware/`, no STM32CubeIDE. Diagnostics through the LED and UART.
+## 4. Hardware
 
-  * **Hardware on hand:** the Black Pill, one MyoWare 2.0, an ST-Link V2, a USB-serial adapter and MPU6050 (GY-521) modules (bought 2026-08-15, not yet wired). Servos and the arm come with Phase 3.
+| Part | Choice | Why |
+| --- | --- | --- |
+| MCU | STM32F401RCT6 Black Pill, 16 MHz HSI | Cortex-M4 with a single-precision FPU (matches `float`), 64 KB SRAM, low cost |
+| EMG | MyoWare 2.0, `ENV` output to ADC | Analog front end in hardware: differential amplifier, 20.8 Hz high-pass, rectifier, 3.6 Hz envelope |
+| IMUs | 2× MPU6050 (upper arm 0x68, forearm 0x69), DLPF 5 Hz | Gravity direction of each arm segment; no magnetometer, so no heading |
+| Arm | MeArm, 4× SG92R servos, 4×AA supply | 4 DOF: base, shoulder, elbow, claw |
+| Links | ST-Link (SWD), FT232RL (UART 115200) | SWD register reads are the main debugging tool |
 
-  * **Firmware (`firmware/`):**
-    - `cmake/arm-none-eabi-toolchain.cmake`: Cortex-M4F flags (`-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard`).
-    - `linker/STM32F401RCTx_FLASH.ld`: Flash starts at **`0x08004000`**, 240 KB; RAM 64 KB at `0x20000000`. The board ships with the WeAct HID bootloader in the first 16 KB, which an app at `0x08000000` would overwrite.
-    - `src/startup.c`: a hand-written vector table and `Reset_Handler` (`.data`/`.bss` set-up, exceptions to `Default_Handler`). It also points `SCB->VTOR` at the app's vector table, which interrupts will need.
-    - `src/main.c`: blink on PC13 (active low) at the default 16 MHz HSI.
-    - `src/footprint_check_main.cpp`: builds a real `EdgeNeuro<1,6,...>` from the unmodified `include/edgeneuro/` headers with a stub provider, to measure Flash and SRAM.
-    - `CMakeLists.txt`: fetches `cmsis_device_f4` (v2.6.9) and `cmsis-core` (v5.9.0) for the register headers.
+## 5. Control design
 
-  * **Toolchain notes:**
-    1. Homebrew's `arm-none-eabi-gcc` has no newlib, so `<stdint.h>` fails. Arm's own release (15.2.rel1) includes it; it is unpacked into `~/.local/arm-toolchain`, which `firmware/cmake/arm-none-eabi-toolchain.cmake` points at.
-    2. In boot mode the board enumerates as the WeAct HID bootloader (VID `0x0483`, PID `0x572A`), not as standard DFU, so `dfu-util` does not apply.
-    3. The WeAct `hid-flash` tool does not work on Apple Silicon (`hid_enumerate()` returns empty device paths). Flashing goes through an ST-Link and OpenOCD instead.
+**Grip (EMG).** The 12-bit ENV sample is smoothed (EMA, α = 0.1, ~10 ms) and fed to a two-threshold state machine:
+the grip closes after 150 ms above the grip threshold and opens after 150 ms below a lower release threshold. The PC
+records 2 s relaxed and 2 s gripping: the grip threshold is the relaxed mean + 20·std, and the release threshold is
+halfway between the relaxed mean and the grip threshold. The hysteresis lets a lighter grip hold while the arm moves.
 
-  * **Stages 0 and 2 pass on the board (2026-08-14, flashed over ST-Link):**
-    - **SWD link:** OpenOCD finds the ST-Link V2, 3.28 V target voltage and a Cortex-M4 r0p1.
-    - **Stage 0 (blink):** `flash_blink` programs and verifies (device id `0x00016423`, 256 KiB); the PC13 LED blinks at ~1 Hz.
-    - **Stage 2 (`NoHeapGuard`):** after `flash_heap_guard_check` the LED stays solid: 100,000 guarded `tick()` calls with `malloc_count == 0` on the ARM build. Question 1 answered.
-    - Question 2 (footprint): `text=932 bytes` for Stage 1 and `text=844 bytes` for Stage 2, far below the limits.
-    - **Stage 1 (footprint_check):** the unmodified `include/edgeneuro/` headers build a real `EdgeNeuro<1,6,50,...>` for the STM32F401: `text=932 bytes, data=0, bss=0`. Built, not yet flashed.
-    - **Flashing:** `firmware/openocd.cfg` (ST-Link, `stm32f4x`, 1 MHz); each `flash_<name>` target programs at `0x08004000`, leaving the bootloader in sector 0 untouched.
+**Arm direction ("Path B").** The upper-arm accelerometer gives a gravity vector. Four calibration poses (hang,
+forward, left twist, right twist) define a frame, and the vector is decoded into tilt (how far the arm is raised) and
+azimuth (left/right, carried by upper-arm twist, because an accelerometer can't see rotation about gravity). The
+elbow bend is the angle between the two IMUs' gravity vectors, which has no singularity anywhere in 0–180°.
 
-  * **The four questions:** 1–3 answered, 4 conditionally passed. Phase 1.5 has done its job.
-  * **Stage 4a: I2C1 + MPU6050 (GY-521), passes on the board (2026-08-15).** I2C1 on PB6/PB7 at 100 kHz (RM0368 ch. 18); MPU6050 registers (`PWR_MGMT_1` 0x6B, `WHO_AM_I` 0x75, 14 bytes from `ACCEL_XOUT_H`) and scales (16384 LSB/g, 131 LSB/(°/s)) from InvenSense RM-MPU-6000A-00 and PS-MPU-6000A-00. `firmware/src/i2c_mpu6050_hello_main.c`.
+**MeArm mapping ("height/reach").** On the MeArm, the forearm servo sets the claw's height and the upper-arm servo
+sets its reach, so the person's arm maps crosswise onto it: raising the arm lowers the elbow servo (claw up), and
+bending the elbow raises the shoulder servo (reach). Every (shoulder, elbow) command is clamped into an envelope
+measured on the real arm (five measurement runs, windows intersected, never extrapolated). The two servos also step
+together, so the poses in between stay inside the envelope too. Base: azimuth over the full 500–2500 µs, with the ends
+at the person's comfortable left and right reach.
 
-    Four separate problems were found and fixed on the way:
-    1. **Wiring:** the USB-serial adapter was on A1/A2 instead of A2/A3.
-    2. **Loose module:** a module not fully seated in the breadboard held the I2C bus `BUSY` (read over SWD).
-    3. **`WHO_AM_I` = `0x72`**, not `0x68`, on every read: a compatible chip; the firmware accepts both.
-    4. **Firmware bug in multi-byte reads:** an N > 2 byte receive must time ACK and STOP with `BTF`, not `RXNE` (RM0368 §18.3.3). Fixed.
+**Steadiness.** The servos run at full speed, and the command is smoothed instead: DLPF 5 Hz on the sensors (this
+suppresses 8–12 Hz physiological tremor while gripping), a 1€ filter on the raw vectors (0.5 Hz at rest, opening up
+with speed), 10 µs hysteresis on the base, and a slow-follow rule (150 µs/s) on the base while the arm is being
+raised, where the azimuth is unreliable near hanging.
 
-    **Debugging over SWD:** reading registers and memory through the ST-Link (`openocd`, `mdw`, `nm`/`addr2line`, diagnostic globals) proved far more reliable than UART output or the LED.
+**Safety.** The servo outputs are compiled out by default. Each servo starts with a slow ramp (300 µs/s). The `R`
+command homes the arm to a known start pose. An IMU that stops answering, freezes, falls asleep or reads far from 1 g
+makes every servo hold its pulse. A calibration received over UART is checksummed and validated before use.
 
-    **Result:** at rest `accel_z ≈ 16850` (≈1.03 g), `accel_x`/`accel_y` near 0, gyro offsets of a few deg/s: the I2C + MPU6050 path works.
+## 6. Requirements and validation
 
-  * **Stage 4b blocked: the MPU6050 modules appear faulty (2026-08-17, open).** With `ComplementaryFilter` on the board (`firmware/src/complementary_filter_hello_main.cpp`), I2C fails again and the module never returns to its Stage 4a state. Each step below was checked over SWD:
-    1. `BUSY` stuck at 1 → `SWRST` (RM0368 18.6.1) clears it, but the address is then not acknowledged.
-    2. New jumper wires → no change.
-    3. Different breadboard holes → no change.
-    4. Continuity and supply checked with a meter (3.3 V, no shorts) → all fine.
-    5. Addresses `0x68` and `0x69` → both NACK.
-    6. 100 kHz and 10 kHz → same.
-    7. **A second, newly bought GY-521 → exactly the same.**
-    8. `SR1` at the failure is `0x400` (AF only): a real NACK, not a firmware misread.
-    9. Alternate pins `PB8`/`PB9` (still I2C1) → same.
-    10. I2C2 on `PB10`/`PB3` → a different failure, but `PB3` doubles as a debug pin, so inconclusive.
-    11. **Decisive test:** an I2C bus scanner with a different device, an LCD1602 backpack (PCF8574): only `0x27` answers and the LCD works. The STM32 side is healthy; the fault is in the two GY-521 modules.
-    - **Conclusion:** the I2C1 driver is verified against a third-party device; the `ComplementaryFilter` integration waits for a working MPU6050.
+| # | Requirement | Validated by | Status |
+| --- | --- | --- | --- |
+| R1 | No heap allocation in the hot loop | `NoHeapGuard` (global `operator new` hook) armed around `tick()` in host tests, and on the target in `heap_guard_check`; the firmware image links no `malloc`/`free`/`_sbrk` | Met |
+| R2 | Fixed 1 kHz EMG sampling | TIM2 TRGO → ADC1; report intervals 1.002–1.005 s; 1007 ticks/s in the full loop | Met |
+| R3 | IMU reads never block a tick | Non-blocking I2C state machine; ~274 reads/s per IMU with both on one bus | Met |
+| R4 | No undefined behavior; ring buffer correct under concurrency | ASan + UBSan and TSan presets | Met (all three pass, 2026-10-08; CI runs ASan/UBSan) |
+| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 566 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
+| R6 | Fits the MCU | Servo build: 18.4 KB code, 3.3 KB static RAM | Met |
+| R7 | Pipeline latency within a 1 ms sample period on target | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for the real configuration; `<32,0>` classify tick 1.54 ms overruns |
+| R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
+| R9 | A sensor fault never moves the arm | Health checks in firmware and on the PC; host tests | Met |
+| R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; motion artifact measured | Partly: limited by electrode placement (§7) |
 
-  * **Stress test while waiting for a new MPU6050 (2026-08-17):** `firmware/src/complementary_filter_stress_test_main.cpp` runs the filter loop (math, UART output, an I2C write to the LCD1602 at `0x27` each pass) on smooth synthetic data. 60 s, 367 passes: steady output, no NaN or Inf. The loop period measured 163.4 ms, not the 250 ms assumed from `delay(400000u)`, so `kDt` in `complementary_filter_hello_main.cpp` is now `0.163f`, to be re-measured with a real MPU6050.
+## 7. Known limitations
 
-  * **Next:** with a working MPU6050, run `ComplementaryFilter` on real data and re-measure the loop period.
+- **EMG motion artifact.** With the current electrode placement, arm motion alone reached 3848 ADC counts, more than
+  a firm still grip (1318). Hardware filtering already follows De Luca's recommendations, and gating on arm motion only
+  cut false grips from 4 to 2. The fix is electrode placement over the finger flexors.
+- **No heading.** Without a magnetometer, left/right comes from upper-arm twist. The twist that naturally comes with
+  raising the arm is reduced by the slow-follow rule, not removed.
+- **Clock.** At the default 16 MHz, the 32-channel stress configuration overruns 1 ms on classify ticks. Configuring
+  the PLL for 84 MHz would give about 5× headroom.
+- **Humanoid grasp.** The G1 hand's uniform-curl grasp holds the object only at the front-left pose. Per-finger grasp
+  synthesis was rejected as out of scope.
+- **UART receive** is polled one byte per loop, so the host paces commands (2 ms per byte).
 
-  * **2026-08-18: 5 V supply does not help either.** With a single supply (firmware/README.md) and the module on 5 V, both GY-521 modules still do not answer, while the LCD1602 still works on the same wiring. The modules are faulty. An Adafruit MPU-6050 is ordered.
+## 8. Next steps
 
-  * **Stage 5a: EMG grip control, passes on the board (2026-08-18).** `firmware/src/emg_grip_control_main.cpp` reads the MyoWare `ENV` at 1 kHz (TIM2 + ADC1, Stage 3c/3d), feeds `GripStateMachine::update()` with `dt=0.001f` and `SlewRateLimiter`, and reports each transition and a once-a-second min/max over USART2. First run on a real signal.
-    - **Result:** with real electrodes, relaxed reads **~434–495** and a sustained clench **~3700+**. The fixed `threshold=1220` sits between them with a wide margin. Transitions are clean: on relaxing the signal decays (3717 → 2069 → 1477 → 887 → 484) and `EDGE -> Released` comes only once it stays below the threshold.
-    - This also closes question 4: the narrow range seen in Stage 3e came from touching the electrodes with a finger, not from real electrodes.
-    - The threshold holds for this electrode placement and gain setting; it must be re-checked when either changes.
-    - `tools/watch_myoware_uart.py` reads the new output format.
+- Move the EMG electrodes to the finger flexors and re-record with `capture_arm_motion.py --set emg`.
+- Measure end-to-end latency (sensor motion → servo motion) with high-speed video, and compare the grip's 150 ms
+  debounce against the 100–125 ms that Farrell & Weir (2007) found best for myoelectric control.
+- Raise the clock to 84 MHz (PLL), with the register values verified against RM0368.
+- RXNE-interrupt UART receive; 400 kHz I2C on soldered wiring.
 
-  * **Stage 3a: USART2 output, passes on the board (2026-08-15).** Questions 3 and 4 both need UART output, so UART is verified on its own first.
-    - Register values checked in RM0368 (Rev 5) and the STM32F401 datasheet:
-      - PA2/PA3 = AF7 (USART2 TX/RX), datasheet Table 9.
-      - `RCC_AHB1ENR.GPIOAEN` (bit 0), `RCC_APB1ENR.USART2EN` (bit 17): RM0368 §6.3.9, §6.3.11.
-      - `USART_CR1`, `USART_SR`, `USART_BRR` fields: RM0368 §19.6.
-      - Baud rate (RM0368 §19.3.4, OVER8 = 0): 16 MHz HSI, 9600 baud → `BRR=0x0683` (0.02 % error). 9600 baud and 16× oversampling tolerate the uncalibrated HSI best.
-      - Every register macro name was checked against the CMSIS header (`stm32f401xc.h`).
-    - **`firmware/src/uart_hello_main.c`:** sends one line per second and blinks the LED, so a wiring fault can be told apart from a firmware fault.
-    - **Result:** clean, repeated `"EdgeNeuro Stage 3a: UART alive"` at 9600 baud: register values, baud rate and wiring are right.
+**Considered and dropped:** a browser (Wasm) demo, a HAL-based `Stm32AdcProvider` with DMA (the polled TIM2/ADC path
+meets every requirement), per-finger grasp control, and a gyro-based base (gyro noise while gripping was ~100× the
+noise at rest).
 
-  * **Stage 3b: ADC1 on PA0, software-triggered, passes on the board.** Register values from RM0368 ch. 11. `firmware/src/adc_hello_main.c` prints the 12-bit value: 1279–1316 with a finger on the electrodes, far steadier than an open input.
-  * **Stage 3c/3d: TIM2 TRGO triggers ADC1 at 1 kHz, passes on the board (2026-08-15). Question 3 answered.**
-    - Register values (RM0368 ch. 13 and ch. 11): `TIM2EN`; `TIM2CLK = HCLK = 16 MHz` (APB1 prescaler 1); `MMS = 010` (update event as TRGO); `EXTEN = 01` (rising edge), `EXTSEL = 0110` (TIM2 TRGO).
-    - `(PSC+1)×(ARR+1) = 16,000,000 / 1000 = 16,000`: `PSC=15`, `ARR=999`, an exact integer division.
-    - **`firmware/src/timer_adc_1khz_main.c`:** the main loop polls `EOC`, counts samples and reports once per 1000 (9600 baud cannot carry every sample).
-    - **Result:** reports arrive every 1.005 s, 1.005 s and 1.002 s, within the HSI's own tolerance: steady 1 kHz sampling.
+## 9. References
 
-  * **Stage 3e: real forearm, question 4 conditionally passed (2026-08-15):**
-    - `timer_adc_1khz` reports each 1000-sample window's min and max; disposable electrodes on the muscle belly, near the wrist and at the elbow (reference):
-      - **Relaxed** (7 windows): `min` 1114–1119, `max` 1211–1216.
-      - **Clenched and held** (7 windows): `min` unchanged, `max` rising from 1212 to a steady **1227**.
-      - The difference (11–16 counts, 0.3–0.4 % of full scale) is clean and repeatable: the chain from electrodes to ADC responds to real contractions, but the range is narrow.
-    - The MyoWare 2.0 has a gain trim pot (`ENV gain = 200 × R / 1 kΩ`); the guide recommends a peak near VIN at full effort. The peak here (about 30 % of full scale) leaves room for more gain.
-    - **Decision:** gain and electrode placement are tuned later; they do not block the remaining work. Question 4 is conditionally passed.
-
-  * **Host-side work while waiting for hardware:** orientation fusion and command smoothing are plain math, fully testable on the host with Catch2:
-    - **`include/edgeneuro/fusion/complementary_filter.hpp` (done, checked on real data):** `ComplementaryFilter<ValueType>` fuses gyroscope and accelerometer into roll and pitch (no yaw: there is no magnetometer). It is not a `Filter` (that concept is single-channel) and stays outside `Pipeline` (§3). `initialize(ax, ay, az)` starts from the accelerometer angle instead of converging from zero.
-      - `tests/test_complementary_filter.cpp` (7 test cases) checks known physical inputs first (unit vectors, integrated known rates).
-      - Units: the Myo protocol header (`myohw.h`) gives accelerometer in g, gyroscope in deg/s and a normalized quaternion; the data confirm it (|a| ≈ 1.03 g at rest, unit quaternions, single-digit gyro values).
-      - `tests/test_complementary_filter_real_data.cpp` runs the filter on a still EMG-EPN-612 recording (992 rows) and compares with the Myo's own quaternion: 1.4e-4 rad (roll) and 2.8e-4 rad (pitch) apart, well within the 0.01 rad tolerance.
-    - **`include/edgeneuro/control/grip_state_machine.hpp` (done, 2026-08-17):** `GripStateMachine<ValueType>` turns the MyoWare `ENV` signal into grip/release. The envelope must stay above `threshold` for `on_duration` to grip and below it for `off_duration` to release; those durations reject noise spikes. `update()` returns `true` only on a transition.
-      - `tests/test_grip_state_machine.cpp` (7 test cases): start state, too short, exactly long enough, noise spikes, release, dips while gripping, `reset()`. Adding `0.01f` ten times gives slightly less than `0.1f`, so the tests use margins instead of exact step counts.
-    - **`include/edgeneuro/control/slew_rate_limiter.hpp` (done, 2026-08-18):** `SlewRateLimiter<ValueType>` limits how fast the grip setpoint changes, turning the 0/1 decision into a ramp. It smooths a command, not a measurement. Residual IMU jitter can reuse `IirFilter`. Not a `Filter`: a rate needs `dt`.
-      - `tests/test_slew_rate_limiter.cpp` (7 test cases): initial value, no overshoot, limited steps, ramps up and down, `reset()`, a moving target.
-    - All 60 Catch2 test cases pass under `coverage` and `debug-heapguard`.
-
-  * **`include/edgeneuro/control/threshold_calibrator.hpp` and an interactive boot calibration (2026-08-19):** instead of a fixed threshold, the firmware records a relaxed phase and a clenched phase and takes the midpoint between the relaxed maximum and the clenched minimum. `is_valid()` requires both phases to have been observed (the initial sentinel values alone satisfied `contracted_min > relaxed_max`; fixed and tested). `tests/test_threshold_calibrator.cpp` (7 test cases).
-    - Fixed delays did not match when the person actually relaxed or clenched, so each phase now starts when a byte arrives on USART2. First clean result: `relaxed_max=491 contracted_min=3583 threshold=2037`.
-    - Waiting for that byte can block boot indefinitely, so the calibration is off by default (`kCalibrationEnabled = false`, compiled out with `if constexpr`) and `kFallbackThreshold` keeps the last calibrated value, 2037.
-    - **Electrode contact drifts:** within a few minutes of calibration, the relaxed signal rose close to the clenched level and oscillated around the threshold. Likely electrode contact or sweat; left for later.
-
-  * **Stage 5b: EMG and IMU in one 1 kHz loop with non-blocking I2C (2026-08-20/21):** `firmware/src/phase3_control_loop_main.cpp` combines the Stage 5a EMG loop (`GripStateMachine` + `SlewRateLimiter`) with IMU fusion (`ComplementaryFilter`) in one main loop.
-    - **Non-blocking I2C:** a 14-byte read at 100 kHz takes 1.5–2 ms, longer than the 1 ms EMG tick. `ImuReader` splits it into explicit states (`WaitStart1` … `WaitBtfLast`); `step()` checks one flag and returns. The sequence matches the verified blocking driver. Its timeout counts elapsed ticks, not calls.
-    - With both MPU6050s faulty, the state machine was first tested against the LCD1602 (PCF8574, `0x27`), which goes through the same START/ADDR/TXE/BTF/RXNE/STOP sequence, including the multi-byte BTF tail. A real MPU6050 only needs `kImuTargetAddr` changed to `0x68`.
-    - **Polling rate:** calling `step()` once per EMG tick gave only 47–48 reads/s, since a read needs ~22 state steps. Calling it on every loop pass, between ADC samples, raised that to **592–593 reads/s**, close to the bus limit. With steady operation `g_timeout_count` stays 0.
-    - **`ComplementaryFilter::update()` takes `dt`:** reads now complete every 2–4 ticks, so a fixed `dt_` would integrate the gyroscope wrongly. A new overload takes the elapsed time; a test checks that it is used.
-    - **Later:** the MPU6050 supports 400 kHz I2C, which could cut a read to about a quarter.
-    - **IMU smoothing (2026-08-21):** `roll_smoother`/`pitch_smoother` reuse `IirFilter` as a one-pole EMA (`b0=alpha`, `a1=alpha-1`); `kSmoothAlpha=0.5` is a starting value, to be tuned on real jitter.
-    - **`kSmoothAlpha` not yet tuned (2026-08-22):** at rest the real MPU6050 barely jitters after the complementary filter (α = 0.98), so its effect could not be seen; `kSmoothAlpha=0.5` stays unverified.
-    - **Self-recovery:** a loose breadboard contact hung the bus again (`BUSY`, 758 timeouts in `WaitStart1`). A timeout now does a full `SWRST` and re-configuration, as at boot, so a temporary hang recovers on the next `begin()`.
-
-  * **Stage 5c: a real Adafruit MPU-6050; fusion verified on the hardware (2026-08-22).** Four wires (`Vin` to 3.3 V, `GND`, `SCL` PB6, `SDA` PB7); address `0x68` with `AD0` open. `i2c_bus_scan` sees it at once.
-    - **Bug found:** `phase3_control_loop_main.cpp` never woke the sensor (`PWR_MGMT_1`, 0x6B), so reads completed (591–593/s) but roll and pitch stayed 0. `mpu6050_write_reg_blocking()` now wakes it at boot.
-    - **Result:** roll and pitch are steady at rest and follow tilting and turning in real time; the smoothed values follow with a small lag. Reads stay at 591–593/s, as measured with the LCD1602. Real IMU data → `ComplementaryFilter` → `IirFilter` works on the hardware.
-
-  * **I2C fast mode (400 kHz): the chip and the math work, the breadboard does not (2026-08-22).** RM0368 18.6.8/18.6.9: `CCR=14`, `TRISE=6` at 16 MHz. **First test:** reads went from 592/s to **2028/s** (about 3.4×), with correct roll and pitch.
-    - Shaking the sensor to look at jitter loosened the wiring: roll and pitch stuck at 0 with reads still completing, and the bus later hung at 100 kHz too. Re-seating the wires fixed both.
-    - **Decisive test:** with the wiring working at 100 kHz and untouched, only switching `CCR`/`TRISE` back to 400 kHz reproduced the hang at once. The breadboard's capacitance likely pushes rise times past fast mode's 300 ns. **The firmware stays at 100 kHz;** the 400 kHz constants are kept for soldered wiring.
-
-  * **Stage 6: live hardware drives MuJoCo; second MPU6050 and faster USART2. Code done, waiting for wiring (2026-08-22).** The CSV-replay bridge only checks the model and the mapping; the goal is the real STM32, MyoWare and two MPU6050s decoding live and driving MuJoCo.
-    - **Two IMUs on one I2C1 bus:** upper arm `0x68` (`AD0` open), forearm `0x69` (`AD0` to 3.3 V). `ImuReader` and `mpu6050_write_reg_blocking()` take the address as a parameter; `shoulder_reader(0x68u)` and `elbow_reader(0x69u)` take turns (`active_is_shoulder`), so only one transfer runs at a time.
-    - **Expected rate:** about 290–295 reads/s per sensor, half of Stage 5c's single-sensor rate; `shoulder_completions`/`elbow_completions` count them.
-    - **USART2 at 115200 baud:** the new line (~95 bytes, matching `LINE_RE` in `tools/mujoco_bridge/run_demo.py`) needs more than 9600 baud. Nothing configures `RCC->CFGR`/`RCC->PLLCFGR`, so the clock is the 16 MHz HSI; RM0368 19.3.4 gives `USARTDIV=8.6875`, `BRR=0x8B` (115,108 baud, 0.08 % error). The line is sent every 10 ticks (100 Hz). `usart2_send_float()` prints decimals without `printf`.
-    - **Fusion and elbow angle as in the CSV prototype:** two `ComplementaryFilter` instances, each initialized from its first reading; `elbow = max(0, elbow_filter.pitch() - shoulder_filter.pitch())`. The unverified `IirFilter` smoothing is removed, so the firmware matches the tested host prototype.
-    - **`tools/mujoco_bridge/run_demo_live.py`:** reads USART2 with `pyserial` and reuses `run_demo.py`'s `LatestSample`, `LINE_RE`, actuator mapping and viewer loop; a separate script, so the CSV version stays untouched. Defaults to 115200 baud (`tools/watch_myoware_uart.py` uses 9600 for the earlier firmware). `pyserial` is in `requirements.txt`; `tools/check_hardware_ready.py` now opens the port at 115200.
-    - **Verification plan, SWD first:** builds cleanly (`text=4104 data=536 bss=316`). Once the second MPU6050 is wired (`AD0`→3.3 V): ① `check_hardware_ready.py --i2c-scan` sees `0x68` and `0x69`; ② `g_wake_result_shoulder`/`g_wake_result_elbow` read over SWD; ③ `shoulder_completions`/`elbow_completions` near ~290/s; ④ the serial port opens; ⑤ raw lines in `miniterm` match the format; ⑥ moving each sensor moves the right joint in MuJoCo.
-
-  * **Stage 6 on the hardware (2026-08-23):** dual IMU + MyoWare with `run_demo_live.py`. Several real hardware problems, each traced over SWD and the diagnostic counters:
-
-    - **Unpowering IMU#2 also stopped IMU#1:** with only `VIN`/`GND` removed, an unpowered MPU6050 can hold `SDA` low and hang the shared bus. Per-reader `nack_count()` (this device stopped answering) and `timeout_count()` (the bus hung) now tell the two cases apart.
-    - **Fix: `i2c1_bus_recovery()`, the bus clear of NXP UM10204 §3.1.16:** take `PB6`/`PB7` as GPIO, clock `SCL` up to 9 times until the slave releases `SDA`, send STOP, hand the pins back and `SWRST`. `g_bus_recovery_attempts`/`g_bus_recovery_freed` count it.
-    - **Reads complete but the angles stay exactly `0.0`:** a sensor that lost power comes back with `SLEEP` set; it still answers, but its data registers never update. The boot-time wake-up does not cover a sensor that resets later.
-    - **Fix:** any NACK or timeout marks the reader `needs_rewake_`, and its next completed read first re-sends the wake-up (`consume_needs_rewake()`). The trigger is the failure itself, not the look of the data, so recovery from a NACK and from a timeout are both covered.
-    - **Known, deferred: power-on race.** The STM32 can try to wake a sensor before it has finished powering up, and then halts in `blink_code()`. Workaround: reflash with `check_hardware_ready.py --live-check`; the proposed fix (a short delay before the wake-up) is deferred.
-
-  * **EMG stuck at a fixed value: a loose contact at the STM32 (2026-08-23).** Ruled out in turn: electrode placement, the MyoWare supply, I2C noise and the firmware (the earlier `adc_hello_main.c` showed the same). The MyoWare's own LED followed every clench, and a meter on the `ENV`→`PA0` wire responded, but `PA0` did not: the pin's breadboard contact had failed. Re-seated, the signal is clean (relaxed ~2000–2150, clenched ~3600–3700).
-    - **Gain had drifted:** the relaxed level is far above the ~450 of 2026-08-18, so the MyoWare's gain pot had moved. The old `kFallbackThreshold=2037.0f` now sits inside the relaxed range; it is raised to `2800.0f`.
-
-  * **Diagnostic tools no longer guess at disconnections (2026-08-23 → 25):**
-    - **`tools/check_hardware_ready.py --live-check`** judged the forearm IMU by whether `elbow` changed, but `elbow` is a derived value clamped at 0 and can stay 0 in some poses. It now reads the firmware's `diag` line (`shoulder_completions`, `elbow_completions`, `nacks`, `timeouts`).
-    - **`tools/mujoco_bridge/run_demo_live.py`** uses the same `diag` logic instead of watching values change. New: `--log-file`, a per-IMU retry count while offline (`imu_retry_attempts()`), and a multi-line `[SENSORS]` block.
-
-  * **Hardware on hand (2026-08-29): five working MPU6050s** — three GY-521 and two Adafruit (`0x68` and `0x69`). A GY-521 drops into the upper-arm position (`0x68`) with no firmware change; the Adafruit boards stay the main ones (built-in pull-ups, better track record).
-
-* **Phase 2: MuJoCo simulation — scheduled after Phase 1.5**
-  * Bring in the **MuJoCo** physics simulator.
-  * A bridge that maps the engine's output to a simulated hand (for example the Shadow Hand).
-  * **Iteration 1: Python + MuJoCo bridge, done (2026-08-22).** The official MuJoCo Python package gives a working 3D demo first; a WebAssembly version can come later.
-    - `src/mujoco_bridge_demo.cpp` replays `data/wearable_1emg_6imu.csv` through the hardware-verified `GripStateMachine`, `ComplementaryFilter` and `SlewRateLimiter` (not `Pipeline`, §3) at 1 kHz and prints `tick=<n> grip=<f> gripping=<0|1> roll=<f> pitch=<f>`, flushing each line so the pipe does not buffer.
-    - The sensors match the verified hardware (one MPU-6050, one MyoWare 2.0), so MuJoCo shows what the real device would decode.
-    - The hand is the Shadow Hand from `mujoco_menagerie` (Apache-2.0, `shadow_hand/scene_right.xml`, commit `da76818e269b82289eba39808e2fb91d679d6994`), fetched by sparse checkout and ignored by git.
-    - `tools/mujoco_bridge/run_demo.py` starts the C++ binary, reads its output on a background thread, and applies the latest values in the `launch_passive`/`mj_step`/`viewer.sync()` loop: `grip` in [0,1] scales the finger actuators, `roll`/`pitch` drive the wrist (`rh_A_WRJ2`/`rh_A_WRJ1`). On macOS it needs `mjpython`.
-    - **Result:** the fingers close and open with the EMG, the wrist follows the IMU data, and the viewer holds the last pose when the file ends.
-    - A two-IMU arm was tried first and set aside because it did not match the hardware planned at the time; once two IMUs were confirmed the same day, it became Iteration 2.
-
-  * **Iteration 2: two-IMU shoulder and elbow, with physical grasping; motion done, grasping a known limitation (2026-08-22).** The sensors match the planned hardware (2× MPU6050, 1× MyoWare).
-    - **Sensors to joints:** upper-arm roll/pitch → shoulder (2 DOF); forearm pitch minus upper-arm pitch → elbow (1 DOF). Two `ComplementaryFilter` instances; output `tick=<n> grip=<f> gripping=<0|1> shoulder_pitch=<f> shoulder_roll=<f> elbow=<f>`. The wrist stays neutral: two IMUs cannot observe it separately.
-    - **Arm model:** `tools/mujoco_bridge/arm_hand_scene.xml` copies the `rh_forearm` subtree from `right_hand.xml` unchanged and mounts it on a new shoulder (2 joints) and elbow (1 joint). MJCF `<include>` cannot re-parent a body, hence the copy; meshes still come from `mujoco_menagerie/`.
-    - **Palm orientation fixed:** on the new arm the palm faced up when reaching; an extra 180° turn (`quat="1 0 1 0"`) points it down (normal from `(0.34,0,+0.94)` to `(-0.29,0,-0.96)`).
-    - **Joint damping fixed:** the arm oscillated for hundreds of steps; damping and armature raised to 8/0.05 (shoulder) and 5/0.03 (elbow).
-    - **Object:** a sphere instead of an ellipsoid; mass, friction and pedestal tuned against the simulation over time (see `arm_hand_scene.xml`).
-    - **Known limitation:** even at full grip the fingertips stay 3–8 cm from the ball, which is carried for a while and then slips. Every finger closes by the same fraction; a real grasp needs per-finger targets (grasp synthesis), beyond this iteration. The arm motion itself works.
-
----
-
-### Stage 2: Target-side embedded deployment and actuation (hardware)
-Once Phase 1.5 answers its four questions, its results set how much goes into MuJoCo and how much into the full hardware build.
-
-* **Phase 3: hardware abstraction (STM32 / sensor stream)**
-  * CMake + `arm-none-eabi-gcc` (the `firmware/` project): ADC for the **MyoWare 2.0** and I2C for **two** MPU6050s (upper arm and forearm, §3), which needs a second reader instance.
-  * A `Stm32AdcProvider` in place of `CsvSignalProvider` (timer-driven sampling).
-  * The verified C++ core and ring buffer compile for the MCU unchanged.
-  * **Hardware in the loop:** the **STM32F401RCT6 Black Pill** streams its decoded output over serial to the MuJoCo model on the PC.
-
-* **Phase 4: closed-loop actuation**
-  * Timer PWM drives servos.
-  * The full loop: sensor sample $\rightarrow$ ring buffer $\rightarrow$ zero-allocation engine $\rightarrow$ PWM.
-  * Practical issues: separate supplies for motors and sensors, supply noise, electrode contact.
-
----
-
-## 7. Session Log
-
-The dated development notes are in [SESSION_LOG.md](SESSION_LOG.md); this document keeps the requirements, the architecture and the roadmap.
+- Biddiss, E. & Chau, T. (2007). Upper limb prosthesis use and abandonment: a survey of the last 25 years.
+  *Prosthetics and Orthotics International*, 31(3), 236–257.
+- Farrell, T. R. & Weir, R. F. (2007). The optimal controller delay for myoelectric prostheses. *IEEE Transactions on
+  Neural Systems and Rehabilitation Engineering*, 15(1), 111–118.
+- De Luca, C. J. et al. (2010). Filtering the surface EMG signal: movement artifact and baseline noise contamination.
+  *Journal of Biomechanics*, 43, 1573–1579.

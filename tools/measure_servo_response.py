@@ -32,10 +32,11 @@ SERVOS = ("base", "shoulder", "elbow", "claw")
 # (name, label, seconds, what to do) -- the still holds are where the base was seen to swing (2026-10-03: upper arm
 # nearly hanging, base 1446..2500), then the demo task itself, then free motion as a check.
 PHASES = [
-    ("hold_hang", "Still: hanging", 10.0, "Let the arm hang naturally and do not move at all."),
-    ("hold_half", "Still: raised halfway", 10.0, "Raise the arm forward to about 45 degrees and keep still."),
+    ("hold_hang", "Still: arm hanging", 10.0, "Let the arm hang naturally and do not move at all."),
+    ("hold_half", "Still: raised halfway forward", 10.0, "Raise the arm forward to about 45 degrees and keep still."),
     ("hold_forward", "Still: forward, level", 10.0, "Hold the arm straight forward, level with the floor, and keep still."),
-    ("task", "Demo task", 25.0, "Do the demo once: hang -> forward -> swing left -> grip -> lift -> swing right -> place, holding each pose for 2 s."),
+    ("task", "Demo task", 25.0,
+     "Do the demo once: hang -> forward -> swing left -> grip -> lift -> swing right -> place, pausing 2 s at each pose."),
     ("check_free", "Check: free movement", 15.0, "(not in the task) Move freely, fast and slow."),
 ]
 
@@ -124,11 +125,13 @@ def save(phases, data_dir=DATA_DIR, name=None):
 
 def main():
     print(__doc__.split("\n\n")[0])
-    print("\nKeep the servo power on (the servos follow you as usual). The firmware must be the servo build of phase3_control_loop, with the ST-Link connected.")
+    print("\nThe servo supply must be on (the servos follow you as usual). The board must run the servo build of "
+          "phase3_control_loop, with the ST-Link connected.")
     test = record_swd(0.5)
     if not test:
-        sys.exit("Cannot read the TIM3 registers. Is the ST-Link connected and the board running? (check_hardware_ready.py --boot-check)")
-    print(f"ST-Link OK ({len(test)} readings in 0.5 s).")
+        sys.exit("Cannot read the TIM3 registers. Is the ST-Link connected and the board running? "
+                 "(check with check_hardware_ready.py --boot-check)")
+    print(f"ST-Link OK ({len(test)} samples in 0.5 s).")
     phases = run_protocol(record_swd)
     path = save(phases)
     print("\n".join(summary_lines(phases)))

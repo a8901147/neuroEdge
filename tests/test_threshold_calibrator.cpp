@@ -25,7 +25,7 @@ TEST_CASE("ThresholdCalibrator computes the midpoint between relaxed max and con
 }
 
 TEST_CASE("ThresholdCalibrator matches this project's real Stage 5a data", "[control]") {
-    // PRD.md Stage 5a: relaxed ~434-495, sustained clench ~3700+.
+    // SESSION_LOG.md, August 2026: relaxed ~434-495, sustained clench ~3700+.
     ThresholdCalibrator<float> cal;
     for (float v : {434.0f, 495.0f, 484.0f, 478.0f, 479.0f}) {
         cal.observe_relaxed(v);

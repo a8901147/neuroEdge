@@ -3,7 +3,7 @@
 
 Run this BEFORE flashing/reading UART, instead of discovering mid-task
 that the USB-TTL adapter silently dropped -- this exact failure mode
-recurred repeatedly during development (see PRD.md Phase 1.5): the
+recurred repeatedly during development (see SESSION_LOG.md, August 2026): the
 /dev/tty.usbserial-* device node can exist while the port is still
 unusable (opening it raises a termios EINVAL), so a bare `ls` or even
 `system_profiler` alone is NOT enough to confirm the adapter is really
@@ -23,7 +23,7 @@ responding after repeated breadboard handling, and it took a long,
 mostly-manual SWD session (BUSY-bit checks, address/pin/peripheral
 swaps, a full 128-address scan cross-tested against a known-good LCD1602
 module) to prove the STM32 side was healthy and the sensor module itself
-was at fault -- see PRD.md Phase 1.5 Stage 4b for the full writeup. This
+was at fault -- see SESSION_LOG.md, August 2026. This
 flag exists so that process doesn't have to be reinvented by hand next
 time an I2C device goes quiet: it flashes the scanner, waits for it to
 finish, and reports which addresses (if any) ACKed, plus whether the bus
@@ -437,11 +437,12 @@ def run_sensor_check(read_line, clock, seconds=3.0, max_seconds=8.0):
             if w.kind == "slow_data":
                 continue
             label, addr = sh.SENSORS[w.sensor]
-            lines.append(f"[NOTE] {label} MPU6050({addr}):{sh.KIND_TEXT[w.kind]}  [{w.detail}]"
+            lines.append(f"[NOTE] {label} MPU6050 ({addr}): {sh.KIND_TEXT[w.kind]}  [{w.detail}]"
                          f" -- the data is still correct, but the contact is unstable; secure this sensor's wiring")
         slow = [w for w in rep.warnings if w.kind == "slow_data"]
         if slow:
-            lines.append(f"[NOTE] slow data rate ({slow[0].detail}; normally about 30/s) -- fine for the demo, motion is just slightly less smooth")
+            lines.append(f"[NOTE] slow data rate ({slow[0].detail}; normally about 30/s) -- fine for the demo, motion is "
+                         f"just slightly less smooth")
         return True, lines
     # only what CAUSED the failure (the data cannot be trusted), not the incidental notes
     return False, ["[FAIL] " + sh.format_warning(sh.Report(False, rep.problems, []))]

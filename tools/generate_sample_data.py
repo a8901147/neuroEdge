@@ -42,7 +42,7 @@ def wearable_arm_fusion_csv(path: str, num_samples: int = 2000, fs_hz: float = 1
     Phase 2 iteration 2 fixture: whole-arm reach (shoulder pitch+roll from
     IMU#1, elbow flexion from IMU#2 relative to IMU#1) + EMG-driven grasp.
     Matches the confirmed real Phase 3 sensor budget (2x MPU6050, one per
-    limb segment -- see PRD.md Section 3).
+    limb segment -- see PRD.md §5).
 
     The forearm IMU's simulated orientation is built as the upper-arm's
     orientation PLUS a separately-varying elbow-bend term (not an

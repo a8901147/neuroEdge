@@ -222,7 +222,7 @@ def capture_pose(state, latest, target, instruction, accept=None):
         print("(The model now shows the target pose; match it with your arm.) Press Enter when ready.")
         input()
         print(f"Starting in 3 s. Hold the pose until recording ends ({RECORD_SECONDS:.0f} s in total; "
-              f"part is time to move, only the last {SETTLE_TAIL_SECONDS:.1f} s is averaged).")
+              f"only the last {SETTLE_TAIL_SECONDS:.1f} s is averaged).")
         for n in (3, 2, 1):
             print(f"  {n}...", flush=True)
             time.sleep(1.0)
@@ -236,8 +236,9 @@ def capture_pose(state, latest, target, instruction, accept=None):
         if reason is None:
             print("  Recording accepted.")
             return raw, elbow
-        print(f"  {reason} (attempt {attempt + 1}/{MAX_RETRIES}); please do it again.")
-    raise RuntimeError("The same pose failed several times in a row; calibration stopped. Check whether a sensor is loose or misaligned.")
+        print(f"  {reason} (attempt {attempt + 1}/{MAX_RETRIES}): please try again.")
+    raise RuntimeError("the same pose failed too many times; calibration aborted. Check that the sensors are not loose "
+                       "or crooked.")
 
 
 def ask_yes_no(question):
@@ -263,7 +264,8 @@ def run_flow(state, latest, args):
     # 2. FORWARD
     fwd_raw, _ = capture_pose(
         state, latest, (0.0, SH_HIGH_ELEV, EL_EXTENDED, CLAW_LOW),
-        "[2/7] FORWARD: first hang the arm, then with the elbow straight raise the arm forward as far as it goes, without turning the wrist.", far_from_hang)
+        "[2/7] FORWARD: back to hanging first, then, elbow straight, raise the arm forward to horizontal without "
+        "turning the wrist.", far_from_hang)
 
     # 3. LEFT_TWIST
     left_raw, _ = capture_pose(
@@ -299,7 +301,8 @@ def run_flow(state, latest, args):
 
     _flex_raw, flex_elbow = capture_pose(
         state, latest, (0.0, SH_LOW_ELEV, EL_FOLDED, CLAW_LOW),
-        "[5/7] ELBOW_FLEX: arm hanging, bend the elbow fully (palm as close to the shoulder as you can), nothing else moves.", flex_ok)
+        "[5/7] ELBOW_FLEX: arm hanging, bend the elbow fully (hand as close to the shoulder as you can), nothing else "
+        "moves.", flex_ok)
     fold_looks_like_bend = ask_yes_no(
         "Look at the model: does its folded forearm mean the same thing as the elbow bend you just made?")
     y_straight, y_flex = (EL_EXTENDED, EL_FOLDED) if fold_looks_like_bend else (EL_FOLDED, EL_EXTENDED)
@@ -327,7 +330,8 @@ def run_flow(state, latest, args):
     # 7. MID_RAISE: held out -- not used in the fit above.
     mid_raw, _ = capture_pose(
         state, latest, (0.0, SH_MID, EL_EXTENDED, claw_open),
-        "[7/7] MID_RAISE (check only, not used in the fit): elbow straight, raise the arm forward to about half height (about 45°).")
+        "[7/7] MID_RAISE (a check, not used in the fit): elbow straight, raise the arm forward to about HALF height "
+        "(about 45°).")
     tilt_mid, _az = cal.decode(mid_raw)
     frac = tilt_mid / cal.tilt_forward
     verdict = "PASS" if 0.2 <= frac <= 0.8 else "WARN"

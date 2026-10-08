@@ -40,18 +40,25 @@ SENSORS = {"upper_arm": ("upper arm", "0x68", "shoulder"), "forearm": ("forearm"
 PHASES = [
     ("hold_hang", "Still: hanging", 8.0, "Let the arm hang naturally and do not move at all. (task step 1)"),
     ("hold_forward", "Still: forward, level", 8.0, "Hold the arm straight forward, level with the floor, and keep still. (step 2)"),
-    ("hold_left_open", "Still: front-left, hand open", 8.0, "Swing the arm front-left to where you would grab the tape, hand open, and keep still. (step 3)"),
-    ("hold_left_grip", "Still: front-left, gripping", 8.0, "Same position, make a fist (as if holding the tape) and keep still. (step 4)"),
+    ("hold_left_open", "Still: front-left, hand open", 8.0,
+     "Swing the arm front-left to where you would grab the tape, hand open, and keep still. (step 3)"),
+    ("hold_left_grip", "Still: front-left, gripping", 8.0,
+     "Same position, make a fist (as if holding the tape) and keep still. (step 4)"),
     ("hold_lifted_grip", "Still: lifted, gripping", 8.0, "Keep the fist, raise the arm a little, and stop. (step 5)"),
     ("hold_right_grip", "Still: right, gripping", 8.0, "Keep the fist, swing the arm to the right, and stop. (step 6)"),
-    ("hold_place_grip", "Still: place position, gripping", 8.0, "Keep the fist, lower the arm to where the tape goes, and stop. (step 7)"),
-    ("aim_left", "Slow fine-tuning: aiming at the tape", 15.0, "Near the front-left grab position, make slow, small corrections left/right/up/down, as if aiming."),
-    ("task_1", "Full task, run 1", 20.0, "Do all 7 steps at demo speed: hang -> forward -> swing left -> grip -> lift -> swing right -> place."),
+    ("hold_place_grip", "Still: place position, gripping", 8.0,
+     "Keep the fist, lower the arm to where the tape goes, and stop. (step 7)"),
+    ("aim_left", "Slow fine-tuning: aiming at the tape", 15.0,
+     "Near the front-left grab position, make slow, small corrections left/right/up/down, as if aiming."),
+    ("task_1", "Full task, run 1", 20.0,
+     "Do all 7 steps at demo speed: hang -> forward -> swing left -> grip -> lift -> swing right -> place."),
     ("task_2", "Full task, run 2", 20.0, "Do the full task again."),
     ("task_3", "Full task, run 3", 20.0, "Do the full task again."),
-    ("check_hold_right_forward", "Check: still, front-right", 8.0, "(not in the task) Reach front-right, hand open, and keep still."),
+    ("check_hold_right_forward", "Check: still, front-right", 8.0,
+     "(not in the task) Reach front-right, hand open, and keep still."),
     ("check_hold_high", "Check: still, arm raised high", 8.0, "(not in the task) Raise the arm high in front and keep still."),
-    ("check_free", "Check: free movement", 15.0, "(not in the task) Move freely, fast and slow, in every direction."),
+    ("check_free", "Check: free movement", 15.0,
+     "(not in the task) Move freely, fast and slow, in every direction."),
 ]
 CHECK_PREFIX = "check_"   # phases kept out of the tuning, used only to check the chosen parameters generalise
 
@@ -59,26 +66,42 @@ CHECK_PREFIX = "check_"   # phases kept out of the tuning, used only to check th
 # direction) versus an intended swing? Decides the base's "slow follow while raising" from raw data, not a guess.
 # A lower-left -> upper-right raise moves up and sideways at once: kept out as a check.
 BASE_RAISE_PHASES = [
-    ("raise_forward", "Raise forward and lower", 12.0, "From hanging, raise straight forward to horizontal and lower again, twice. Only raise: no deliberate twist or sideways swing."),
-    ("raise_left_front", "Raise front-left and lower", 12.0, "From hanging, raise front-left (toward the tape) to horizontal and lower again, twice. Only raise: no deliberate twist."),
-    ("raise_right_front", "Raise front-right and lower", 12.0, "From hanging, raise front-right (toward where the tape goes) to horizontal and lower again, twice. Only raise: no deliberate twist."),
-    ("raise_slow", "Raise forward slowly and lower", 25.0, "From hanging, raise straight forward slowly, taking about 10 s to reach horizontal, then lower slowly. Only raise: no deliberate twist."),
-    ("swing_only", "Level arm, sideways swing only", 12.0, "Arm forward and level; at the same height swing left -> right -> center, twice. Do not raise or lower deliberately."),
+    ("raise_forward", "Raise forward and lower", 12.0,
+     "From hanging, raise straight forward to horizontal and lower again, twice. Only raise: no deliberate "
+     "twist or sideways swing."),
+    ("raise_left_front", "Raise front-left and lower", 12.0,
+     "From hanging, raise front-left (toward the tape) to horizontal and lower again, twice. Only raise: no "
+     "deliberate twist."),
+    ("raise_right_front", "Raise front-right and lower", 12.0,
+     "From hanging, raise front-right (toward where the tape goes) to horizontal and lower again, twice. Only "
+     "raise: no deliberate twist."),
+    ("raise_slow", "Raise forward slowly and lower", 25.0,
+     "From hanging, raise straight forward slowly, taking about 10 s to reach horizontal, then lower slowly. "
+     "Only raise: no deliberate twist."),
+    ("swing_only", "Level arm, sideways swing only", 12.0,
+     "Arm forward and level; at the same height swing left -> right -> center, twice. Do not raise or lower "
+     "deliberately."),
     ("hold_forward", "Still: forward, level", 8.0, "Hold the arm straight forward, level with the floor, and keep still."),
-    ("check_diagonal", "Check: diagonal, lower-left to upper-right", 12.0, "(not in the task) Raise diagonally from lower-left to upper-right and back, twice."),
+    ("check_diagonal", "Check: diagonal, lower-left to upper-right", 12.0,
+     "(not in the task) Raise diagonally from lower-left to upper-right and back, twice."),
 ]
 # 2026-10-04: the EMG calibration logs only hold a STILL arm (relaxed / clenched ~2 s each). Whether the grip
 # misfires while the relaxed arm moves, or lets go while a light grip is carried through the demo, needs EMG recorded
 # while the arm moves -- the tick line already carries each 10 ms window's emg_min/emg_max.
 EMG_PHASES = [
-    ("relaxed_still", "Hand relaxed, arm hanging still", 8.0, "Hand completely relaxed (no fist), arm hanging naturally, do not move."),
+    ("relaxed_still", "Hand relaxed, arm hanging still", 8.0,
+     "Hand completely relaxed (no fist), arm hanging naturally, do not move."),
     ("relaxed_task", "Hand relaxed, arm doing the demo", 20.0,
-     "Keep the hand relaxed (no fist) and move the arm along the demo path: hang -> forward -> swing left -> lift -> swing right -> place. (checks for false grips)"),
-    ("grip_still", "Light grip, arm still", 8.0, "Grip lightly, as if holding the tape (not hard), with the arm still at front-left."),
+     "Keep the hand relaxed (no fist) and move the arm along the demo path: hang -> forward -> swing left -> "
+     "lift -> swing right -> place. (checks for false grips)"),
+    ("grip_still", "Light grip, arm still", 8.0,
+     "Grip lightly, as if holding the tape (not hard), with the arm still at front-left."),
     ("grip_task", "Light grip, arm doing the demo", 20.0,
-     "Keep a light grip without letting go and move the arm through demo steps 5-7: lift -> swing right -> place, repeating if needed. (checks for false releases)"),
+     "Keep a light grip without letting go and move the arm through demo steps 5-7: lift -> swing right -> "
+     "place, repeating if needed. (checks for false releases)"),
     ("grip_firm_still", "Firm grip, arm still", 5.0, "Grip firmly (70-80 % of your maximum), arm still."),
-    ("check_open_close", "Check: grip and release, repeated", 15.0, "(not in the task) Grip for about 1 s, release for about 1 s, 5 times."),
+    ("check_open_close", "Check: grip and release, repeated", 15.0,
+     "(not in the task) Grip for about 1 s, release for about 1 s, 5 times."),
 ]
 PHASE_SETS = {"filter": PHASES, "base_raise": BASE_RAISE_PHASES, "emg": EMG_PHASES}
 DEFAULT_SET = "filter"
@@ -238,7 +261,7 @@ def summary_lines(phases, emg_thresholds=None):
             row = f"  EMG: {ev['n']} samples, min {ev['min']:.0f} / median {ev['median']:.0f} / max {ev['max']:.0f}"
             if emg_thresholds:
                 row += (f"; time above the grip threshold {th:.0f}: {ev['above_grip']:.0%}, below the release threshold "
-                        f"{ev['below_release']:.0%}")
+                        f"{rel:.0f}: {ev['below_release']:.0%}")
                 if name.startswith("relaxed"):
                     row += f"; -> false grips (relaxed hand judged as gripping): {ev['grips']}"
                 elif name.startswith("grip"):
@@ -316,10 +339,12 @@ def main():
     try:
         ser = serial.Serial(port, 115200, timeout=0.2)
     except serial.SerialException as exc:
-        sys.exit(f"Cannot open the serial port {port}: {exc}\nMost common cause: run_demo_live.py or watch_imu_raw.py is still running; close it and retry.")
+        sys.exit(f"Cannot open the serial port {port}: {exc}\nMost common cause: run_demo_live.py or watch_imu_raw.py is still "
+                 f"running; close it and retry.")
     read_line = lambda: ser.readline().decode(errors="ignore")
     try:
-        print(f"Reading {port} (nothing is flashed, read only). {len(phase_list)} phases, each can be re-recorded. Ctrl+C stops at any time.")
+        print(f"Reading {port} (nothing is flashed, read only). {len(phase_list)} phases, each can be re-recorded. "
+              f"Ctrl+C stops at any time.")
         if not wait_for_data(read_line, time.monotonic):
             sys.exit(1)
         phases = run_session(read_line, time.monotonic, phases=phase_list)

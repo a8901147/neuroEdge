@@ -7,7 +7,7 @@ namespace edgeneuro {
 // Turns a two-phase "relax, then contract" calibration sequence into a
 // GripStateMachine threshold, instead of a hardcoded magic number that
 // only holds for one specific session's electrode placement, skin
-// contact, and gain-pot setting (see PRD.md Stage 5a: 1220 happened to
+// contact, and gain-pot setting (see SESSION_LOG.md, August 2026: 1220 happened to
 // work, but only by luck against that one real-hardware run).
 //
 // Caller contract: during the "relax" phase, call observe_relaxed() with

@@ -1,5 +1,5 @@
 // Phase 1 turnkey demo: a terminal oscilloscope for the <1,6> wearable
-// fusion mode (PRD 4.3 "Turnkey Scientific Oscilloscope"). Deliberately
+// fusion mode (see README.md, host demos). Deliberately
 // avoids any GUI/web toolkit — this loop is the entire self-check surface
 // for V1.0: live EMG amplitude, decoded gesture, per-tick latency, and a
 // running malloc_count that must stay at zero for the whole run.
@@ -47,7 +47,7 @@ using Engine = EdgeNeuro<
 Engine build_engine(const std::string& csv_path) {
     // 2nd-order Butterworth-shaped high-pass-leaning biquad: suppresses DC
     // drift/motion artifact while passing EMG-band energy. Precomputed
-    // offline, loaded as a static constant per PRD 4.1.
+    // offline, loaded as a static constant.
     std::array<IirFilter<float>, kEmgChannels> emg_filters{IirFilter<float>(0.8f, -1.6f, 0.8f, -1.56f, 0.64f)};
     std::array<PassThroughFilter<float>, kImuChannels> imu_filters{};
 
@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
         total_tick_us += tick_us;
         max_tick_us = std::max(max_tick_us, tick_us);
 
-        // Pace to the 1kHz stream rate the PRD specifies (data was generated
+        // Pace to the 1kHz stream rate (data was generated
         // at fs=1000Hz): sleep off whatever's left of this 1ms slot after the
         // (sub-microsecond) DSP tick. This is demo scaffolding only — it runs
         // after the timed/guarded hot-path region above, so it never pollutes

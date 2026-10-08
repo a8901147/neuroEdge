@@ -7,7 +7,7 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 # The Homebrew `arm-none-eabi-gcc` formula ships the compiler only, without
 # newlib (no libc headers at all -- even <stdint.h> fails). Use the official
 # ARM GNU Toolchain tarball instead (has full newlib), extracted to a
-# non-sudo user-local path -- see PRD.md Phase 1.5 for how it got there.
+# non-sudo user-local path -- see firmware/README.md.
 set(ARM_TOOLCHAIN_ROOT "$ENV{HOME}/.local/arm-toolchain")
 set(CMAKE_C_COMPILER ${ARM_TOOLCHAIN_ROOT}/bin/arm-none-eabi-gcc)
 set(CMAKE_CXX_COMPILER ${ARM_TOOLCHAIN_ROOT}/bin/arm-none-eabi-g++)

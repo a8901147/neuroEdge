@@ -76,11 +76,12 @@ SETTLE_TAIL_SECONDS = 2.5  # average only the last N seconds of the hold -- give
 # actually changes shoulder_raw by a meaningful amount, or only elbow_raw
 # (which would mean the twist is happening at the wrist, not the shoulder).
 POSES = [
-    ("BASELINE", "Arm hanging naturally, elbow straight (the reference pose itself, the zero)"),
-    ("FORWARD", "From BASELINE, raise the arm straight forward, elbow straight, without turning the wrist"),
-    ("LEFT_TWIST", "From BASELINE swing the arm fully left, elbow straight, turning the thumb up"),
-    ("RIGHT_TWIST", "From BASELINE swing the arm fully right, elbow straight, turning the thumb down"),
-    ("LEFT_NO_TWIST", "(comparison, not a calibration pose) From BASELINE swing the arm fully left, elbow straight, wrist not turned; compare with LEFT_TWIST"),
+    ("BASELINE", "arm hanging naturally, elbow straight (the reference pose itself, the zero)"),
+    ("FORWARD", "from BASELINE, raise the arm straight forward, elbow straight, without turning the wrist"),
+    ("LEFT_TWIST", "from BASELINE, swing the arm fully left, elbow straight, turning the thumb up"),
+    ("RIGHT_TWIST", "from BASELINE, swing the arm fully right, elbow straight, turning the thumb down"),
+    ("LEFT_NO_TWIST", "(control, not a calibration pose) from BASELINE, swing the arm fully left, elbow straight, "
+                      "without turning the wrist; compared against LEFT_TWIST"),
 ]
 
 
