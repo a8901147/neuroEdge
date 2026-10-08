@@ -75,6 +75,32 @@ cmake --preset release-bench && cmake --build --preset release-bench -j
 
 Validates PRD §5's `<32,0>` continuous latency `< 0.1ms` target and `malloc_count == 0` for both `<1,6>` and `<32,0>` modes.
 
+Both modes use **synthetic** input (a fixed repeating pattern, not recorded EMG) and are defined once in
+`include/edgeneuro/bench/latency_configs.hpp`, shared with the on-target benchmark below:
+- `<1,6>`: 1 sEMG channel + 6 IMU axes (IMU passed through), IIR on the EMG, MAV over 50 samples, LDA into 3 classes.
+- `<32,0>`: a 32-channel high-density sEMG stress test (no IMU), IIR on each channel, MAV over 50 samples, LDA into 4.
+
+### On the STM32F401 (cycle counter)
+
+```sh
+cd firmware && cmake --build build --target flash_pipeline_latency
+# start it with the SWD jump in CLAUDE.md, then read USART2 (115200): one "latency mode=..." line per mode per second
+```
+
+The same two engines, timed per tick with the Cortex-M4's DWT cycle counter (compiled `-Os`, FPU on, 16 MHz HSI — the
+clock every firmware here runs at; a 64-sample synthetic buffer instead of 256 so the 32-channel engine fits in 64 KB
+SRAM — same per-tick work). Every 50th tick completes a window and runs MAV + LDA ("classify tick").
+Measured 2026-10-08 (5000 ticks after 500 warm-up; timer overhead 1 cycle, not subtracted):
+
+| Mode | Host (Apple M1, Release) | STM32F401 @ 16 MHz: mean per tick | min | classify tick (max) | CPU at a 1 kHz sample rate |
+| --- | --- | --- | --- | --- | --- |
+| `<1,6>` | ~7.5 ns | 239 cycles = **15.0 µs** | 141 cyc = 8.8 µs | 5064 cyc = **317 µs** | 1.5 % |
+| `<32,0>` | ~39 ns | 2146 cycles = **134 µs** | 1688 cyc = 106 µs | 24599 cyc = **1.54 ms** | 13.4 % |
+
+At 16 MHz the `<32,0>` classify tick (1.54 ms) does not fit in a 1 ms sample period: on average the load is 13 %, but
+that one tick per window would overrun a hard 1 kHz deadline. The `<1,6>` mode (what the real hardware has) fits easily.
+After flashing, flash `phase3_control_loop` back.
+
 ## Demo
 
 Terminal oscilloscope replaying the synthetic `<1,6>` wearable-fusion CSV at a real 1kHz pace — live EMG amplitude bar, decoded gesture, per-tick latency, running `malloc_count`.
