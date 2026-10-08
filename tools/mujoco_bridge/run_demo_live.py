@@ -1056,7 +1056,7 @@ def log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        print(f"警告:EMG校準紀錄寫入失敗(不影響這次校準本身):{e}")
+        print(f"Warning: could not write the EMG calibration log (this calibration is unaffected): {e}")
 
 
 def calibrate_emg_threshold(ser, latest, interactive=True):
@@ -1097,37 +1097,37 @@ def calibrate_emg_threshold(ser, latest, interactive=True):
     wiring first)."""
     emin, _ = latest.snapshot_emg_raw()
     if emin is None:
-        print("警告:還沒收到任何 emg_min/emg_max 資料,無法校準 EMG 閾值"
-              "(先確認 MyoWare 有連線、韌體有在跑)。")
+        print("Warning: no emg_min/emg_max data received yet, so the EMG threshold cannot be calibrated "
+              "(check that the MyoWare is connected and the firmware is running).")
         return None
 
     if interactive:
-        print("放鬆手臂,不要出力。準備好後按 Enter。")
+        print("Relax your arm completely. Press Enter when ready.")
         input()
-    print(f"取樣中(約 {EMG_RECORD_SECONDS:.1f} 秒,请保持放鬆)...")
-    relaxed_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "放鬆")
+    print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, stay relaxed)...")
+    relaxed_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "relaxed")
     relaxed_mean, relaxed_std = emg_mean_std([s[2] for s in relaxed_tail])
     threshold = int(round(relaxed_mean + EMG_THRESHOLD_K * relaxed_std))
 
     if interactive:
-        print("用力握拳並保持住。準備好後按 Enter。")
+        print("Make a firm fist and hold it. Press Enter when ready.")
         input()
-    print(f"取樣中(約 {EMG_RECORD_SECONDS:.1f} 秒,请保持用力)...")
-    contracted_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "用力")
+    print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, keep gripping)...")
+    contracted_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "gripping")
     contracted_mean, contracted_std = emg_mean_std([s[2] for s in contracted_tail])
 
-    print(f"EMG 閾值計算完成:relaxed_mean={relaxed_mean:.0f} relaxed_std={relaxed_std:.1f} "
+    print(f"EMG threshold computed: relaxed_mean={relaxed_mean:.0f} relaxed_std={relaxed_std:.1f} "
           f"threshold={threshold}(= mean + {EMG_THRESHOLD_K:.1f} * std)")
     suspect = contracted_mean <= threshold
     if suspect:
-        print(f"警告:剛剛用力階段的平均值({contracted_mean:.0f}, std={contracted_std:.1f})"
-              f"沒有超過算出來的閾值({threshold})-- 可能出力不夠大、電極貼片接觸不良,或 "
-              f"EMG_THRESHOLD_K 對你來說偏高,建議加大力道或檢查貼片後重新校準,再不行可以考慮"
-              f"調低 EMG_THRESHOLD_K。")
+        print(f"Warning: the gripping phase's mean ({contracted_mean:.0f}, std={contracted_std:.1f}) "
+              f"did not exceed the computed threshold ({threshold}). The grip may have been too weak, an electrode "
+              f"may have poor contact, or EMG_THRESHOLD_K is too high for you: grip harder or check the electrodes "
+              f"and recalibrate; failing that, consider lowering EMG_THRESHOLD_K.")
     else:
         margin = contracted_mean - threshold
-        print(f"驗證:用力階段平均值({contracted_mean:.0f}, std={contracted_std:.1f})高於閾值,"
-              f"margin={margin:.0f}({'出力起伏較大' if contracted_std > relaxed_std * 3 else '穩定'})。")
+        print(f"Check: the gripping phase's mean ({contracted_mean:.0f}, std={contracted_std:.1f}) is above the "
+              f"threshold, margin={margin:.0f} ({'uneven grip' if contracted_std > relaxed_std * 3 else 'steady'}).")
 
     # Long-term observation log (see EMG_CALIBRATION_LOG_DIR's own comment)
     # -- only for a real interactive session, not interactive=False's
@@ -1138,7 +1138,7 @@ def calibrate_emg_threshold(ser, latest, interactive=True):
                              threshold, contracted_mean, contracted_std, suspect)
 
     release = emg_release_threshold(relaxed_mean, threshold)
-    print(f"放開門檻={release}(握住要超過 {threshold},放開要低於 {release})")
+    print(f"Release threshold={release} (grip above {threshold}, release below {release})")
     send_emg_threshold(ser, threshold, release)
     return EmgThreshold(threshold, release)
 
@@ -1264,7 +1264,7 @@ def wait_until_sensors_healthy(latest, ignore=(), max_s=None, repeat_s=None, pre
         if max_s is not None and now - started >= max_s:
             sys.exit(prefix + sensor_health.format_warning(report))
         if now >= next_warning_at and sensor_health.should_announce(report, now - started):
-            print(sensor_health.format_warning(report) + "\n   (修好後會自動繼續,不用重開)")
+            print(sensor_health.format_warning(report) + "\n   (continues by itself once fixed; no restart needed)")
             next_warning_at = now + repeat_s
         time.sleep(0.002)
 
@@ -1284,8 +1284,9 @@ def apply_emg_threshold(args, ser, latest):
         print(f"--skip-emg-calibration: loaded threshold={emg_threshold} release={release} from "
               f"{args.calibration_file} (captured {saved.get('emg_threshold_captured_at', 'unknown time')}).")
         if release is None:
-            print("--skip-emg-calibration: 這份校正沒有放開門檻(2026-10-04 之前的),握住和放開用同一個門檻。"
-                  "不加 --skip-emg-calibration 重新做一次 EMG 校正,就會有放開門檻(握住比較不容易鬆掉)。")
+            print("--skip-emg-calibration: this calibration has no release threshold (it predates 2026-10-04), so grip "
+                  "and release use the same threshold. Recalibrate the EMG (without --skip-emg-calibration) to get a "
+                  "release threshold, which makes a held grip less likely to let go.")
         send_emg_threshold(ser, emg_threshold, release)
     else:
         emg_threshold = calibrate_emg_threshold(ser, latest, interactive=True)
@@ -1341,9 +1342,9 @@ def capture_window(latest, ignore=(), seconds=None, tail_seconds=None):
         _bad = sensor_health.implausible_problems(raw, latest.snapshot_elbow_raw(), ignore=ignore)
         if _bad:
             print("\n" + sensor_health.format_warning(sensor_health.Report(False, _bad))
-                  + "\n   這次錄製作廢,感測器恢復後會自動重錄這個姿勢。")
+                  + "\n   This recording is discarded; the pose will be re-recorded once the sensors recover.")
             wait_until_sensors_healthy(latest, ignore=ignore)
-            print("  感測器恢復,重錄這個姿勢——請維持姿勢。")
+            print("  Sensors recovered; re-recording this pose. Hold the pose.")
             samples = []
             t_start = time.monotonic()
             deadline = t_start + seconds
@@ -1382,9 +1383,9 @@ def capture_window(latest, ignore=(), seconds=None, tail_seconds=None):
             sh = [sum(v[i] for v in second_half) / len(second_half) for i in range(3)]
             drift = max(abs(sh[i] - fh[i]) for i in range(3))
             if drift > 0.05:
-                print(f"  警告:這段錄製的『穩定期』內部,shoulder raw 還在漂移"
-                      f"(前半段 vs 後半段最大差異 {drift:.3f}g)——這個姿勢可能還沒真的定住,"
-                      f"考慮重錄、保持動作更久再結束。")
+                print(f"  Warning: shoulder raw was still drifting during this recording's settled part "
+                      f"(first half vs second half differ by up to {drift:.3f} g): the pose may not have been held "
+                      f"still. Consider re-recording and holding the pose longer.")
 
     return raw_avg, elbow_avg
 
@@ -1410,24 +1411,24 @@ def calibrate_pose(latest, instruction, ref_raw=None, min_tilt_deg=None, ignore=
     # (module level since 2026-10-03, shared by the humanoid path and --mearm; was a closure in main())
     while True:
         print(instruction)
-        print("準備好後按 Enter。")
+        print("Press Enter when ready.")
         input()
-        print(f"3 秒後開始 -- 請保持住直到錄製結束(共 {RECORD_SECONDS:.0f} 秒,前段是移動時間,"
-              f"只有最後 {SETTLE_TAIL_SECONDS:.1f} 秒會拿來平均)。")
+        print(f"Starting in 3 s. Hold the pose until recording ends ({RECORD_SECONDS:.0f} s in total; the first "
+              f"part is time to move, only the last {SETTLE_TAIL_SECONDS:.1f} s is averaged).")
         for n in (3, 2, 1):
             print(f"  {n}...", flush=True)
             time.sleep(1.0)
-        print("開始錄製!請維持姿勢。")
+        print("Recording! Hold the pose.")
         result = capture_window(latest, ignore)
         if ref_raw is None or min_tilt_deg is None:
             return result
         raw, _ = result
         tilt_deg = calibration_tilt_deg(ref_raw, raw)
         if tilt_deg >= min_tilt_deg:
-            print(f"  角度足夠(tilt={tilt_deg:.1f}deg >= {min_tilt_deg:.0f}deg),採用這次錄製。\n")
+            print(f"  Angle large enough (tilt={tilt_deg:.1f}deg >= {min_tilt_deg:.0f}deg); recording accepted.\n")
             return result
-        print(f"  角度太小(tilt={tilt_deg:.1f}deg,需要 >= {min_tilt_deg:.0f}deg)——"
-              f"這個角度離基準點太近,校正基底會不穩定,請重來一次,這次動作要更誇張。\n")
+        print(f"  Angle too small (tilt={tilt_deg:.1f}deg, needs >= {min_tilt_deg:.0f}deg): too close to the "
+              f"reference pose for a stable calibration. Try again with a bigger movement.\n")
 
 
 CAL_CONFIRM_TIMEOUT_S = 4.0   # the board's diag line comes once a second
@@ -1462,10 +1463,10 @@ def send_calibration_to_board(ser, latest, saved, timeout_s=None):
             text = getattr(latest, "last_diag_text", None)
             applied = _diag_int(text, "cal_applied")
             if applied is not None and applied > (before or 0):
-                print(f"校正已傳給板子，板子已套用（captured {saved.get('captured_at', 'unknown time')}）。")
+                print(f"Calibration sent; the board applied it (captured {saved.get('captured_at', 'unknown time')}).")
                 return True
             if (_diag_int(text, "cal_rejected") or 0) > before_rej:
-                print("⚠ 板子拒絕了這份校正（內容不對），實體手臂沿用原本的校正。")
+                print("⚠ The board rejected this calibration (invalid content); the real arm keeps its previous calibration.")
                 return False
             malformed = _diag_int(text, "cal_malformed") or 0
             if malformed > before_mal:
@@ -1473,11 +1474,13 @@ def send_calibration_to_board(ser, latest, saved, timeout_s=None):
                 break
             time.sleep(0.05)
         if not damaged:
-            print("⚠ 板子沒有確認收到校正（不是伺服版韌體，或韌體太舊？）——實體手臂沿用原本的校正。")
+            print("⚠ The board did not confirm the calibration (not the servo firmware, or an older one?); "
+                  "the real arm keeps its previous calibration.")
             return False
         if attempt < CAL_SEND_ATTEMPTS:
-            print(f"校正傳輸途中掉了字，重傳一次（第 {attempt + 1} 次）……")
-    print(f"⚠ 校正傳了 {CAL_SEND_ATTEMPTS} 次都在途中損壞（序列線接觸？），實體手臂沿用原本的校正。")
+            print(f"Bytes were lost while sending the calibration; resending (attempt {attempt + 1})...")
+    print(f"⚠ The calibration was corrupted in transit on all {CAL_SEND_ATTEMPTS} attempts (serial wiring?); "
+          "the real arm keeps its previous calibration.")
     return False
 
 
@@ -1485,16 +1488,16 @@ def capture_calibration_poses(latest, ignore=()):
     """The four calibration poses, interactively (calibrate_pose), as the dict saved in shoulder_calibration.json. The
     same prompts as the humanoid path (2026-10-03: shared with --mearm)."""
     baseline_raw, zero_elbow = calibrate_pose(
-        latest, "Calibrating shoulder -- BASELINE: 請把手臂自然垂下,手肘打直。", ignore=ignore)
+        latest, "Calibrating shoulder -- BASELINE: let your arm hang naturally, elbow straight.", ignore=ignore)
     forward_raw, _ = calibrate_pose(
-        latest, "FORWARD: 先回到 BASELINE(垂下),然後手肘打直,手臂往前伸直到底,手腕不要轉。",
+        latest, "FORWARD: back to BASELINE (hanging) first, then, elbow straight, raise the arm straight forward as far as it goes without turning the wrist.",
         ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG, ignore=ignore)
     left_twist_raw, _ = calibrate_pose(
-        latest, "LEFT_TWIST: 先回到 BASELINE(垂下),然後手肘打直,手臂往左甩到底,同時大拇指轉朝上。",
+        latest, "LEFT_TWIST: back to BASELINE (hanging) first, then, elbow straight, swing the arm fully left, turning the thumb up.",
         ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG, ignore=ignore)
     right_twist_raw, _ = calibrate_pose(
-        latest, "RIGHT_TWIST(驗證用,不會進入校正基底): 先回到 BASELINE(垂下),然後手肘打直,"
-                "手臂往右甩到底,同時大拇指轉朝下。",
+        latest, "RIGHT_TWIST (a check, not part of the calibration basis): back to BASELINE (hanging) first, then, "
+                "elbow straight, swing the arm fully right, turning the thumb down.",
         ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG, ignore=ignore)
     return {"captured_at": time.strftime("%Y-%m-%d %H:%M:%S"), "baseline_raw": list(baseline_raw),
             "forward_raw": list(forward_raw), "left_twist_raw": list(left_twist_raw),
@@ -1670,9 +1673,9 @@ def run_mearm_preview(args):
         pathb_cal, shoulder_basis, baseline_raw, forward_raw, zero_elbow, alignment = _mearm_calibration(fresh)
     send_calibration_to_board(ser, latest, load_calibration_file(args.calibration_file))
 
-    input("\n--mearm: 請先把手臂往下垂擺好，按 Enter 後伺服會回到起點：")
+    input("\n--mearm: let your arm hang down; after Enter the servos walk back to the start pose: ")
     ser.write(b"R\n")
-    print("--mearm: 伺服回到起點中（慢慢移動），之後會跟著你的手臂。")
+    print("--mearm: servos walking back to the start pose (slowly); then they follow your arm.")
 
     model = mujoco.MjModel.from_xml_path(str(MEARM_SCENE_XML))
     data = mujoco.MjData(model)
@@ -1714,14 +1717,14 @@ def run_mearm_preview(args):
                     report = health.report(now_m)
                     if not report.ok and not sensor_fault:
                         sensor_fault = True
-                        print("\n" + sensor_health.format_warning(report) + "\n   (模型停在最後一個正常的姿勢)")
+                        print("\n" + sensor_health.format_warning(report) + "\n   (the model holds its last good pose)")
                         next_fault_warning_at = now_m + MEARM_HEALTH_REPEAT_WARNING_S
                     elif not report.ok and now_m >= next_fault_warning_at:
                         print(sensor_health.format_warning(report))
                         next_fault_warning_at = now_m + MEARM_HEALTH_REPEAT_WARNING_S
                     elif report.ok and sensor_fault:
                         sensor_fault = False
-                        print("✓ 感測器恢復正常,模型重新跟隨手臂。")
+                        print("✓ Sensors back to normal; the model follows the arm again.")
                     hw_text = hw_warnings.update(report, now_m)     # drop-outs / resets the firmware saw: tell, don't hold
                     if hw_text:
                         print("\n" + hw_text)
@@ -2016,15 +2019,15 @@ def main():
             time.sleep(0.05)
         shoulder_wake_result = latest.snapshot_wake_status()[0]
         if shoulder_wake_result is None:
-            print("警告:shoulder 標記為選配,2 秒內沒收到韌體的 wake 診斷資料——"
-                  "肩膀 pitch/roll 整個 session 都會固定在 BASELINE。")
+            print("Warning: shoulder is marked optional and no wake diagnostics arrived from the firmware within 2 s; "
+                  "shoulder pitch/roll stay fixed at BASELINE for the whole session.")
         elif shoulder_wake_result != 0:
-            print(f"shoulder 標記為選配,韌體確認 wake 真的失敗了(code={shoulder_wake_result})"
-                  f"——肩膀 pitch/roll 整個 session 都會固定在 BASELINE。")
+            print(f"shoulder is marked optional and the firmware confirms its wake-up failed "
+                  f"(code={shoulder_wake_result}); shoulder pitch/roll stay fixed at BASELINE for the whole session.")
         else:
-            print("shoulder 標記為選配,但韌體回報 wake 其實成功了(IMU 有連線)——"
-                  "仍會固定在 BASELINE,不會即時追蹤(--optional-sensors 是「不追蹤」,"
-                  "不是「偵測不到才不追蹤」)。")
+            print("shoulder is marked optional, but the firmware reports its wake-up succeeded (the IMU is "
+                  "connected); it still stays fixed at BASELINE and is not tracked (--optional-sensors means "
+                  "'do not track', not 'track only if detected').")
 
     # EMG threshold: same --skip-*/default-calibrates pattern as shoulder
     # above, sharing the same calibration file (save_calibration_fields'
@@ -2036,7 +2039,7 @@ def main():
     # --skip-calibration's docstring has -- it only goes stale if the
     # MyoWare gain trim pot gets touched.
     if "emg" in optional_sensors:
-        print("emg 標記為選配,跳過 EMG 閾值校準。")
+        print("emg is marked optional; skipping the EMG threshold calibration.")
     else:
         apply_emg_threshold(args, ser, latest)
 
@@ -2056,7 +2059,7 @@ def main():
     # it's a held-out validation check instead, printed below, confirming
     # the basis built from LEFT_TWIST alone also correctly recognizes the
     # opposite-side motion.
-    # Each step below explicitly says "回到 BASELINE 再做" -- see git
+    # Each step below explicitly says "back to BASELINE first" -- see git
     # history (the DOWN/LEFT_A version of this comment) for why an implicit
     # "start from wherever you happen to be" produced an almost-degenerate
     # basis once; kept here even though FORWARD/LEFT_TWIST are big,
@@ -2085,32 +2088,32 @@ def main():
               f"the current mount, only trusted at face value.")
     else:
         baseline_raw, zero_elbow = _calibrate_pose(
-            "Calibrating elbow zero (shoulder 標記為選配,肩膀姿勢不重要,只需要手肘打直): "
-            "請把手肘打直、手臂放鬆下垂。"
+            "Calibrating elbow zero (shoulder is optional, so only a straight elbow matters): "
+            "straighten the elbow and let the arm hang relaxed."
             if shoulder_optional else
-            "Calibrating shoulder -- BASELINE: 請把手臂自然垂下,手肘打直。")
+            "Calibrating shoulder -- BASELINE: let your arm hang naturally, elbow straight.")
 
         if shoulder_optional:
             forward_raw = left_twist_raw = right_twist_raw = None
-            print("shoulder 標記為選配,跳過 FORWARD/LEFT_TWIST/RIGHT_TWIST 校正姿勢——"
-                  "肩膀 pitch/roll 整個 session 都會固定在 BASELINE,不會即時追蹤。\n")
+            print("shoulder is marked optional; skipping the FORWARD/LEFT_TWIST/RIGHT_TWIST calibration poses. "
+                  "Shoulder pitch/roll stay fixed at BASELINE for the whole session, not tracked.\n")
         else:
             forward_raw, _ = _calibrate_pose(
-                "FORWARD: 先回到 BASELINE(垂下),然後手肘打直,手臂往前伸直到底,手腕不要轉。",
+                "FORWARD: back to BASELINE (hanging) first, then, elbow straight, raise the arm straight forward as far as it goes without turning the wrist.",
                 ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
 
             left_twist_raw, _ = _calibrate_pose(
-                "LEFT_TWIST: 先回到 BASELINE(垂下),然後手肘打直,手臂往左甩到底,"
-                "同時大拇指轉朝上。",
+                "LEFT_TWIST: back to BASELINE (hanging) first, then, elbow straight, swing the arm fully left, "
+                "turning the thumb up.",
                 ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
 
             right_twist_raw, _ = _calibrate_pose(
-                "RIGHT_TWIST(驗證用,不會進入校正基底): 先回到 BASELINE(垂下),然後手肘打直,"
-                "手臂往右甩到底,同時大拇指轉朝下。",
+                "RIGHT_TWIST (a check, not part of the calibration basis): back to BASELINE (hanging) first, then, "
+                "elbow straight, swing the arm fully right, turning the thumb down.",
                 ref_raw=baseline_raw, min_tilt_deg=MIN_CALIBRATION_TILT_DEG)
 
         if shoulder_optional:
-            print("shoulder 選配模式下不存校正檔(沒有真正的肩膀校正資料可存)。")
+            print("shoulder is optional, so no calibration file is saved (there is no real shoulder calibration to save).")
         else:
             save_calibration_fields(args.calibration_file, {
                 "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2141,7 +2144,7 @@ def main():
     # a flat 0.0 instead of calling oblique_decompose_scaled at all.
     if shoulder_optional:
         shoulder_basis = None
-        print(f"Shoulder: 選配、未即時追蹤,pitch/roll 整個 session 固定為 0(BASELINE)。"
+        print(f"Shoulder: optional, not tracked; pitch/roll fixed at 0 (BASELINE) for the whole session. "
               f"elbow zero={zero_elbow:.3f}")
         forward_raw = left_twist_raw = right_twist_raw = None
     else:
@@ -2250,14 +2253,14 @@ def main():
                     report = health.report(now_m, ignore=health_ignore)
                     if not report.ok and not sensor_fault:
                         sensor_fault = True
-                        print("\n" + sensor_health.format_warning(report) + "\n   (手臂停在最後一個正常的姿勢)")
+                        print("\n" + sensor_health.format_warning(report) + "\n   (the arm holds its last good pose)")
                         next_fault_warning_at = now_m + HEALTH_REPEAT_WARNING_S
                     elif not report.ok and now_m >= next_fault_warning_at:
                         print(sensor_health.format_warning(report))
                         next_fault_warning_at = now_m + HEALTH_REPEAT_WARNING_S
                     elif report.ok and sensor_fault:
                         sensor_fault = False
-                        print("✓ 感測器恢復正常,手臂重新跟隨。")
+                        print("✓ Sensors back to normal; the arm follows again.")
                     hw_text = hw_warnings.update(report, now_m)     # drop-outs / resets the firmware saw: tell, don't hold
                     if hw_text:
                         print("\n" + hw_text)

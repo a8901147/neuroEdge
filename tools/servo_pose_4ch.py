@@ -61,7 +61,7 @@ def parse(line):
     """-> ('select', ch) | ('step', +-n) | ('set', ch, us) | ('all', us) | ('show',) | ('quit',) | ('error', why)"""
     parts = line.strip().lower().split()
     if not parts:
-        return ("error", "空白指令")
+        return ("error", "empty command")
     head = parts[0]
     if head in ("q", "quit", "exit"):
         return ("quit",)
@@ -76,24 +76,24 @@ def parse(line):
         try:
             n = int(rest) if rest else 1
         except ValueError:
-            return ("error", "步數要是整數")
+            return ("error", "the step count must be an integer")
         if len(parts) > 2 or n < 0:
-            return ("error", "用法: + [步數]")
+            return ("error", "usage: + [steps]")
         return ("step", n if head[0] == "+" else -n)
     if head == "set" and len(parts) == 3:
         ch = _channel(parts[1])
         if ch is None:
-            return ("error", "通道要是 1-4 或 base/shoulder/elbow/claw")
+            return ("error", "the channel must be 1-4 or base/shoulder/elbow/claw")
         try:
             return ("set", ch, int(parts[2]))
         except ValueError:
-            return ("error", "脈寬要是整數(微秒)")
+            return ("error", "the pulse width must be an integer (µs)")
     if head == "all" and len(parts) == 2:
         try:
             return ("all", int(parts[1]))
         except ValueError:
-            return ("error", "脈寬要是整數(微秒)")
-    return ("error", "看不懂這個指令")
+            return ("error", "the pulse width must be an integer (µs)")
+    return ("error", "unrecognized command")
 
 
 def clamp_target(ch, target_us):
@@ -125,7 +125,8 @@ def read_state(board, ch, wait=0.3):
             if m:
                 return int(m.group(1))
     raise BoardNotAnswering(
-        "板子沒有回應。是不是燒的不是 servo_limit_finder_4ch?燒完有沒有做過真正的斷電重啟(拔掉再插回)?")
+        "the board does not respond. Is servo_limit_finder_4ch the firmware on it, and did the app start after flashing "
+        "(check with check_hardware_ready.py --boot-check)?")
 
 
 def _walk(board, ch, target_us):
@@ -133,7 +134,7 @@ def _walk(board, ch, target_us):
     target, clamped = clamp_target(ch, target_us)
     if clamped:
         lo, hi = RANGES[ch]
-        print(f"  {NAMES[ch - 1]} 只能在 {lo}~{hi} 微秒(你實測的範圍),改成 {target}")
+        print(f"  {NAMES[ch - 1]} is limited to {lo}-{hi} µs (its measured range); using {target}")
     current = read_state(board, ch)
     direction, n = plan_steps(current, target)
     key = b"+" if direction > 0 else b"-"
@@ -156,7 +157,7 @@ def session(board, prompt="pose> "):
             if cmd[0] == "quit":
                 break
             elif cmd[0] == "error":
-                print(f"  {cmd[1]}。輸入 show / rest / set shoulder 1500 / all 1500 / + 4 / q")
+                print(f"  {cmd[1]}. Type show / rest / set shoulder 1500 / all 1500 / + 4 / q")
             elif cmd[0] == "select":
                 selected = cmd[1]
                 pose[selected] = read_state(board, selected)
@@ -190,7 +191,7 @@ def session(board, prompt="pose> "):
         except BoardNotAnswering:
             pass
     line = " ".join(f"{NAMES[ch - 1]}={pose[ch]}" for ch in RANGES)
-    print(f"\n最後姿勢: {line}")
+    print(f"\nFinal pose: {line}")
     return pose
 
 
@@ -203,7 +204,7 @@ def main():
     args = parser.parse_args()
     port = args.port or autodetect_port(prefer_cp2102=args.cp2102)
     board = serial.Serial(port, BAUD, timeout=0.5)
-    print(f"已連線 {port}。輸入 show 看目前四個脈寬, rest 回到休息姿勢, q 離開。")
+    print(f"Connected to {port}. Type show for the four current pulse widths, rest for the rest pose, q to quit.")
     session(board)
 
 

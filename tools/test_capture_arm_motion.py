@@ -126,15 +126,15 @@ class ProtocolTest(unittest.TestCase):
     def test_some_phases_are_kept_out_of_the_task_to_check_against_overfitting(self):
         checks = [p for p in cam.PHASES if p[0].startswith(cam.CHECK_PREFIX)]
         self.assertGreaterEqual(len(checks), 2)
-        self.assertTrue(all("不在任務裡" in p[3] for p in checks))
+        self.assertTrue(all("not in the task" in p[3] for p in checks))
 
     def test_resting_noise_is_reported_for_still_holds_only(self):
         board = FakeBoard(still)
         hold = cam.record_phase(board.read_line, board.clock, 1.0)
         text = "\n".join(cam.summary_lines({"hold_hang": hold, "task_1": hold}))
-        hold_part, task_part = text.split("完整任務")
-        self.assertIn("雜訊", hold_part)
-        self.assertNotIn("雜訊", task_part)
+        hold_part, task_part = text.split("Full task")
+        self.assertIn("noise", hold_part)
+        self.assertNotIn("noise", task_part)
 
 
 class BaseRaiseSetTest(unittest.TestCase):
@@ -151,12 +151,12 @@ class BaseRaiseSetTest(unittest.TestCase):
         # REAL slow raise, not only on a recording stretched in time
         slow = [p for p in cam.PHASE_SETS["base_raise"] if p[0] == "raise_slow"]
         self.assertEqual(len(slow), 1)
-        self.assertIn("慢", slow[0][3])
+        self.assertIn("slowly", slow[0][3])
 
     def test_the_diagonal_raise_is_kept_out_as_a_check(self):
         # the user's case (lower-left -> upper-right): raising and swinging at once; checks, does not tune
         checks = [p for p in cam.PHASE_SETS["base_raise"] if p[0].startswith(cam.CHECK_PREFIX)]
-        self.assertTrue(any("diagonal" in p[0] and "不在任務裡" in p[3] for p in checks))
+        self.assertTrue(any("diagonal" in p[0] and "not in the task" in p[3] for p in checks))
 
     def test_the_default_set_is_the_filter_tuning_one(self):
         self.assertIs(cam.PHASE_SETS[cam.DEFAULT_SET], cam.PHASES)
@@ -194,7 +194,7 @@ class InteractiveTest(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             phases = cam.run_session(board.read_line, board.clock, input_fn=lambda _p="": next(answers),
-                                     phases=[("rest", "靜止", 1.0, "不要動"), ("slow", "慢慢動", 1.0, "慢慢轉")],
+                                     phases=[("rest", "still", 1.0, "do not move"), ("slow", "slow", 1.0, "turn slowly")],
                                      countdown_s=0.0)
         return phases, out.getvalue()
 
@@ -202,13 +202,13 @@ class InteractiveTest(unittest.TestCase):
         phases, text = self.run_session(["", "", "", ""])        # start, keep, start, keep
         self.assertEqual(list(phases), ["rest", "slow"])
         self.assertTrue(all(len(v) > 50 for v in phases.values()))
-        self.assertIn("不要動", text)
-        self.assertIn("慢慢轉", text)
+        self.assertIn("do not move", text)
+        self.assertIn("turn slowly", text)
 
     def test_a_phase_can_be_redone(self):
         phases, text = self.run_session(["", "r", "", "", "", ""])   # rest, redo, rest again, keep, slow, keep
         self.assertEqual(list(phases), ["rest", "slow"])
-        self.assertIn("重錄", text)
+        self.assertIn("Re-recording", text)
 
     def test_no_data_from_the_board_is_said_plainly_not_recorded_as_empty(self):
         board_lines = iter(["\r\n"] * 100000)
@@ -324,8 +324,8 @@ class EmgProtocolTest(unittest.TestCase):
         phases = {"relaxed_task": emg_samples([600] * 20 + [2000] * 10 + [600] * 20),
                   "grip_task": emg_samples([2000] * 10 + [800] * 10 + [2000] * 10)}
         text = "\n".join(cam.summary_lines(phases, emg_thresholds=(1500, 1000)))
-        self.assertRegex(text, r"誤觸[^\n]*1 次")
-        self.assertRegex(text, r"誤放開[^\n]*1 次")
+        self.assertRegex(text, r"false grips[^\n]*: 1\b")
+        self.assertRegex(text, r"false releases[^\n]*: 1\b")
 
     def test_without_thresholds_the_summary_still_shows_the_emg_levels(self):
         text = "\n".join(cam.summary_lines({"relaxed_task": emg_samples([600] * 10)}))

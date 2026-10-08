@@ -147,7 +147,7 @@ def wait_for_valid_data(latest):
         if HEALTH_PREFLIGHT_MAX_S is not None and now - started >= HEALTH_PREFLIGHT_MAX_S:
             raise RuntimeError(sensor_health.format_warning(report))
         if now >= next_warning and sensor_health.should_announce(report, now - started):
-            print(sensor_health.format_warning(report) + "\n   (修好後會自動繼續,不用重開)")
+            print(sensor_health.format_warning(report) + "\n   (continues by itself once fixed; no restart needed)")
             next_warning = now + HEALTH_REPEAT_WARNING_S
         time.sleep(0.005)
 
@@ -189,7 +189,7 @@ def capture_window(latest):
                 last_print = t
         time.sleep(0.02)
     if stalled:
-        raise CaptureInterrupted("錄製途中資料中斷(韌體暫時沒有送出資料)")
+        raise CaptureInterrupted("data interrupted during recording (the firmware stopped sending for a moment)")
     if not samples:
         raise RuntimeError("no valid shoulder samples arrived during the capture window")
     t_max = samples[-1][0]
@@ -206,8 +206,8 @@ def capture_window(latest):
             sh = [sum(v[i] for v in second) / len(second) for i in range(3)]
             drift = max(abs(sh[i] - fh[i]) for i in range(3))
             if drift > 0.05:
-                print(f"  警告:穩定期內部 upperarm raw 還在漂移(前後半段最大差 {drift:.3f}g)"
-                      f"——姿勢可能還沒定住,考慮重錄。")
+                print(f"  Warning: upper-arm raw was still drifting during the settled part (halves differ by up to "
+                      f"{drift:.3f} g): the pose may not have been held still. Consider re-recording.")
     return raw_avg, elbow_avg
 
 
@@ -219,25 +219,26 @@ def capture_pose(state, latest, target, instruction, accept=None):
     for attempt in range(MAX_RETRIES):
         state.show(*target)
         print("\n" + instruction)
-        print("(模型現在擺的就是目標姿勢——請讓你的手臂看起來跟它一致。)準備好後按 Enter。")
+        print("(The model now shows the target pose; match it with your arm.) Press Enter when ready.")
         input()
-        print(f"3 秒後開始 -- 請保持住直到錄製結束(共 {RECORD_SECONDS:.0f} 秒,"
-              f"只有最後 {SETTLE_TAIL_SECONDS:.1f} 秒會拿來平均)。")
+        print(f"Starting in 3 s. Hold the pose until recording ends ({RECORD_SECONDS:.0f} s in total; "
+              f"only the last {SETTLE_TAIL_SECONDS:.1f} s is averaged).")
         for n in (3, 2, 1):
             print(f"  {n}...", flush=True)
             time.sleep(1.0)
-        print("開始錄製!請維持姿勢。")
+        print("Recording! Hold the pose.")
         try:
             raw, elbow = capture_window(latest)
         except CaptureInterrupted as exc:
-            print(f"  {exc}(第 {attempt + 1}/{MAX_RETRIES} 次)——這次錄製作廢,請重來一次。")
+            print(f"  {exc} (attempt {attempt + 1}/{MAX_RETRIES}): this recording is discarded, please try again.")
             continue
         reason = accept(raw, elbow) if accept else None
         if reason is None:
-            print("  已採用這次錄製。")
+            print("  Recording accepted.")
             return raw, elbow
-        print(f"  {reason}(第 {attempt + 1}/{MAX_RETRIES} 次)——請重來一次。")
-    raise RuntimeError("同一個姿勢連續多次不合格,中止校正——請檢查感測器是否鬆脫/貼歪。")
+        print(f"  {reason} (attempt {attempt + 1}/{MAX_RETRIES}): please try again.")
+    raise RuntimeError("the same pose failed too many times; calibration aborted. Check that the sensors are not loose "
+                       "or crooked.")
 
 
 def ask_yes_no(question):
@@ -249,26 +250,27 @@ def ask_yes_no(question):
 
 def run_flow(state, latest, args):
     wait_for_valid_data(latest)
-    print("已收到即時資料。開始互動校正——模型視窗會擺出每個目標姿勢。")
+    print("Live data received. Starting the interactive calibration: the model window shows each target pose.")
 
     # 1. HANG
     hang_raw, hang_elbow = capture_pose(
         state, latest, (0.0, SH_LOW_ELEV, EL_EXTENDED, CLAW_LOW),
-        "[1/7] HANG:手臂自然垂下、手肘打直、手掌放鬆。")
+        "[1/7] HANG: arm hanging naturally, elbow straight, hand relaxed.")
 
     def far_from_hang(raw, _e):
         tilt = rdl.calibration_tilt_deg(hang_raw, raw)
-        return None if tilt >= MIN_TILT_DEG else f"跟 HANG 只差 {tilt:.1f}°(需要 >= {MIN_TILT_DEG:.0f}°),動作太小"
+        return None if tilt >= MIN_TILT_DEG else f"only {tilt:.1f}° from HANG (needs >= {MIN_TILT_DEG:.0f}°): movement too small"
 
     # 2. FORWARD
     fwd_raw, _ = capture_pose(
         state, latest, (0.0, SH_HIGH_ELEV, EL_EXTENDED, CLAW_LOW),
-        "[2/7] FORWARD:先回到垂下,然後手肘打直,手臂往前平舉到底,手腕不要轉。", far_from_hang)
+        "[2/7] FORWARD: back to hanging first, then, elbow straight, raise the arm forward to horizontal without "
+        "turning the wrist.", far_from_hang)
 
     # 3. LEFT_TWIST
     left_raw, _ = capture_pose(
         state, latest, (BASE_SWING, SH_MID, EL_EXTENDED, CLAW_LOW),
-        "[3/7] LEFT_TWIST:先回到垂下,然後手肘打直,手臂往左甩到底,同時大拇指轉朝上。", far_from_hang)
+        "[3/7] LEFT_TWIST: back to hanging first, then, elbow straight, swing the arm fully left, turning the thumb up.", far_from_hang)
 
     # 4. RIGHT_TWIST. The whole decode is Path B's spherical (tilt, azimuth) one
     # (mearm_pathb.Calibration): the earlier oblique basis leaked twist into
@@ -282,33 +284,34 @@ def run_flow(state, latest, args):
         try:
             pb.Calibration(hang_raw, fwd_raw, left_raw, raw, hang_elbow)
         except ValueError as exc:
-            return f"右甩跟左甩分不開或方向不對({exc})"
+            return f"swing right cannot be told apart from swing left, or points the wrong way ({exc})"
         return None
 
     right_raw, _ = capture_pose(
         state, latest, (-BASE_SWING, SH_MID, EL_EXTENDED, CLAW_LOW),
-        "[4/7] RIGHT_TWIST:先回到垂下,然後手肘打直,手臂往右甩到底,同時大拇指轉朝下。", right_ok)
+        "[4/7] RIGHT_TWIST: back to hanging first, then, elbow straight, swing the arm fully right, turning the thumb down.", right_ok)
     cal = pb.Calibration(hang_raw, fwd_raw, left_raw, right_raw, hang_elbow)
-    print(f"\n基底建好:FORWARD 距垂下 {math.degrees(cal.tilt_forward):.0f}°, "
-          f"左甩方位 {math.degrees(cal.az_left):+.0f}°, 右甩方位 {math.degrees(cal.az_right):+.0f}°")
+    print(f"\nBasis built: FORWARD is {math.degrees(cal.tilt_forward):.0f}° from hanging, "
+          f"left swing azimuth {math.degrees(cal.az_left):+.0f}°, right swing azimuth {math.degrees(cal.az_right):+.0f}°")
 
     # 5. ELBOW_FLEX
     def flex_ok(_raw, elbow):
         d = abs(elbow - hang_elbow)
-        return None if d >= MIN_ELBOW_DELTA_RAD else f"手肘讀值只比 HANG 變了 {d:.2f} rad(需要 >= {MIN_ELBOW_DELTA_RAD}),彎得不夠"
+        return None if d >= MIN_ELBOW_DELTA_RAD else f"the elbow reading moved only {d:.2f} rad from HANG (needs >= {MIN_ELBOW_DELTA_RAD}): not bent enough"
 
     _flex_raw, flex_elbow = capture_pose(
         state, latest, (0.0, SH_LOW_ELEV, EL_FOLDED, CLAW_LOW),
-        "[5/7] ELBOW_FLEX:手臂垂下,手肘彎到底(手掌盡量靠近肩膀),其他部位不要動。", flex_ok)
+        "[5/7] ELBOW_FLEX: arm hanging, bend the elbow fully (hand as close to the shoulder as you can), nothing else "
+        "moves.", flex_ok)
     fold_looks_like_bend = ask_yes_no(
-        "看著模型:它現在『前臂折起來』的樣子,跟你剛剛手肘彎曲的動作,是同一個意思嗎?")
+        "Look at the model: does its folded forearm mean the same thing as the elbow bend you just made?")
     y_straight, y_flex = (EL_EXTENDED, EL_FOLDED) if fold_looks_like_bend else (EL_FOLDED, EL_EXTENDED)
 
     # 6. claw polarity (visual only)
     state.show(0.0, SH_LOW_ELEV, EL_EXTENDED, CLAW_HIGH)
-    print("\n[6/7] 夾爪:請看模型的夾爪(現在擺在夾爪範圍的『高』端)。")
+    print("\n[6/7] Claw: look at the model's claw (now at the HIGH end of its range).")
     time.sleep(1.5)
-    high_is_closed = ask_yes_no("夾爪現在是『閉合』的嗎?(不確定就用滑鼠轉視角、放大看夾爪)")
+    high_is_closed = ask_yes_no("Is the claw CLOSED now? (If unsure, rotate the view and zoom in with the mouse.)")
     claw_open, claw_closed = (CLAW_LOW, CLAW_HIGH) if high_is_closed else (CLAW_HIGH, CLAW_LOW)
 
     # Fit. Shoulder and base need no anchors of their own: the spherical decode
@@ -327,22 +330,23 @@ def run_flow(state, latest, args):
     # 7. MID_RAISE: held out -- not used in the fit above.
     mid_raw, _ = capture_pose(
         state, latest, (0.0, SH_MID, EL_EXTENDED, claw_open),
-        "[7/7] MID_RAISE(驗證用,沒參與擬合):手肘打直,手臂往前抬到『大約一半高度』(約 45°)。")
+        "[7/7] MID_RAISE (a check, not used in the fit): elbow straight, raise the arm forward to about HALF height "
+        "(about 45°).")
     tilt_mid, _az = cal.decode(mid_raw)
     frac = tilt_mid / cal.tilt_forward
     verdict = "PASS" if 0.2 <= frac <= 0.8 else "WARN"
-    print(f"\n驗證:半舉姿勢在『從垂下到 FORWARD 的 {frac * 100:.0f}%』位置(預期約 50%,"
-          f"允許 20~80%)→ {verdict}")
+    print(f"\nCheck: the half-raise pose sits at {frac * 100:.0f}% of the way from hanging to FORWARD "
+          f"(expected about 50%, allowed 20-80%) -> {verdict}")
     if verdict == "WARN":
-        print("  半舉結果偏離很多:錨點可能有問題(常見:FORWARD 或 HANG 沒擺到位)。仍會存檔,"
-              "模型即時跟隨時請用眼睛再確認,不對就重跑一次。")
+        print("  The half-raise is far off: an anchor pose may be wrong (often FORWARD or HANG was not reached). The "
+              "calibration is still saved; check the live model by eye and rerun if it looks wrong.")
 
     # Save (back up first)
     calib_path = args.calibration_file
     if calib_path.exists():
         backup = calib_path.with_name(calib_path.name + time.strftime(".bak-%Y%m%d-%H%M%S"))
         shutil.copy2(calib_path, backup)
-        print(f"舊校正檔已備份到 {backup.name}")
+        print(f"Previous calibration file backed up to {backup.name}")
     # Path A (--humanoid) owns baseline_raw/forward_raw/left_twist_raw/
     # right_twist_raw/zero_elbow/captured_at in this file: NOT touched here
     # (explicit instruction 2026-09-25 -- the humanoid path must stay exactly
@@ -357,7 +361,7 @@ def run_flow(state, latest, args):
         "hang_elbow": hang_elbow,
     }
     rdl.save_calibration_fields(calib_path, {"mearm_alignment": alignment})
-    print(f"已存到 {calib_path}")
+    print(f"Saved to {calib_path}")
 
     def live():
         grip, _p, _r, elbow = latest.snapshot()
@@ -366,8 +370,8 @@ def run_flow(state, latest, args):
         return (base, shoulder, elbow_ctrl, rdl.rescale(grip, 0.0, 1.0, claw_open, claw_closed))
 
     state.go_live(live)
-    print("\n校正完成。模型現在即時跟隨你的手臂——請用眼睛驗證:垂下/前舉/左右甩/手肘彎,"
-          "模型是不是跟你一致。關閉視窗結束。")
+    print("\nCalibration done. The model now follows your arm live: check by eye that hanging, raising forward, "
+          "swinging left/right and bending the elbow all match. Close the window to finish.")
 
 
 def flow_thread_main(state, latest, args):
@@ -414,7 +418,7 @@ def main():
                              f"(the USB-serial adapter was likely unplugged -- reconnect and re-run)")
             mode, target, live, abort = state.snapshot()
             if abort:
-                print("校正中止。")
+                print("Calibration aborted.")
                 break
             ctrl = live() if (mode == "live" and live) else target
             for actuator_id, value in zip(ids, ctrl):

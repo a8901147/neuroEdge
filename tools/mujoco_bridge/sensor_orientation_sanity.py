@@ -175,13 +175,14 @@ def main():
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
     reader.start()
 
-    print("等待第一筆感測器資料...")
+    print("Waiting for the first sensor data...")
     deadline = time.time() + 10.0
     while latest.snapshot()[0] is None:
         if time.time() > deadline:
-            sys.exit("10 秒內沒收到任何資料,檢查硬體連線/電源後重試")
+            sys.exit("No data within 10 s; check the hardware connections and power, then retry")
         time.sleep(0.05)
-    print("資料流正常。紅色條紋=局部+X方向、藍色條紋=局部+Y方向,肩膀=方板、手肘=圓盤。開始。\n")
+    print("Data is streaming. Red stripe = local +X, blue stripe = local +Y; shoulder = square plate, elbow = disc. "
+          "Starting.\n")
 
     model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
     data = mujoco.MjData(model)

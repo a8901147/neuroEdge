@@ -125,13 +125,13 @@ def main():
     reader = threading.Thread(target=reader_thread_main, args=(ser, latest), daemon=True)
     reader.start()
 
-    print("等待第一筆 grip 資料...")
+    print("Waiting for the first grip data...")
     deadline = time.time() + 10.0
     while not latest.snapshot()[4]:
         if time.time() > deadline:
-            sys.exit("10 秒內沒收到任何資料,檢查 MyoWare 接線/電源後重試")
+            sys.exit("No data within 10 s; check the MyoWare wiring and power, then retry")
         time.sleep(0.05)
-    print("資料流正常。手臂固定在 front_left 姿勢,球已經放在指尖附近,開始。\n")
+    print("Data is streaming. The arm is fixed at the front_left pose with the ball near the fingertips. Starting.\n")
 
     model = gtc.load_model()
     data = mujoco.MjData(model)

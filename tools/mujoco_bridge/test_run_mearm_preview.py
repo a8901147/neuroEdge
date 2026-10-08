@@ -163,7 +163,7 @@ class StartPoseTest(unittest.TestCase):
     def test_the_person_is_asked_to_let_the_arm_hang_and_R_is_sent_only_after_enter(self):
         events = []
         _ctrl, out = run_preview(uart_line(fx.HANG, fx.STRAIGHT), fx.SAVED_9_13, ticks=50, events=events)
-        prompts = [i for i, e in enumerate(events) if e[0] == "input" and "垂" in e[1]]
+        prompts = [i for i, e in enumerate(events) if e[0] == "input" and "hang" in e[1]]
         writes = [i for i, e in enumerate(events) if e[0] == "write" and e[1].startswith(b"R")]
         self.assertTrue(prompts, events)
         self.assertEqual(len(writes), 1, events)
@@ -232,20 +232,20 @@ class CalibrationToBoardTest(unittest.TestCase):
         _c, out = run_preview(None, fx.SAVED_9_13, ticks=30, serial_factory=lambda: board, cal_timeout=3.0)
         self.assertEqual(board.cal_applied, 1)
         self.assertEqual(b"".join(board.written).count(link.encode(fx.SAVED_9_13)), 2)
-        self.assertIn("板子已套用", out)
+        self.assertIn("the board applied it", out)
 
     def test_a_calibration_the_board_refuses_is_reported_and_not_sent_again(self):
         board = CalibrationBoard(uart_line(fx.HANG, fx.STRAIGHT), refuses=True)
         _c, out = run_preview(None, fx.SAVED_9_13, ticks=30, serial_factory=lambda: board, cal_timeout=3.0)
         self.assertEqual(b"".join(board.written).count(link.encode(fx.SAVED_9_13)), 1)
-        self.assertIn("拒絕", out)
+        self.assertIn("rejected", out)
 
     def test_a_board_that_keeps_damaging_it_gives_up_after_a_few_tries(self):
         board = CalibrationBoard(uart_line(fx.HANG, fx.STRAIGHT), garble_first=99)
         _c, out = run_preview(None, fx.SAVED_9_13, ticks=30, serial_factory=lambda: board, cal_timeout=3.0)
         self.assertEqual(board.cal_applied, 0)
         self.assertEqual(b"".join(board.written).count(link.encode(fx.SAVED_9_13)), rdl.CAL_SEND_ATTEMPTS)
-        self.assertIn("沿用原本的校正", out)
+        self.assertIn("keeps its previous calibration", out)
 
     def test_skip_sends_the_saved_calibration_before_R_and_confirms_it(self):
         events = []
@@ -257,13 +257,13 @@ class CalibrationToBoardTest(unittest.TestCase):
         sent = b"".join(w for _i, w in writes if not w.startswith((b"T", b"R")))
         self.assertEqual(sent, link.encode(fx.SAVED_9_13))
         self.assertLess(cal[0], r[0])
-        self.assertIn("板子已套用", out)
+        self.assertIn("the board applied it", out)
 
     def test_a_board_that_never_confirms_is_reported_and_the_preview_still_runs(self):
         board = CalibrationBoard(uart_line(fx.HANG, fx.STRAIGHT), confirms=False)
         _c, out = run_preview(None, fx.SAVED_9_13, ticks=30, serial_factory=lambda: board, cal_timeout=1.5)
         # (1.5 s: long enough for its diag lines, which say cal_applied=0, to arrive -- that must NOT count)
-        self.assertIn("沒有確認", out)
+        self.assertIn("did not confirm", out)
 
     def test_without_skip_the_four_poses_are_captured_saved_and_sent(self):
         # a DIFFERENT valid calibration from the saved 9/13 one (all poses turned 20 deg about x), so saving shows
@@ -286,7 +286,7 @@ class CalibrationToBoardTest(unittest.TestCase):
         self.assertEqual(saved["right_twist_raw"], list(new["right_twist_raw"]))
         self.assertNotEqual(saved["forward_raw"], list(fx.FORWARD))
         self.assertIn(link.encode(saved), b"".join(board.written))
-        self.assertIn("板子已套用", out)
+        self.assertIn("the board applied it", out)
 
     def test_a_fresh_calibration_drops_the_mujoco_alignment_made_for_the_old_one(self):
         # the saved alignment maps the OLD mount's readings to the model; with new poses it would point the model wrong
@@ -368,7 +368,7 @@ class EmgReleaseThresholdTest(unittest.TestCase):
         events = []
         _c, out = run_preview(uart_line(fx.HANG, fx.STRAIGHT), fx.SAVED_9_13, ticks=30, events=events, skip_emg=True)
         self.assertEqual(self.writes(events), [b"T1129\n"])
-        self.assertIn("放開門檻", out)
+        self.assertIn("release threshold", out)
 
     def test_a_fresh_calibration_saves_its_release_threshold(self):
         run_preview(uart_line(fx.HANG, fx.STRAIGHT), fx.SAVED_9_13, ticks=30, skip_emg=False,
@@ -567,8 +567,8 @@ class SensorHealthTest(unittest.TestCase):
         with mock.patch.object(rdl, "MEARM_HEALTH_PREFLIGHT_MAX_S", 1.0):
             with self.assertRaises(SystemExit) as cm:
                 run_preview(None, fx.SAVED_9_13, serial_factory=factory)
-        self.assertIn("前臂", str(cm.exception))
-        self.assertIn("不可信", str(cm.exception))
+        self.assertIn("forearm", str(cm.exception))
+        self.assertIn("cannot be trusted", str(cm.exception))
 
     def test_the_preview_starts_by_itself_once_the_sensors_become_healthy(self):
         frozen = self.frozen_forearm(fx.LEFT)
@@ -577,10 +577,10 @@ class SensorHealthTest(unittest.TestCase):
         # machine (CI, 2026-10-04) were used up before the health check even started. If it never warns, the board
         # stays frozen, the preflight times out and this fails.
         def factory():
-            return ScriptedSerial(lambda n: frozen if "硬體異常" not in sys.stdout.getvalue() else self.GOOD_LEFT)
+            return ScriptedSerial(lambda n: frozen if "HARDWARE FAULT" not in sys.stdout.getvalue() else self.GOOD_LEFT)
         with mock.patch.object(rdl, "MEARM_HEALTH_PREFLIGHT_MAX_S", 20.0):
             ctrl, out = run_preview(None, fx.SAVED_9_13, serial_factory=factory)
-        self.assertIn("硬體異常", out)                           # it said so while waiting
+        self.assertIn("HARDWARE FAULT", out)                           # it said so while waiting
         self.assertGreater(ctrl["base"], 0.5)                  # and then ran normally
 
     def test_a_fault_mid_session_holds_the_model_warns_and_recovers(self):
@@ -597,9 +597,9 @@ class SensorHealthTest(unittest.TestCase):
             return ScriptedSerial(script)
         ctrl_mid, out_mid = run_preview(None, fx.SAVED_9_13, ticks=900, serial_factory=factory)
         self.assertGreater(ctrl_mid["base"], 0.5)              # held at LEFT: the RIGHT swing was not followed
-        self.assertIn("硬體異常", out_mid)
+        self.assertIn("HARDWARE FAULT", out_mid)
         ctrl_end, out_end = run_preview(None, fx.SAVED_9_13, ticks=2500, serial_factory=factory)
-        self.assertIn("恢復", out_end)
+        self.assertIn("back to normal", out_end)
 
 
 class HardwareWarningPreviewTest(unittest.TestCase):
@@ -619,8 +619,8 @@ class HardwareWarningPreviewTest(unittest.TestCase):
                 return self.diag(0, 353) if n == 300 else self.diag(4, 357)
             return self.GOOD_LEFT
         ctrl, out = run_preview(None, fx.SAVED_9_13, ticks=1200, serial_factory=lambda: ScriptedSerial(script))
-        self.assertIn("斷線", out)
-        self.assertIn("上臂", out)
+        self.assertIn("dropped out", out)
+        self.assertIn("upper arm", out)
         self.assertGreater(ctrl["base"], 0.5)                  # still following LEFT: a warning does not hold the model
 
 
@@ -648,7 +648,7 @@ class RobustnessToBadInputTest(unittest.TestCase):
         with mock.patch.object(rdl, "MEARM_HEALTH_PREFLIGHT_MAX_S", 1.0):
             with self.assertRaises(SystemExit) as cm:
                 run_preview(bad, fx.SAVED_9_13)
-        self.assertIn("不可信", str(cm.exception))
+        self.assertIn("cannot be trusted", str(cm.exception))
         # ...and mixed into good readings mid-session, they are never applied: the model stays finite and where it was
         ctrl, _ = run_preview(None, fx.SAVED_9_13, ticks=900,
                               serial_factory=lambda: ScriptedSerial(lambda n: self.GOOD_LEFT if n < 150 or n % 2 else bad))
@@ -661,7 +661,7 @@ class RobustnessToBadInputTest(unittest.TestCase):
         ctrl, out = run_preview(None, fx.SAVED_9_13, ticks=900,
                                 serial_factory=lambda: ScriptedSerial(lambda n: self.GOOD_LEFT if n < 150 else zero))
         self.assertGreater(ctrl["base"], 0.5)                  # still where the LEFT arm put it
-        self.assertIn("硬體異常", out)
+        self.assertIn("HARDWARE FAULT", out)
 
     def test_and_it_follows_the_arm_again_once_real_data_returns(self):
         zero = uart_line((0.0, 0.0, 0.0), fx.STRAIGHT)

@@ -32,26 +32,33 @@ from datetime import datetime
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-SENSORS = {"upper_arm": ("上臂", "0x68", "shoulder"), "forearm": ("前臂", "0x69", "elbow")}
+SENSORS = {"upper_arm": ("upper arm", "0x68", "shoulder"), "forearm": ("forearm", "0x69", "elbow")}
 # Built around the core demo task (hang -> forward -> left -> grip tape -> lift -> right -> place; SESSION_LOG
 # 2026-10-02): still holds at each task pose (jitter depends on the pose -- hanging is where the base direction is least
 # stable; gripping adds the ~9-10 Hz physiological tremor measured 2026-09-12), slow fine aiming, the whole task at demo
 # speed, and finally poses/motions that are NOT in the task, kept apart as a check against tuning only for the task.
 PHASES = [
-    ("hold_hang", "靜止：垂下", 8.0, "手臂自然垂下，完全不要動。（任務第 1 步）"),
-    ("hold_forward", "靜止：往前伸平", 8.0, "手臂往前伸直、和地面平行，停住不動。（第 2 步）"),
-    ("hold_left_open", "靜止：左前方、手張開", 8.0, "手臂往左前方擺，停在要抓膠帶的位置，手張開，不要動。（第 3 步）"),
-    ("hold_left_grip", "靜止：左前方、握拳", 8.0, "同一個位置，握拳（像抓住膠帶），維持握著不動。（第 4 步）"),
-    ("hold_lifted_grip", "靜止：抬起、握拳", 8.0, "握著拳，手臂往上抬一點，停住。（第 5 步）"),
-    ("hold_right_grip", "靜止：右方、握拳", 8.0, "握著拳，手臂擺到右方，停住。（第 6 步）"),
-    ("hold_place_grip", "靜止：放下的位置、握拳", 8.0, "握著拳，手臂往下到要放膠帶的位置，停住。（第 7 步）"),
-    ("aim_left", "慢慢微調：對準膠帶", 15.0, "在左前方抓膠帶的位置附近，慢慢、小幅度地左右上下修正，像在對準。"),
-    ("task_1", "完整任務 第 1 次", 20.0, "用 demo 的速度把 7 步做完：垂下→往前伸平→左擺→握拳→抬起→右擺→放下。"),
-    ("task_2", "完整任務 第 2 次", 20.0, "再做一次完整任務。"),
-    ("task_3", "完整任務 第 3 次", 20.0, "再做一次完整任務。"),
-    ("check_hold_right_forward", "驗證：右前方靜止", 8.0, "（不在任務裡）手臂往右前方伸，手張開，停住不動。"),
-    ("check_hold_high", "驗證：手舉高靜止", 8.0, "（不在任務裡）手臂往前上方舉高，停住不動。"),
-    ("check_free", "驗證：自由動作", 15.0, "（不在任務裡）隨意地動，快慢都有、各個方向都有。"),
+    ("hold_hang", "Still: hanging", 8.0, "Let the arm hang naturally and do not move at all. (task step 1)"),
+    ("hold_forward", "Still: forward, level", 8.0, "Hold the arm straight forward, level with the floor, and keep still. (step 2)"),
+    ("hold_left_open", "Still: front-left, hand open", 8.0,
+     "Swing the arm front-left to where you would grab the tape, hand open, and keep still. (step 3)"),
+    ("hold_left_grip", "Still: front-left, gripping", 8.0,
+     "Same position, make a fist (as if holding the tape) and keep still. (step 4)"),
+    ("hold_lifted_grip", "Still: lifted, gripping", 8.0, "Keep the fist, raise the arm a little, and stop. (step 5)"),
+    ("hold_right_grip", "Still: right, gripping", 8.0, "Keep the fist, swing the arm to the right, and stop. (step 6)"),
+    ("hold_place_grip", "Still: place position, gripping", 8.0,
+     "Keep the fist, lower the arm to where the tape goes, and stop. (step 7)"),
+    ("aim_left", "Slow fine-tuning: aiming at the tape", 15.0,
+     "Near the front-left grab position, make slow, small corrections left/right/up/down, as if aiming."),
+    ("task_1", "Full task, run 1", 20.0,
+     "Do all 7 steps at demo speed: hang -> forward -> swing left -> grip -> lift -> swing right -> place."),
+    ("task_2", "Full task, run 2", 20.0, "Do the full task again."),
+    ("task_3", "Full task, run 3", 20.0, "Do the full task again."),
+    ("check_hold_right_forward", "Check: still, front-right", 8.0,
+     "(not in the task) Reach front-right, hand open, and keep still."),
+    ("check_hold_high", "Check: still, arm raised high", 8.0, "(not in the task) Raise the arm high in front and keep still."),
+    ("check_free", "Check: free movement", 15.0,
+     "(not in the task) Move freely, fast and slow, in every direction."),
 ]
 CHECK_PREFIX = "check_"   # phases kept out of the tuning, used only to check the chosen parameters generalise
 
@@ -59,26 +66,42 @@ CHECK_PREFIX = "check_"   # phases kept out of the tuning, used only to check th
 # direction) versus an intended swing? Decides the base's "slow follow while raising" from raw data, not a guess.
 # The user's lower-left -> upper-right case raises and swings at once: kept out as a check.
 BASE_RAISE_PHASES = [
-    ("raise_forward", "往前舉起放下", 12.0, "從垂下往正前方舉到水平再放下，做 2 次。只舉，不要刻意轉或左右擺。"),
-    ("raise_left_front", "往左前方舉起放下", 12.0, "從垂下往左前方（抓膠帶的方向）舉到水平再放下，做 2 次。只舉，不要刻意轉。"),
-    ("raise_right_front", "往右前方舉起放下", 12.0, "從垂下往右前方（放膠帶的方向）舉到水平再放下，做 2 次。只舉，不要刻意轉。"),
-    ("raise_slow", "慢慢往前舉起放下", 25.0, "從垂下往正前方，用大約 10 秒慢慢舉到水平，再慢慢放下。只舉，不要刻意轉。"),
-    ("swing_only", "伸平後只左右擺", 12.0, "手臂往前伸平，在同一個高度左擺→右擺→回正，做 2 次。不要刻意舉高或放低。"),
-    ("hold_forward", "靜止：往前伸平", 8.0, "手臂往前伸直、和地面平行，停住不動。"),
-    ("check_diagonal", "驗證：左下舉到右上", 12.0, "（不在任務裡）從左下方斜斜舉到右上方再回來，做 2 次。"),
+    ("raise_forward", "Raise forward and lower", 12.0,
+     "From hanging, raise straight forward to horizontal and lower again, twice. Only raise: no deliberate "
+     "twist or sideways swing."),
+    ("raise_left_front", "Raise front-left and lower", 12.0,
+     "From hanging, raise front-left (toward the tape) to horizontal and lower again, twice. Only raise: no "
+     "deliberate twist."),
+    ("raise_right_front", "Raise front-right and lower", 12.0,
+     "From hanging, raise front-right (toward where the tape goes) to horizontal and lower again, twice. Only "
+     "raise: no deliberate twist."),
+    ("raise_slow", "Raise forward slowly and lower", 25.0,
+     "From hanging, raise straight forward slowly, taking about 10 s to reach horizontal, then lower slowly. "
+     "Only raise: no deliberate twist."),
+    ("swing_only", "Level arm, sideways swing only", 12.0,
+     "Arm forward and level; at the same height swing left -> right -> center, twice. Do not raise or lower "
+     "deliberately."),
+    ("hold_forward", "Still: forward, level", 8.0, "Hold the arm straight forward, level with the floor, and keep still."),
+    ("check_diagonal", "Check: diagonal, lower-left to upper-right", 12.0,
+     "(not in the task) Raise diagonally from lower-left to upper-right and back, twice."),
 ]
 # 2026-10-04: the EMG calibration logs only hold a STILL arm (relaxed / clenched ~2 s each). Whether the grip
 # misfires while the relaxed arm moves, or lets go while a light grip is carried through the demo, needs EMG recorded
 # while the arm moves -- the tick line already carries each 10 ms window's emg_min/emg_max.
 EMG_PHASES = [
-    ("relaxed_still", "手放鬆、手臂垂下不動", 8.0, "手完全放鬆（不要握拳），手臂自然垂下，不要動。"),
-    ("relaxed_task", "手放鬆，手臂照 demo 動", 20.0,
-     "手保持放鬆、不要握拳，手臂照 demo 的路線動：垂下→往前伸平→左擺→抬起→右擺→放下。（看會不會誤觸）"),
-    ("grip_still", "輕輕握拳、手臂不動", 8.0, "像拿著膠帶那樣輕輕握拳（不用太用力），手臂停在左前方不動。"),
-    ("grip_task", "輕輕握拳，手臂照 demo 動", 20.0,
-     "保持輕輕握拳不放開，手臂照 demo 第 5–7 步動：抬起→右擺→放下，可以重複。（看會不會誤放開）"),
-    ("grip_firm_still", "用力握拳、手臂不動", 5.0, "用力握拳（最大力氣的七八成），手臂不動。"),
-    ("check_open_close", "驗證：握拳、放開重複", 15.0, "（不在任務裡）握拳約 1 秒、放開約 1 秒，重複 5 次。"),
+    ("relaxed_still", "Hand relaxed, arm hanging still", 8.0,
+     "Hand completely relaxed (no fist), arm hanging naturally, do not move."),
+    ("relaxed_task", "Hand relaxed, arm doing the demo", 20.0,
+     "Keep the hand relaxed (no fist) and move the arm along the demo path: hang -> forward -> swing left -> "
+     "lift -> swing right -> place. (checks for false grips)"),
+    ("grip_still", "Light grip, arm still", 8.0,
+     "Grip lightly, as if holding the tape (not hard), with the arm still at front-left."),
+    ("grip_task", "Light grip, arm doing the demo", 20.0,
+     "Keep a light grip without letting go and move the arm through demo steps 5-7: lift -> swing right -> "
+     "place, repeating if needed. (checks for false releases)"),
+    ("grip_firm_still", "Firm grip, arm still", 5.0, "Grip firmly (70-80 % of your maximum), arm still."),
+    ("check_open_close", "Check: grip and release, repeated", 15.0,
+     "(not in the task) Grip for about 1 s, release for about 1 s, 5 times."),
 ]
 PHASE_SETS = {"filter": PHASES, "base_raise": BASE_RAISE_PHASES, "emg": EMG_PHASES}
 DEFAULT_SET = "filter"
@@ -169,7 +192,7 @@ def noise_std(samples, sensor):
 def save(path, phases, port):
     path = Path(path)
     if path.exists():
-        raise FileExistsError(f"{path} 已經存在，不會覆蓋")
+        raise FileExistsError(f"{path} already exists and will not be overwritten")
     payload = {
         "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "port": port,
@@ -223,26 +246,26 @@ def summary_lines(phases, emg_thresholds=None):
     lines = []
     for name, samples in phases.items():
         label = next((p[1] for ps in PHASE_SETS.values() for p in ps if p[0] == name), name)
-        tag = "（驗證用，不參與調參）" if name.startswith(CHECK_PREFIX) else ""
-        lines.append(f"\n【{label}】{tag}")
+        tag = " (check only, not used for tuning)" if name.startswith(CHECK_PREFIX) else ""
+        lines.append(f"\n[{label}]{tag}")
         for sensor, (slabel, addr, _fw) in SENSORS.items():
             st = speed_stats(samples, sensor)
-            row = (f"  {slabel}{addr}：{st['n']} 筆，速度 中位數 {fmt(st['median'])} / 90% {fmt(st['p90'])} / "
-                   f"最大 {fmt(st['max'])} g/s")
+            row = (f"  {slabel} {addr}: {st['n']} samples, speed median {fmt(st['median'])} / 90% {fmt(st['p90'])} / "
+                   f"max {fmt(st['max'])} g/s")
             if name.startswith(("hold_", "check_hold_")):
-                row += f"，靜止雜訊 {fmt(noise_std(samples, sensor))} g"
+                row += f", resting noise {fmt(noise_std(samples, sensor))} g"
             lines.append(row)
         if any(len(s) > 3 and s[3] for s in samples):
             th, rel = emg_thresholds if emg_thresholds else (float("inf"), float("-inf"))
             ev = emg_events(samples, th, rel)
-            row = f"  EMG：{ev['n']} 筆，最低 {ev['min']:.0f} / 中位數 {ev['median']:.0f} / 最高 {ev['max']:.0f}"
+            row = f"  EMG: {ev['n']} samples, min {ev['min']:.0f} / median {ev['median']:.0f} / max {ev['max']:.0f}"
             if emg_thresholds:
-                row += (f"；高於抓握門檻 {th:.0f} 的時間 {ev['above_grip']:.0%}，低於放開門檻 {rel:.0f} 的時間 "
-                        f"{ev['below_release']:.0%}")
+                row += (f"; time above the grip threshold {th:.0f}: {ev['above_grip']:.0%}, below the release threshold "
+                        f"{rel:.0f}: {ev['below_release']:.0%}")
                 if name.startswith("relaxed"):
-                    row += f"；→ 誤觸（手放鬆卻判成抓握）{ev['grips']} 次"
+                    row += f"; -> false grips (relaxed hand judged as gripping): {ev['grips']}"
                 elif name.startswith("grip"):
-                    row += f"；→ 抓到 {ev['grips']} 次，誤放開（還握著卻判成放開）{ev['releases']} 次"
+                    row += f"; -> grips: {ev['grips']}, false releases (still gripping, judged as released): {ev['releases']}"
             lines.append(row)
     return lines
 
@@ -253,8 +276,8 @@ def wait_for_data(read_line, clock, timeout_s=3.0):
         up, fore = parse_tick(read_line())
         if up is not None and fore is not None:
             return True
-    print("沒有收到感測器資料——板子上跑的是 phase3_control_loop 嗎？燒錄後有沒有 reset run？"
-          "（可用 python3 tools/check_hardware_ready.py --boot-check 確認）")
+    print("No sensor data received. Is the board running phase3_control_loop, and did the app start after flashing? "
+          "(check with python3 tools/check_hardware_ready.py --boot-check)")
     return False
 
 
@@ -262,9 +285,9 @@ def run_session(read_line, clock, input_fn=input, phases=PHASES, countdown_s=3.0
     recorded = {}
     for i, (name, label, seconds, how) in enumerate(phases, 1):
         while True:
-            print(f"\n=== 第 {i}/{len(phases)} 段：{label}（{seconds:.0f} 秒）===")
+            print(f"\n=== phase {i}/{len(phases)}: {label} ({seconds:.0f} s) ===")
             print(f"   {how}")
-            input_fn("   擺好姿勢後按 Enter 開始錄：")
+            input_fn("   Get into position, then press Enter to record: ")
             end = clock() + countdown_s
             last_shown = None
             while clock() < end:                       # keep reading so the recording starts from fresh data
@@ -273,15 +296,15 @@ def run_session(read_line, clock, input_fn=input, phases=PHASES, countdown_s=3.0
                 if left != last_shown and left > 0:
                     print(f"   {left}…", flush=True)
                     last_shown = left
-            print("   ● 錄製中", flush=True)
+            print("   ● recording", flush=True)
             samples = record_phase(read_line, clock, seconds,
-                                   on_second=lambda s, n: print(f"\r   ● 錄製中 {s:2d}/{seconds:.0f} 秒（{n} 筆）",
+                                   on_second=lambda s, n: print(f"\r   ● recording {s:2d}/{seconds:.0f} s ({n} samples)",
                                                                 end="", flush=True))
             st = speed_stats(samples, "upper_arm")
-            med = "-" if st["median"] is None else f"{st['median']:.2f} g/s（約 rad/s）"
-            print(f"\n   完成：{len(samples)} 筆，上臂速度中位數 {med}")
-            if input_fn("   保留這段嗎？ Enter=保留  r=重錄：").strip().lower() == "r":
-                print("   重錄這一段。")
+            med = "-" if st["median"] is None else f"{st['median']:.2f} g/s (about rad/s)"
+            print(f"\n   Done: {len(samples)} samples, upper-arm median speed {med}")
+            if input_fn("   Keep this phase? Enter=keep  r=re-record: ").strip().lower() == "r":
+                print("   Re-recording this phase.")
                 continue
             recorded[name] = samples
             break
@@ -316,21 +339,23 @@ def main():
     try:
         ser = serial.Serial(port, 115200, timeout=0.2)
     except serial.SerialException as exc:
-        sys.exit(f"打不開序列埠 {port}：{exc}\n最常見的原因：run_demo_live.py 或 watch_imu_raw.py 還開著——先關掉再執行。")
+        sys.exit(f"Cannot open the serial port {port}: {exc}\nMost common cause: run_demo_live.py or watch_imu_raw.py is still "
+                 f"running; close it and retry.")
     read_line = lambda: ser.readline().decode(errors="ignore")
     try:
-        print(f"讀取 {port}（不燒錄、只讀）。共 {len(phase_list)} 段，每段都可以重錄。Ctrl+C 可隨時結束。")
+        print(f"Reading {port} (nothing is flashed, read only). {len(phase_list)} phases, each can be re-recorded. "
+              f"Ctrl+C stops at any time.")
         if not wait_for_data(read_line, time.monotonic):
             sys.exit(1)
         phases = run_session(read_line, time.monotonic, phases=phase_list)
     except KeyboardInterrupt:
-        sys.exit("\n中斷，沒有存檔。")
+        sys.exit("\nInterrupted; nothing saved.")
     finally:
         ser.close()
     out = DATA_DIR / f"arm_motion_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     save(out, phases, port)
     print("\n".join(summary_lines(phases, emg_thresholds=current_emg_thresholds())))
-    print(f"\n存到 {out}\n把這個檔名告訴 Claude，就能用它來決定參數。")
+    print(f"\nSaved to {out}\nUse this file to choose the filter parameters.")
 
 
 if __name__ == "__main__":

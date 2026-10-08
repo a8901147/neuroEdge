@@ -257,7 +257,7 @@ class MeasureTest(unittest.TestCase):
                 pass
         out = []
         m.safe_finish(Dead(), log=out.append)                   # must not raise
-        self.assertTrue(any("回不到" in line or "休息" in line for line in out))
+        self.assertTrue(any("could not return" in line or "rest pose" in line for line in out))
 
     def test_safe_finish_returns_the_arm_to_rest_when_the_board_is_fine(self):
         board, _p = make(start=(1900, 1300, 700, 1550))
@@ -600,7 +600,7 @@ class CauseTest(unittest.TestCase):
         out = []
         m.summarize([rec], out=out.append)
         text = "\n".join(out)
-        self.assertIn("碰撞", text)
+        self.assertIn("collision", text)
         self.assertIn("725", text)
 
 
@@ -620,17 +620,17 @@ class SelfStopSummaryTest(unittest.TestCase):
     def test_the_stop_pulses_and_their_causes_are_listed(self):
         t = self.text([self.rec(1350, 1350, "collision"), self.rec(1350, 1400, "collision"),
                        self.rec(1425, 1425, "linkage")])
-        for needle in ("1350", "1400", "1425", "碰撞", "連桿"):
+        for needle in ("1350", "1400", "1425", "collision", "linkage"):
             self.assertIn(needle, t)
 
     def test_the_spread_between_repeated_stops_is_shown(self):
         t = self.text([self.rec(1350, 1350, "collision"), self.rec(1350, 1375, "collision")])
-        self.assertIn("重複差 25", t)              # (not just any "25": 1375 / 1350 must not satisfy it by accident)
+        self.assertIn("repeat within 25", t)              # (not just any "25": 1375 / 1350 must not satisfy it by accident)
 
     def test_a_record_without_a_cause_says_unknown_instead_of_guessing(self):
         rec = self.rec(1350, 1350, None)
         rec.pop("shoulder_bind_cause")
-        self.assertIn("未標", self.text([rec]))
+        self.assertIn("unlabelled", self.text([rec]))
 
 
 class SafeEnvelopeTest(unittest.TestCase):
@@ -679,9 +679,9 @@ class SafeEnvelopeTest(unittest.TestCase):
         m.summarize([self.rec(1500, up=1575, up_cause="collision"),
                      self.rec(1350, self_stop=1350, self_cause="collision")], out=out.append)
         text = "\n".join(out)
-        self.assertIn("安全包絡", text)
+        self.assertIn("Safe envelope", text)
         self.assertIn("1500", text)
-        self.assertIn("未測", text)             # the shoulder's upper bound was never tested
+        self.assertIn("untested", text)             # the shoulder's upper bound was never tested
 
 
 class RejectedAttemptsTest(unittest.TestCase):
@@ -742,7 +742,7 @@ class RejectedAttemptsTest(unittest.TestCase):
         out = []
         m.analyze([d / "a.json"], out=out.append)
         text = "\n".join(out)
-        self.assertIn("被退回", text)
+        self.assertIn("Rejected", text)
         self.assertIn("1750", text)
         self.assertIn("1475", text)
         w = m.windows(m.load_records([d / "a.json"]))
@@ -751,7 +751,7 @@ class RejectedAttemptsTest(unittest.TestCase):
         import re
         self.assertRegex(text, r"1800\s+500 ~\s+1850")
         self.assertNotIn("1675", text)                                   # 1750 - the 3-step margin, had it leaked in
-        self.assertIn("1 筆記錄", text)                                   # the accepted record only
+        self.assertIn("1 record(s)", text)                                   # the accepted record only
 
 
 class AskCauseCliTest(unittest.TestCase):
@@ -770,7 +770,7 @@ class AskCauseCliTest(unittest.TestCase):
     def test_an_unrecognised_answer_asks_again_instead_of_guessing(self):
         c, _d, out = self.ask(["x", "zzz", "c"])
         self.assertEqual(c, "collision")
-        self.assertTrue(any("看不懂" in line for line in out))
+        self.assertTrue(any("unrecognized" in line for line in out))
 
     def test_queued_keypresses_are_discarded_first(self):
         self.assertEqual(len(self.ask([""])[1]), 1)
@@ -867,7 +867,7 @@ class AnalyzeTest(unittest.TestCase):
         out = []
         m.analyze([a, b], out=out.append)
         text = "\n".join(out)
-        for needle in ("1350", "1500", "1650", "1800", "上緣重複差", "75"):
+        for needle in ("1350", "1500", "1650", "1800", "top spread", "75"):
             self.assertIn(needle, text)
 
     def test_analyze_refuses_a_file_that_is_not_a_measurement(self):

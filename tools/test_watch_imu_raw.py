@@ -49,16 +49,16 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(row["hw"]["forearm"]["timeouts"], 0)
 
     def test_the_printed_line_has_the_numbers_first_and_the_verdict_last(self):
-        text = w.format_row(self.summary([REAL_TICK], REAL_DIAG), verdict="上臂:斷線後又恢復")
+        text = w.format_row(self.summary([REAL_TICK], REAL_DIAG), verdict="upper arm: dropped out and came back")
         self.assertIn("+0.039", text)
         self.assertIn("-0.059", text)
         self.assertIn("timeouts=17", text)
-        self.assertLess(text.index("+0.039"), text.index("上臂:斷線"))
+        self.assertLess(text.index("+0.039"), text.index("upper arm: dropped out"))
 
     def test_no_data_in_a_window_says_so_instead_of_crashing(self):
         row = self.summary([])
         self.assertIsNone(row["upper_arm"]["last"])
-        self.assertIn("沒有資料", w.format_row(row, verdict=None))
+        self.assertIn("no data", w.format_row(row, verdict=None))
 
 
 if __name__ == "__main__":

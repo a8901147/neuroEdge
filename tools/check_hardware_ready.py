@@ -361,7 +361,7 @@ def run_i2c_scan() -> bool:
 
 # This project needs BOTH MPU6050s (SESSION_LOG 2026-09-27: the scan once printed "All checks passed" with only 0x69
 # answering, which is how a loose upper-arm sensor went unnoticed).
-EXPECTED_ADDRESSES = {0x68: "上臂 MPU6050(AD0 不接)", 0x69: "前臂 MPU6050(AD0 接 3.3V)"}
+EXPECTED_ADDRESSES = {0x68: "upper arm MPU6050 (AD0 open)", 0x69: "forearm MPU6050 (AD0 to 3.3V)"}
 
 
 def evaluate_scan(found, busy_before, scan_done):
@@ -382,14 +382,14 @@ def evaluate_scan(found, busy_before, scan_done):
     lines.append("[OK  ] scan complete -- ACK from: " + ", ".join(f"0x{a:02x}" for a in found))
     for addr, what in EXPECTED_ADDRESSES.items():
         if addr in found:
-            lines.append(f"[OK  ] 0x{addr:02x} {what} 有回應")
+            lines.append(f"[OK  ] 0x{addr:02x} {what} answers")
         else:
             ok = False
-            lines.append(f"[FAIL] 0x{addr:02x} {what} 沒有回應 -- 檢查這顆的 Vin/GND/SCL/SDA 接線"
-                         f"(手臂一動就斷的話,是接點鬆了)")
+            lines.append(f"[FAIL] 0x{addr:02x} {what} does not answer -- check its Vin/GND/SCL/SDA wiring "
+                         f"(if it drops out whenever the arm moves, a contact is loose)")
     extra = [a for a in found if a not in EXPECTED_ADDRESSES]
     if extra:
-        lines.append("[NOTE] 另外有回應的位址(不是這個專案的 MPU6050): " + ", ".join(f"0x{a:02x}" for a in extra))
+        lines.append("[NOTE] other addresses that answered (not this project's MPU6050s): " + ", ".join(f"0x{a:02x}" for a in extra))
     return ok, lines
 
 
@@ -428,20 +428,21 @@ def run_sensor_check(read_line, clock, seconds=3.0, max_seconds=8.0):
             mon.add_diag(clock(), int(d.group(1)), int(d.group(2)))
             mon.add_hardware(clock(), sh.parse_diag_line(text))
     if not got_any:
-        return False, ["[FAIL] 沒有收到感測器資料 -- 板子上跑的是 phase3_control_loop 嗎?燒錄後有沒有真正斷電重啟?"
-                       "(可用 --boot-check 確認)"]
+        return False, ["[FAIL] no sensor data received -- is the board running phase3_control_loop, and did the app actually "
+                       "start after flashing? (check with --boot-check)"]
     rep = mon.report(clock())
     if sh.passes_pre_use_check(rep):         # the data is right (option A, 2026-09-28: flaky-but-recovering passes)
-        lines = ["[OK  ] 兩顆 MPU6050 讀數都正常(有雜訊、約 1 g、沒有凍結或卡在滿刻度)"]
+        lines = ["[OK  ] both MPU6050s read correctly (noisy, about 1 g, not frozen or stuck at full scale)"]
         for w in rep.warnings:
             if w.kind == "slow_data":
                 continue
             label, addr = sh.SENSORS[w.sensor]
-            lines.append(f"[NOTE] {label} MPU6050({addr}):{sh.KIND_TEXT[w.kind]}  [{w.detail}]"
-                         f"——資料仍正確,但接觸不穩,之後最好把這顆接牢")
+            lines.append(f"[NOTE] {label} MPU6050 ({addr}): {sh.KIND_TEXT[w.kind]}  [{w.detail}]"
+                         f" -- the data is still correct, but the contact is unstable; secure this sensor's wiring")
         slow = [w for w in rep.warnings if w.kind == "slow_data"]
         if slow:
-            lines.append(f"[NOTE] 資料較慢({slow[0].detail},正常每秒約 30 筆)——對 demo 沒影響,動作只會稍微頓一點")
+            lines.append(f"[NOTE] slow data rate ({slow[0].detail}; normally about 30/s) -- fine for the demo, motion is "
+                         f"just slightly less smooth")
         return True, lines
     # only what CAUSED the failure (the data cannot be trusted), not the incidental notes
     return False, ["[FAIL] " + sh.format_warning(sh.Report(False, rep.problems, []))]
@@ -454,9 +455,9 @@ def check_sensors(port, seconds=3.0):
     try:
         ok, lines = run_sensor_check(lambda: ser.readline().decode(errors="ignore"), _time.monotonic, seconds)
     except serial.SerialException as exc:
-        ok, lines = False, [f"[FAIL] 讀序列埠失敗:{exc}\n"
-                            f"       最常見的原因:其他程式(run_demo_live.py、watch_imu_raw.py、miniterm)也開著這個序列埠"
-                            f"——先關掉它們(Ctrl+C)再執行;或 USB 轉板被拔掉了。"]
+        ok, lines = False, [f"[FAIL] could not read the serial port: {exc}\n"
+                            f"       Most common cause: another program (run_demo_live.py, watch_imu_raw.py, miniterm) "
+                            f"has the port open -- close it (Ctrl+C) and retry; or the USB-serial adapter was unplugged."]
     finally:
         ser.close()
     print("\n--- Sensor health (reads the running firmware, nothing is flashed) ---")

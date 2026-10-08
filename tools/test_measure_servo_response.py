@@ -84,8 +84,8 @@ class FlowTest(unittest.TestCase):
 class SummaryTest(unittest.TestCase):
     def test_the_summary_names_each_phase_and_servo(self):
         text = "\n".join(msr.summary_lines({"hold_hang": samples([(1500, 1600, 1200, 1300)] * 10)}))
-        self.assertIn("垂下", text)
-        for servo in ("底座", "肩膀", "手肘", "夾爪"):
+        self.assertIn("hanging", text)
+        for servo in ("base", "shoulder", "elbow", "claw"):
             self.assertIn(servo, text)
 
 
