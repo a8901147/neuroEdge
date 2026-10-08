@@ -284,5 +284,68 @@ class HardwareWarningTest(unittest.TestCase):
         self.assertLess(ctrl["roll"], 0.0)              # it FOLLOWED the swing to the right: not held
 
 
+class RaceBoard(Board):
+    """Follows LEFT until told the loop is running, then sends ONE faulty line (arm swung RIGHT, forearm frozen) and holds
+    the next, healthy line back until the test releases it."""
+
+    def __init__(self):
+        super().__init__(fx.LEFT)
+        self.loop_running, self.armed, self.bad_stored, self.released, self.good_stored = (
+            threading.Event() for _ in range(5))
+
+    def read(self, n):
+        if self.loop_running.is_set() and not self.armed.is_set():
+            self.armed.set()
+            with self.lock:
+                self.raw, self.frozen_forearm = fx.RIGHT, True
+                if (self.reads + 1) % 400 == 0:
+                    self.reads += 1                    # make sure this read is the tick line, not a diag line
+            return super().read(n)                     # the FAULTY line
+        if self.armed.is_set() and not self.released.is_set():
+            self.bad_stored.set()                      # the reader came back: the faulty line is stored
+            self.released.wait(2.0)
+            with self.lock:
+                self.raw, self.frozen_forearm = fx.LEFT, False
+            return super().read(n)                     # the next, HEALTHY line
+        if self.released.is_set():
+            self.good_stored.set()
+        return super().read(n)
+
+
+class OneFramePerStepTest(unittest.TestCase):
+    """2026-10-08: a step computed the arm from the line it read first but checked the forearm of a line read LATER, so a
+    faulty line was applied whenever a healthy one arrived in between. Forced deterministically: the healthy line is
+    handed over between the step's first read and its health check (inside latest.status(), called in between)."""
+
+    def test_the_arm_never_uses_a_line_whose_forearm_was_not_checked(self):
+        import math
+        board = RaceBoard()
+        used = []                                          # the upper-arm vector each step went on to use
+        real_select, real_status = rdl.select_raw_smoothing_alpha, rdl.LatestSample.status
+
+        def right_like(v):
+            return v[0] is not None and math.dist(v, fx.RIGHT) < math.dist(v, fx.LEFT)
+
+        def spy_select(gripping):                          # called once the step's health check has passed
+            used.append(sys._getframe(1).f_locals["shoulder_raw"])
+            if len(used) >= 50:
+                board.loop_running.set()
+            return real_select(gripping)
+
+        def racing_status(latest):
+            step_raw = sys._getframe(1).f_locals.get("shoulder_raw")
+            if (board.bad_stored.is_set() and not board.released.is_set() and step_raw is not None
+                    and right_like(step_raw)):             # this step has read the faulty line: let the healthy one in
+                board.released.set()
+                board.good_stored.wait(2.0)
+            return real_status(latest)
+
+        run_main(board, ["--skip-calibration"], ticks=1500,
+                 patches=[mock.patch.object(rdl, "select_raw_smoothing_alpha", spy_select),
+                          mock.patch.object(rdl.LatestSample, "status", racing_status)])
+        self.assertTrue(board.released.is_set(), "the race was never forced -- the test proved nothing")
+        self.assertFalse([v for v in used if right_like(v)], "a line with a frozen forearm was used unchecked")
+
+
 if __name__ == "__main__":
     unittest.main()

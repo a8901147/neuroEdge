@@ -171,5 +171,53 @@ class GrippingFieldTest(unittest.TestCase):
         self.assertFalse(latest.snapshot_gripping())
 
 
+class OneLineOneFrameTest(unittest.TestCase):
+    """2026-10-08: a control step must never see half of one UART line and half of the next. The reader thread stores a
+    line's fields in several update_*() calls; snapshot_frame() must wait for the whole line. Forced deterministically:
+    the reader is paused between the line's upper-arm and forearm updates while a frame is taken."""
+
+    @staticmethod
+    def line(upper_x, fore_x, elbow):
+        return (f"tick=1 grip=0.000 gripping=0 shoulder_pitch=0.000 shoulder_roll=0.000 elbow={elbow:.4f} "
+                f"shoulder_raw_ax={upper_x:+.4f} shoulder_raw_ay=+0.0000 shoulder_raw_az=+0.0000 "
+                f"shoulder_raw_gx=+0.000 shoulder_raw_gy=+0.000 shoulder_raw_gz=+0.000 "
+                f"elbow_raw_ax={fore_x:+.4f} elbow_raw_ay=+0.0000 elbow_raw_az=+0.0000\r\n").encode()
+
+    def test_a_frame_never_mixes_two_lines(self):
+        import threading
+        first, second = self.line(0.1, 0.2, 0.3), self.line(0.7, 0.8, 0.9)
+        latest = rdl.LatestSample()
+        in_second_line, frame_taken = threading.Event(), threading.Event()
+        real_update_elbow_raw = latest.update_elbow_raw
+
+        def slow_update_elbow_raw(ax, ay, az):           # pause the 2nd line after its upper-arm fields are stored
+            if ax == 0.8:
+                in_second_line.set()
+                frame_taken.wait(0.5)
+            real_update_elbow_raw(ax, ay, az)
+        latest.update_elbow_raw = slow_update_elbow_raw
+
+        class Port:
+            chunks = [first, second]
+
+            def read(self, _n):
+                if self.chunks:
+                    return self.chunks.pop(0)
+                raise rdl.serial.SerialException("done")   # ends reader_thread_main (it records the error)
+
+        reader = threading.Thread(target=rdl.reader_thread_main, args=(Port(), latest), daemon=True)
+        reader.start()
+        self.assertTrue(in_second_line.wait(2.0))
+        frames = []
+        grabber = threading.Thread(target=lambda: frames.append(latest.snapshot_frame()), daemon=True)
+        grabber.start()
+        grabber.join(0.2)                                 # must wait for the line to finish, not read it half-stored
+        frame_taken.set()
+        grabber.join(2.0)
+        reader.join(2.0)
+        frame = frames[0]
+        self.assertIn((frame.shoulder_raw[0], frame.elbow_raw[0], frame.elbow), [(0.1, 0.2, 0.3), (0.7, 0.8, 0.9)])
+
+
 if __name__ == "__main__":
     unittest.main()

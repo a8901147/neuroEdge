@@ -21,6 +21,7 @@ import json
 import math
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -78,11 +79,14 @@ class FakeSerial:
 
 
 class FakeViewer:
-    def __init__(self, ticks):
+    def __init__(self, ticks, frames=None):
         self.ticks = ticks
+        self.frames = frames          # optional shared [count]: lets a fake port follow the SAME clock as the loop
 
     def is_running(self):
         self.ticks -= 1
+        if self.frames is not None:
+            self.frames[0] += 1
         return self.ticks > 0
 
     def sync(self):
@@ -96,7 +100,7 @@ class FakeViewer:
 
 
 def run_preview(line, saved, ticks=800, serial_factory=None, events=None, skip_emg=True, emg_calibrated=None,
-                skip_calibration=True, cal_timeout=0.05):
+                skip_calibration=True, cal_timeout=0.05, frames=None):
     """Runs the real run_mearm_preview against a fake port/viewer; returns
     (final data.ctrl by actuator name, captured stdout). serial_factory, if
     given, builds the fake port instead of the default constant stream."""
@@ -109,7 +113,7 @@ def run_preview(line, saved, ticks=800, serial_factory=None, events=None, skip_e
 
     def fake_launch(model, data):
         captured["model"], captured["data"] = model, data
-        return FakeViewer(ticks)
+        return FakeViewer(ticks, frames)
 
     out = io.StringIO()
     events = events if events is not None else []
@@ -583,23 +587,69 @@ class SensorHealthTest(unittest.TestCase):
         self.assertIn("HARDWARE FAULT", out)                           # it said so while waiting
         self.assertGreater(ctrl["base"], 0.5)                  # and then ran normally
 
-    def test_a_fault_mid_session_holds_the_model_warns_and_recovers(self):
+    def test_a_line_arriving_between_the_check_and_the_use_is_never_applied(self):
+        """CI 2026-10-07/08 (3 failures, always base=-0.9083...): a step checked one sample, then read the sensors AGAIN to
+        compute the pose, so a line that arrived in between -- here the first line of a frozen forearm, with the arm
+        already swung RIGHT -- was applied unchecked, and the model then held that wrong pose. Forced deterministically:
+        the fake port hands over that line exactly inside the loop's own plausibility check."""
         frozen_right = self.frozen_forearm(fx.RIGHT)
+        armed, released, stored = threading.Event(), threading.Event(), threading.Event()
+        real_plausible = rdl.sensor_health.plausible
+
+        def racing_plausible(v):
+            ok = real_plausible(v)
+            if (armed.is_set() and not released.is_set() and sys._getframe(1).f_code.co_name == "run_mearm_preview"
+                    and v[0] == 0.0 and v[1] == 0.0):          # the loop's forearm check (exact zeros in GOOD lines)
+                released.set()                                 # the step has checked its sample: let the next line in
+                stored.wait(2.0)                               # ... and wait until the reader thread has stored it
+            return ok
+
+        events = []
+        reads_since_viewer = [0]
 
         def script(n):
-            if n < 150:
-                return self.GOOD_LEFT
-            if n < 600:
-                return frozen_right                            # the arm swings RIGHT while the forearm is frozen
-            return self.GOOD_LEFT
+            if not any(e[0] == "viewer" for e in events) or reads_since_viewer[0] < 100:
+                if any(e[0] == "viewer" for e in events):
+                    reads_since_viewer[0] += 1
+                return self.GOOD_LEFT                          # following LEFT for a while first
+            if not armed.is_set():
+                armed.set()
+                released.wait(5.0)
+                return frozen_right
+            stored.set()                                       # the reader came back: the line above is stored
+            return frozen_right
 
         def factory():
             return ScriptedSerial(script)
-        ctrl_mid, out_mid = run_preview(None, fx.SAVED_9_13, ticks=900, serial_factory=factory)
+        with mock.patch.object(rdl.sensor_health, "plausible", racing_plausible):
+            ctrl, out = run_preview(None, fx.SAVED_9_13, ticks=1500, serial_factory=factory, events=events)
+        self.assertTrue(released.is_set() and stored.is_set(), "the race was never forced -- the test proved nothing")
+        self.assertGreater(ctrl["base"], 0.5, out)             # held at LEFT: the unchecked RIGHT line was not applied
+        self.assertIn("HARDWARE FAULT", out)
+
+    def test_a_fault_mid_session_holds_the_model_warns_and_recovers(self):
+        """Phases follow the viewer's frame count, not the number of reads (2026-10-08): with two independent clocks,
+        a slower or faster reader thread moved the fault to a different frame and the result changed with the machine."""
+        frozen_right = self.frozen_forearm(fx.RIGHT)
+
+        def run(ticks):
+            frames = [0]
+
+            def script(_n):
+                if frames[0] < 200:
+                    return self.GOOD_LEFT
+                if frames[0] < 2200:                           # >= 2 s, longer than the health check's 1 s window
+                    return frozen_right                        # the arm swings RIGHT while the forearm is frozen
+                return self.GOOD_LEFT
+
+            return run_preview(None, fx.SAVED_9_13, ticks=ticks, serial_factory=lambda: ScriptedSerial(script),
+                               frames=frames)
+        ctrl_mid, out_mid = run(1500)                          # stopped inside the fault
         self.assertGreater(ctrl_mid["base"], 0.5)              # held at LEFT: the RIGHT swing was not followed
         self.assertIn("HARDWARE FAULT", out_mid)
-        ctrl_end, out_end = run_preview(None, fx.SAVED_9_13, ticks=2500, serial_factory=factory)
+        ctrl_end, out_end = run(4500)                          # >= 2.3 s of healthy data after the fault
         self.assertIn("back to normal", out_end)
+        self.assertGreater(ctrl_end["base"], 0.5)
 
 
 class HardwareWarningPreviewTest(unittest.TestCase):
