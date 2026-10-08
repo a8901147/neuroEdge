@@ -4,7 +4,7 @@
 // "connected device broken" turned out to be scanning the full 7-bit
 // address space with a device of known-good address (an LCD1602/PCF8574
 // backpack, address 0x27) rather than re-checking wiring by hand each time.
-// See PRD.md Phase 1.5 Stage 4b for the full elimination process this
+// See SESSION_LOG.md, August 2026, for the full elimination process this
 // replaced.
 //
 // Reuses the I2C1 driver verified in i2c_mpu6050_hello_main.c (PB6=SCL,

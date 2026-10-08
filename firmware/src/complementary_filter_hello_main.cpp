@@ -25,14 +25,14 @@
 //     raw counts instead of true g would still work numerically -- divided
 //     here anyway for a value that means something when read off a debugger.
 //
-// dt: measured, not a delay()-derived guess -- see kDt below and PRD.md
-// Phase 1.5 Stage 4b for how complementary_filter_stress_test_main.cpp (removed 2026-09-26, see git history 8f5472b)
+// dt: measured, not a delay()-derived guess -- see kDt below and
+// SESSION_LOG.md, August 2026, for how complementary_filter_stress_test_main.cpp (removed 2026-09-26, see git history 8f5472b)
 // established this loop shape's real ~163ms period. This stage's loop is
 // still far coarser than a real control loop (see next paragraph), but is
 // fine for a first "does the fusion respond sensibly to real motion" check.
 //
 // This will NOT get wired into EdgeNeuro<>'s Pipeline -- confirmed
-// (PRD.md Section 3, Phase 3 control-architecture note) that IMU
+// (PRD.md §3, system architecture) that IMU
 // orientation bypasses Pipeline entirely: Pipeline's window/classify only
 // produces a result once every WindowSize samples, which is far too laggy
 // for orientation that's supposed to track the user's real arm
@@ -52,7 +52,7 @@
 #define LED_PIN 13u
 
 // Diagnostic-only globals, readable via `openocd ... mdw` without relying
-// on UART -- see PRD.md Phase 1.5 Stage 4a for why.
+// on UART -- see SESSION_LOG.md, August 2026, for why.
 volatile uint8_t g_who_am_i = 0xAAu;
 volatile int g_who_am_i_result = -1;
 volatile int g_wake_result = -1;
@@ -314,7 +314,7 @@ int main(void) {
     // runs this same delay(400000u)-paced loop shape (I2C transaction +
     // two UART prints per iteration) and wall-clock timing over a 60s/367-
     // iteration run gave 163.4ms/iteration, not the ~250ms a delay()-only
-    // estimate would suggest (see PRD.md Phase 1.5 Stage 4b). This loop's
+    // estimate would suggest (see SESSION_LOG.md, August 2026). This loop's
     // I2C read is longer (14 bytes vs. the stress test's 1-byte LCD
     // write), so re-measure directly once a working MPU6050 is attached;
     // 0.163f is a much closer starting point than the old guess either way.
@@ -328,7 +328,7 @@ int main(void) {
     // Seed from the first real accelerometer reading rather than starting
     // at roll=pitch=0 -- this is exactly the cold-start transient found
     // and fixed during Host-side validation against EMG-EPN-612 data (see
-    // PRD.md Phase 1.5's fusion section); it applies here too.
+    // SESSION_LOG.md, August 2026); it applies here too.
     {
         uint8_t raw[6];
         if (mpu6050_read_regs(0x3Bu, raw, 6) == 0) {
