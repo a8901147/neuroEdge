@@ -1,6 +1,6 @@
 // Stage 1: compiles the REAL Phase 1 engine (include/edgeneuro/) for
 // STM32F401, unmodified -- proves the "zero modification" claim in
-// PRD Phase 3 is actually true, not aspirational. No CsvSignalProvider
+// PRD.md is actually true, not aspirational. No CsvSignalProvider
 // (needs a filesystem the MCU doesn't have); a minimal stub Provider
 // stands in, matching the shape the real Stm32AdcProvider will have.
 //

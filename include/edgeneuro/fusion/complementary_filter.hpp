@@ -23,7 +23,7 @@ namespace edgeneuro {
 // WindowSize=200 @ 1kHz), which is fine for EMG's "did the user hold a
 // contraction long enough" decision but far too laggy for orientation
 // control that's supposed to track the user's real arm continuously (see
-// PRD.md Section 3's Phase 3 control-architecture note). The intended
+// PRD.md §3, system architecture). The intended
 // caller reads a sensor, calls update() once per fresh reading, and feeds
 // roll()/pitch() straight to an actuator setpoint -- bypassing Pipeline
 // entirely, not feeding into it.

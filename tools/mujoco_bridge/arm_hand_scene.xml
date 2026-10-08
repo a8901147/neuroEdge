@@ -55,7 +55,7 @@
        live under the same mujoco_menagerie/ parent, hence meshdir pointing
        there directly and each mesh's own file="unitree_g1/assets/..." path.
 
-       Sensor -> DOF mapping (see PRD.md Section 3, 2026-08-22 revision): IMU#1
+       Sensor -> DOF mapping (see PRD.md §5): IMU#1
        (upper arm) drives shoulder pitch+roll via its own gravity-referenced
        ComplementaryFilter; IMU#2 (forearm) combined with IMU#1's pitch drives
        elbow flexion (relative angle, now via the vector dot-product method --

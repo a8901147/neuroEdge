@@ -4,7 +4,7 @@ An EMG+IMU controlled robotic arm: zero-heap-allocation C++ control loop on
 a bare STM32F401RCT6 (Black Pill), driven by a MyoWare 2.0 EMG sensor and
 2x MPU6050 IMUs, bridged live into a MuJoCo simulation for validation.
 
-- **What/roadmap**: [PRD.md](PRD.md)
+- **Design, requirements, limitations, next steps**: [PRD.md](PRD.md)
 - **Dated history, debugging stories, past findings**: [SESSION_LOG.md](SESSION_LOG.md)
 - **How to use the tools/scripts**: [README.md](README.md)
 

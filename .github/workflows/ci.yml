@@ -47,8 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Same toolchain, same version, as local dev (see firmware/README.md
-      # and PRD.md's Phase 1.5 history) -- the plain `apt`/Homebrew
+      # Same toolchain, same version, as local dev (see firmware/README.md) -- the plain `apt`/Homebrew
       # arm-none-eabi-gcc package ships without newlib (no <stdint.h>
       # etc.), which is why this project uses ARM's own tarball instead of
       # a package-manager one. x86_64 build here (ubuntu-latest runner),

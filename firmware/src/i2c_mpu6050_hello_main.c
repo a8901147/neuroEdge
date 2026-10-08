@@ -229,7 +229,7 @@ static int mpu6050_write_reg(uint8_t reg, uint8_t value) {
 // Returns a distinct nonzero code per failure site (not just 1) so the
 // caller can blink out WHICH step failed on the LED -- UART on this
 // setup has proven too unreliable this session to depend on for
-// diagnostics, see PRD.md Phase 1.5 for the pattern.
+// diagnostics, see SESSION_LOG.md, August 2026, for the pattern.
 //   1 = first START (bus/wiring issue before any device response needed)
 //   2 = address+W not ACKed (wrong 7-bit address, or device not present)
 //   3 = writing the register-address byte failed
@@ -307,7 +307,7 @@ static int16_t be16(const uint8_t *p) {
 
 // UART on this setup has proven too unreliable this session to depend on
 // for diagnostics (adapter repeatedly drops and needs a physical
-// unplug/replug cycle to recover -- see PRD.md Phase 1.5). This blinks
+// unplug/replug cycle to recover -- see SESSION_LOG.md, August 2026). This blinks
 // `code` short pulses, then a long pause, forever -- readable by eye or
 // stopwatch without needing the serial link to be up at all.
 static void blink_code(int code) {
