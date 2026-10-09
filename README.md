@@ -23,9 +23,15 @@ inexpensive, off-the-shelf parts:
 **Scope.** This is a research platform: an able-bodied person controls a desktop 4-servo arm (MeArm) and two MuJoCo
 models (a MeArm model and a Unitree G1 humanoid arm and hand). It has not been tested with prosthesis users.
 
-**Demo task:** arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place. The full
-task has been completed end to end on the physical arm with a real roll of tape, controlled live by one person wearing
-the sensors (recorded on video, 2026-10-09). It is one tuned task with one user, not a measured success rate.
+**Demo task:** arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place.
+**What has been shown so far** (one run on video, 2026-10-09, one person wearing the sensors): from hanging, the arm
+reached forward and left, hooked the claw through the tape roll's core, lifted it, carried it to the right and released
+it there by relaxing the grip; the tape dropped onto the desk from about claw height. Lowering the tape onto a surface
+before releasing it is not yet shown, and no success rate over repeated trials has been measured.
+
+![The physical arm following the operator's arm: reach, hook the tape roll, lift, carry right, release](docs/demo.gif)
+
+*The run described above, in real time (27 s, sound removed). [Higher-resolution video (MP4)](docs/demo.mp4).*
 
 ```
  MyoWare 2.0 (EMG, ENV) ──ADC 1 kHz──┐
@@ -97,7 +103,7 @@ benchmarks/          Google Benchmark latency suite
 tools/               Python: hardware checks, interactive calibration and measurement tools
 tools/mujoco_bridge/ Python: live MuJoCo bridge, MeArm model, Path B / real-arm mapping
 data/                Recorded real-hardware data (linkage, link angles, arm motion, golden calibration), synthetic fixtures
-docs/                Reference images
+docs/                Demo video (GIF + MP4) and reference images
 ```
 
 ## Build and test (host)

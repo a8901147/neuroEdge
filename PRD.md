@@ -20,8 +20,9 @@ for a real pick-and-place task. The benchmark task, on a 4-servo MeArm:
 > arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place.
 
 Everything is tuned toward this task without being specific to it: the code contains no task-specific poses, and the
-calibration and parameters come from the person's own recordings. **Status:** completed end to end on the physical arm with a real
-roll of tape (video, 2026-10-09); success rate over repeated trials has not been measured.
+calibration and parameters come from the person's own recordings. **Status** (one run on video, 2026-10-09): the arm hooked the
+tape roll through its core, lifted it and carried it to the right, and released it there (EMG relax), so it dropped
+from claw height; a lowered set-down and a success rate over repeated trials are still to be shown.
 
 **Scope:** a research platform. An able-bodied person controls a desktop arm and MuJoCo models; the system has not
 been tested with prosthesis users.
@@ -134,7 +135,7 @@ received over UART is checksummed and validated before use.
 | R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for `<1,6>`; `<32,0>` classify tick 1.54 ms overruns |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
 | R9 | An IMU fault never moves the arm | `ImuHealth` in firmware, `sensor_health` on the PC; host tests | Met for the IMUs; the EMG channel is not health-checked (§7) |
-| R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; full pick-and-place completed on the real arm, 2026-10-09 (video); motion artifact measured | Partly: works for the demo, but limited by electrode placement (§7); no repeated-trial success rate yet |
+| R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; tape picked up, lifted and carried to the right on the real arm, 2026-10-09 (video; released at claw height rather than set down); motion artifact measured | Partly: limited by electrode placement (§7); the claw hooks the roll rather than clamping it; no controlled set-down or repeated-trial success rate yet |
 
 ## 7. Known limitations
 
@@ -154,7 +155,8 @@ received over UART is checksummed and validated before use.
 
 ## 8. Next steps
 
-- Measure the demo's success rate over repeated trials (and with a second person).
+- Complete the set-down step (lower, then release) and measure the demo's success rate over repeated trials (and with a
+  second person).
 - Move the EMG electrodes to the finger flexors and re-record with `capture_arm_motion.py --set emg`.
 - Measure end-to-end latency (sensor motion → servo motion) with high-speed video, and compare the grip's 150 ms
   debounce against the 100–125 ms that Farrell & Weir (2007) found best for myoelectric control.
