@@ -43,7 +43,7 @@ been tested with prosthesis users.
 ## 3. System architecture
 
 ```
-Sensors                       STM32F401 (1 kHz loop; servo commands every 10th tick = 100 Hz; zero heap)   Outputs
+Sensors                       STM32F401 (1 kHz loop, zero heap; servos: 100 Hz → 50 Hz PWM)   Outputs
 MyoWare ENV ─ADC─▶ EMA ─▶ GripStateMachine (2 thresholds, 150 ms debounce) ─▶ slew limit ─▶ claw servo
 MPU6050 ×2  ─I2C─▶ raw gravity vectors ─▶ 1€ filter ─▶ Path B decode (tilt, azimuth)
                                                      ─▶ height/reach mapping ─▶ envelope ─▶ shoulder, elbow servos
@@ -143,6 +143,12 @@ received over UART is checksummed and validated before use.
   a firm still grip (1318). The MyoWare's high-pass corner (20.8 Hz) is near the 20 Hz De Luca et al. recommend against
   movement artifact, though it is first-order rather than their 12 dB/octave; gating on arm motion only cut false grips
   from 4 to 2. The fix is electrode placement over the finger flexors.
+- **Accelerometer-only direction.** Arm direction and elbow bend come from the accelerometers alone, which assumes
+  the arm's own acceleration is small compared with gravity. Recorded demo motions (`data/arm_motion_20261004-*.json`)
+  show |a| departing from 1 g by up to 0.07–0.09 g (95th percentile; about 0.03 g at rest) and briefly by more than
+  1 g. An acceleration perpendicular to gravity barely changes |a|, so the direction error during fast motion is not
+  quantified yet; the DLPF and the 1€ filter reduce it but do not remove it. Kept as a deliberate design choice (the
+  gyroscopes are unused).
 - **No heading.** Without a magnetometer, left/right comes from upper-arm twist. The twist that naturally comes with
   raising the arm is reduced by the slow-follow rule, not removed.
 - **Clock.** At the default 16 MHz, the 32-channel stress configuration overruns 1 ms on classify ticks. Configuring

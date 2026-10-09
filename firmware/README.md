@@ -117,9 +117,10 @@ bootloader.
   `PWR_MGMT_1` is read back once a second, so a sensor that lost power and came back asleep is caught.
 - *EMG.* EMA (α = 0.1) → `GripStateMachine` (on threshold, lower release threshold, 0.15 s debounce each way) →
   `SlewRateLimiter`.
-- *Servos* (servo build only), every 10 ticks: 1€ filter on both raw accelerometer vectors → Path B decode → height/reach
-  mapping inside the measured envelope → base hysteresis and slow follow while raising → start-up ramps
-  (`include/edgeneuro/control/`). On an IMU fault nothing is written, so every servo stops where it is.
+- *Servos* (servo build only), computed every 10 ticks (100 Hz); TIM3's output-compare preload applies each new pulse
+  width at the next 20 ms PWM update, so a servo sees a new command at 50 Hz. Steps: 1€ filter on both raw
+  accelerometer vectors → Path B decode → height/reach mapping inside the measured envelope → base hysteresis and slow
+  follow while raising → start-up ramps (`include/edgeneuro/control/`). On an IMU fault nothing is written, so every servo stops where it is.
 - *UART.* Output is queued (`TxRing<2048>`) and sent one byte whenever the transmitter is free. A line that doesn't fit
   is skipped whole and counted, never sent half.
 
