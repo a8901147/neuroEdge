@@ -17,7 +17,14 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ### Changed
 - Documentation rewritten in English to match the current code: README, firmware README, PRD (now a design and
-  requirements document) and a condensed development log. Stale references in code comments were updated.
+  requirements document) and a condensed development log. Stale references in code comments were updated ([#14]).
+  Every concrete claim was then re-checked against the code; PRD §5 gained the sensor-to-DOF mapping.
+- Every user-facing message in the tools is in English ([#15]).
+
+### Fixed
+- A live control step could use a sensor sample that never passed the health check ([#16]): the reader thread stored a
+  UART line in several separate updates, and the loops checked one read but computed the pose from another. Each line
+  is now stored atomically and each step checks and uses one snapshot. This was the cause of an intermittent CI failure.
 
 ## [1.3.0] — 2026-10-08
 
@@ -103,3 +110,6 @@ end to end, in the MuJoCo humanoid arm.
 [#8]: https://github.com/a8901147/neuroEdge/pull/8
 [#9]: https://github.com/a8901147/neuroEdge/pull/9
 [#13]: https://github.com/a8901147/neuroEdge/pull/13
+[#14]: https://github.com/a8901147/neuroEdge/pull/14
+[#15]: https://github.com/a8901147/neuroEdge/pull/15
+[#16]: https://github.com/a8901147/neuroEdge/pull/16

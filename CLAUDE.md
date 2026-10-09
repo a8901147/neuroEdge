@@ -81,8 +81,10 @@ standalone power-on (no ST-Link) still depends on the bootloader.
   Flag it proactively when a unit of work looks like a good PR point —
   don't wait to be asked — but don't open the PR itself unprompted.
 
-## Target hardware (confirmed 2026-08-22)
+## Target hardware (sensors confirmed 2026-08-22, arm added 2026-09-21)
 
 STM32F401RCT6 Black Pill, 1x MyoWare 2.0 (EMG, PA0/ADC1), 2x MPU6050
-(I2C1, PB6/PB7, addresses 0x68/0x69 via AD0). FT232RL USB-serial adapter
-(CP2102 has a known firmware-lockup bug — see `tools/usb_serial_port.py`).
+(I2C1, PB6/PB7, addresses 0x68/0x69 via AD0). MeArm with 4x SG92R servos on
+TIM3 CH1-4 (PA6 base, PA7 shoulder, PB0 elbow, PB1 claw), own 4xAA supply.
+FT232RL USB-serial adapter (CP2102 has a known firmware-lockup bug — see
+`tools/usb_serial_port.py`).
