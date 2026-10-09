@@ -1,6 +1,6 @@
 # EdgeNeuro: Design and Requirements
 
-**Author:** Chang-Jui Tseng · **Last updated:** 2026-10-08 (v1.3.0 + on-target latency)
+**Author:** Chang-Jui Tseng · **Last updated:** 2026-10-09
 
 This document covers what the system is for, how it is built, the requirements it has to meet, and how each one is
 checked. Commands are in [README.md](README.md) and [firmware/README.md](firmware/README.md); the dated record of how
@@ -19,8 +19,8 @@ for a real pick-and-place task. The benchmark task, on a 4-servo MeArm:
 
 > arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place.
 
-Everything is tuned toward this task without being specific to it: there are no hard-coded poses, and the calibration
-and parameters come from the person's own recordings. **Status:** completed end to end on the physical arm with a real
+Everything is tuned toward this task without being specific to it: the code contains no task-specific poses, and the
+calibration and parameters come from the person's own recordings. **Status:** completed end to end on the physical arm with a real
 roll of tape (video, 2026-10-09); success rate over repeated trials has not been measured.
 
 **Scope:** a research platform. An able-bodied person controls a desktop arm and MuJoCo models; the system has not
@@ -28,16 +28,16 @@ been tested with prosthesis users.
 
 ## 2. Approach
 
-- **Run the control on the microcontroller.** The STM32 computes the servo commands itself; the PC only calibrates and
-  visualizes.
+- **Run the control on the microcontroller.** The STM32 computes the servo commands itself; the PC calibrates, sends the
+  home command and visualizes.
 - **Deterministic, allocation-free C++.** Header-only C++20 with templates and concepts, so there are no virtual calls
   and no heap use in the hot loop. The same headers compile for the host (where they are tested) and for the
   Cortex-M4F.
 - **Validate in simulation and on hardware together.** The live sensor stream drives MuJoCo models (a twin of the MeArm
   and a Unitree G1 humanoid arm and hand) next to the real arm, so a mapping problem can be told apart from a
   mechanical one.
-- **Raw data decides.** Thresholds, filters and register values are settled with captured raw sensor data, never with
-  an algorithm's own output.
+- **Raw data decides.** Thresholds and filter parameters are settled with captured raw sensor data, never with an
+  algorithm's own output; register values are checked against the reference manual (RM0368).
 
 ## 3. System architecture
 
@@ -70,7 +70,7 @@ The library has two layers:
 | Part | Choice | Why |
 | --- | --- | --- |
 | MCU | STM32F401RCT6 Black Pill, 16 MHz HSI | Cortex-M4 with a single-precision FPU (matches `float`), 64 KB SRAM, low cost |
-| EMG | MyoWare 2.0, `ENV` output to ADC | Analog front end in hardware: differential amplifier, 20.8 Hz high-pass, rectifier, 3.6 Hz envelope |
+| EMG | MyoWare 2.0, `ENV` output to ADC | Analog front end in hardware (MyoWare 2.0 Advanced Guide): amplifier, first-order 20.8 Hz high-pass, full-wave rectifier, 3.6 Hz envelope |
 | IMUs | 2× MPU6050 (upper arm 0x68, forearm 0x69), DLPF 5 Hz | Gravity direction of each arm segment; no magnetometer, so no heading |
 | Arm | MeArm, 4× SG92R servos, 4×AA supply | 4 DOF: base, shoulder, elbow, claw |
 | Links | ST-Link (SWD), FT232RL (UART 115200) | SWD register reads are the main debugging tool |
@@ -79,7 +79,7 @@ The library has two layers:
 
 **Grip (EMG).** The 12-bit ENV sample is smoothed (EMA, α = 0.1, ~10 ms) and fed to a two-threshold state machine:
 the grip closes after 150 ms above the grip threshold and opens after 150 ms below a lower release threshold. The PC
-records 2 s relaxed and 2 s gripping: the grip threshold is the relaxed mean + 20·std, and the release threshold is
+records 3.5 s relaxed and 3.5 s gripping and uses the last 2 s of each: the grip threshold is the relaxed mean + 20·std, and the release threshold is
 halfway between the relaxed mean and the grip threshold. The hysteresis lets a lighter grip hold while the arm moves.
 
 **Arm direction ("Path B").** The upper-arm accelerometer gives a gravity vector. Four calibration poses (hang,
@@ -90,7 +90,8 @@ elbow bend is the angle between the two IMUs' gravity vectors, which has no sing
 **MeArm mapping ("height/reach").** On the MeArm, the forearm servo sets the claw's height and the upper-arm servo
 sets its reach, so the person's arm maps crosswise onto it: raising the arm lowers the elbow servo (claw up), and
 bending the elbow raises the shoulder servo (reach). Every (shoulder, elbow) command is clamped into an envelope
-measured on the real arm (five measurement runs, windows intersected, never extrapolated). The two servos also step
+measured on the real arm (five measurement runs; between measured shoulder positions the windows are intersected,
+never interpolated; the shoulder is clamped to the measured range). The two servos also step
 together, so the poses in between stay inside the envelope too. Base: azimuth over the full 500–2500 µs, with the ends
 at the person's comfortable left and right reach.
 
@@ -136,12 +137,13 @@ received over UART is checksummed and validated before use.
 ## 7. Known limitations
 
 - **EMG motion artifact.** With the current electrode placement, arm motion alone reached 3848 ADC counts, more than
-  a firm still grip (1318). Hardware filtering already follows De Luca's recommendations, and gating on arm motion only
-  cut false grips from 4 to 2. The fix is electrode placement over the finger flexors.
+  a firm still grip (1318). The MyoWare's high-pass corner (20.8 Hz) is near the 20 Hz De Luca et al. recommend against
+  movement artifact, though it is first-order rather than their 12 dB/octave; gating on arm motion only cut false grips
+  from 4 to 2. The fix is electrode placement over the finger flexors.
 - **No heading.** Without a magnetometer, left/right comes from upper-arm twist. The twist that naturally comes with
   raising the arm is reduced by the slow-follow rule, not removed.
 - **Clock.** At the default 16 MHz, the 32-channel stress configuration overruns 1 ms on classify ticks. Configuring
-  the PLL for 84 MHz would give about 5× headroom.
+  the PLL for 84 MHz would give up to about 5× headroom.
 - **Humanoid grasp.** The G1 hand's uniform-curl grasp holds the object only at the front-left pose. Per-finger grasp
   synthesis was rejected as out of scope.
 - **UART receive** is polled one byte per loop, so the host paces commands (2 ms per byte).
@@ -165,5 +167,6 @@ noise at rest).
   *Prosthetics and Orthotics International*, 31(3), 236–257.
 - Farrell, T. R. & Weir, R. F. (2007). The optimal controller delay for myoelectric prostheses. *IEEE Transactions on
   Neural Systems and Rehabilitation Engineering*, 15(1), 111–118.
+- Advancer Technologies / SparkFun. *MyoWare 2.0 Muscle Sensor: Advanced Guide* (filter specifications).
 - De Luca, C. J. et al. (2010). Filtering the surface EMG signal: movement artifact and baseline noise contamination.
   *Journal of Biomechanics*, 43, 1573–1579.

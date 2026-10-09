@@ -38,7 +38,7 @@ straight to its Reset_Handler over SWD, bypassing the bootloader:
 openocd -f firmware/openocd.cfg -c "init; reset halt; reg msp [read_memory 0x08004000 32 1]; reg pc [expr {[read_memory 0x08004004 32 1] & ~1}]; reg xPSR 0x01000000; resume; exit"
 ```
 
-This needs firmware built after 2026-10-03: before that, `startup.c` never
+This needs firmware from v1.2.0 on (commit 7409a88): before that, `startup.c` never
 enabled the FPU and the apps only ran because the bootloader left it on (a
 direct jump HardFaulted with UFSR.NOCP). Always confirm with
 `tools/check_hardware_ready.py --boot-check` before debugging further. A
@@ -76,6 +76,13 @@ standalone power-on (no ST-Link) still depends on the bootloader.
   rejected as over-engineering after a coverage sweep showed grasp only
   actually worked at one pose regardless — don't re-litigate this without
   new evidence.
+
+- **Documentation claims are checked against the code.** README, PRD and
+  firmware/README are read by people judging this project from the code. Write
+  only what the code or a dated measurement record supports: open the code for
+  each concrete claim (numbers, mappings, which component does what) and read
+  the target section before writing any cross-reference ("see PRD §5"). If
+  something cannot be verified, leave it out or say it is unverified.
 
 - **PR workflow since v1.0.0**: this repo has a tagged stable release.
   Flag it proactively when a unit of work looks like a good PR point —

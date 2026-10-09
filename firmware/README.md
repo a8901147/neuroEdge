@@ -35,10 +35,10 @@ targets.
 The board is powered from its own USB port, and every other device connects only signal lines and ground, so no two
 supplies ever drive the same rail.
 
-**Servo power.** The four servos draw up to ~2.6 A at stall, far more than the board's rail can supply. They run from a
-4×AA pack through two WAGO 221 lever connectors (+ and −). A 1000 µF capacitor and a 0.1 µF ceramic capacitor sit
+**Servo power.** Four servos starting or stalling together draw far more current than the board's rail can supply, so
+they run from a 4×AA pack through two WAGO 221 lever connectors (+ and −). A 1000 µF capacitor and a 0.1 µF ceramic capacitor sit
 across the two connectors, and one wire runs from the − connector to the board's GND. Without that common ground the
-servos don't move at all, even though the PWM is correct. The pack should stay above ~4.8 V under load.
+servos don't move at all, even though the PWM is correct. The pack should stay above ~4.8 V (the SG92R's rated voltage) under load.
 
 **Sensor wiring.** 3.3 V, GND, SDA and SCL are distributed through WAGO 221 connectors. Thin dupont wire is below the
 connector's 0.2 mm² minimum, so fold it over or crimp a ferrule on it, and tug-test every wire: an I2C line with an
