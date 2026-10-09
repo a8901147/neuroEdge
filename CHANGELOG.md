@@ -22,7 +22,7 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 ## [1.3.0] — 2026-10-08
 
 A stable point for the MeArm demo task (hang → forward → left → grip a tape roll → lift → right → place): the EMG grip
-holds while the arm moves, and the hardware is documented as it is now wired. The user verified this code on the real
+holds while the arm moves, and the hardware is documented as it is now wired. This code was verified on the real
 arm on 2026-10-07.
 
 ### Changed
@@ -47,7 +47,7 @@ arm on 2026-10-07.
 
 ## [1.2.0] — 2026-10-04
 
-The physical MeArm follows the user's arm, computed on the STM32 itself from the two IMUs and the EMG sensor ([#5]).
+The physical MeArm follows the operator's arm, computed on the STM32 itself from the two IMUs and the EMG sensor ([#5]).
 
 ### Added
 - Base driven by upper-arm twist; shoulder and elbow set the claw's height and reach (`height_reach`), always inside the

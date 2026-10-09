@@ -37,14 +37,16 @@ the sensors (recorded on video, 2026-10-09). It is one tuned task with one user,
 
 ## What it does
 
+On the physical arm (the Unitree G1 model's mapping differs; see [PRD.md §5](PRD.md#5-control-design)):
+
 | Part | How |
 | --- | --- |
-| Grip | MyoWare envelope → EMA → two-threshold (hysteresis) state machine with a 150 ms on/off debounce → claw. The PC calibrates the thresholds (relaxed mean + K·std; release halfway back down) and sends them to the board over UART. |
+| Grip | MyoWare envelope → EMA → two-threshold (hysteresis) state machine with a 150 ms on/off debounce → slew-rate limit → claw. The PC calibrates the thresholds (relaxed mean + K·std; release halfway back down) and sends them to the board over UART. |
 | Arm direction | The upper-arm gravity vector is decoded against four calibrated poses (hang, forward, left, right) into tilt and azimuth ("Path B"). Azimuth drives the base; a slow-follow rule keeps the base steady while the arm is being raised. |
 | Height and reach | Raising the arm lowers the elbow servo (claw up); bending the elbow raises the shoulder servo (reach). Every command, including the poses in between, stays inside a safe shoulder × elbow envelope measured on the real arm. |
 | Elbow bend | Angle between the two IMUs' gravity vectors (dot product), which avoids the ±90° singularity of Euler-angle differences. |
 | Smoothing | MPU6050 DLPF at 5 Hz, then a 1€ filter (0.5 Hz min cutoff, β 1.5) on the servo path. The servos themselves run at full speed. |
-| Safety | Automatic IMU health checks (missing, frozen, asleep, or a magnitude far from 1 g): on a fault every servo holds its pulse. Slow start-up ramp; an `R` command walks the arm back to a known start pose. Servo outputs are compiled out unless explicitly enabled. |
+| Safety | On the board, a reading that is implausible (an axis at full scale, or a magnitude outside 0.3–3 g) or unchanged for 0.3 s makes every servo hold its pulse; a sensor that resets is woken again. On the PC, missing data and a magnitude far from 1 g are also caught, and the model holds its pose. Slow start-up ramp; an `R` command walks the arm back to a known start pose. Servo outputs are compiled out unless explicitly enabled. |
 
 ## Measured results
 
@@ -54,7 +56,7 @@ the sensors (recorded on video, 2026-10-09). It is one tuned task with one user,
 | IMU reads | Non-blocking I2C state machine on a 100 kHz bus: ~274 completed reads/s per IMU with both IMUs |
 | Heap | No `malloc`/`free`/`new`/`_sbrk` symbols in the firmware image; `malloc_count == 0` asserted on the host and on the target |
 | Firmware size | `phase3_control_loop` with servos on: 18.4 KB of code, 3.3 KB of static RAM (of 240 KB / 64 KB) |
-| Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 566 Python test functions |
+| Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 569 Python test functions |
 
 Per-sample latency of the generic `EdgeNeuro<>` pipeline, on synthetic input. Both machines run the same engine code
 (`include/edgeneuro/bench/latency_configs.hpp`):
@@ -80,7 +82,7 @@ clock has not been raised to the chip's 84 MHz.
 
 ```
 include/edgeneuro/   Header-only C++20 library, shared by the host and the firmware
-  pipeline.hpp ...   Generic EdgeNeuro<> engine: concepts, ring buffer, IIR/MAV/RMS, LDA, CSV provider
+  pipeline.hpp ...   Generic EdgeNeuro<> engine: concepts, IIR/MAV/RMS, LDA, CSV provider; a standalone SPSC ring buffer
   control/           Real-arm control: grip state machine, Path B decode, MeArm drive, envelope, ramps, health
   filters/, fusion/  1€ filter, complementary filter, tilt/azimuth
 firmware/            Bare-metal STM32F401 targets (CMake + arm-none-eabi-gcc), see firmware/README.md
@@ -149,8 +151,8 @@ git clone --no-checkout --depth 1 --filter=blob:none https://github.com/google-d
 (cd mujoco_menagerie && git sparse-checkout init --cone && git sparse-checkout set unitree_g1 \
    && git checkout da76818e269b82289eba39808e2fb91d679d6994)
 
-# 3. Run: sensor check → EMG + pose calibration → calibration sent to the board → R (home) → live control
-.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --mearm      # MeArm twin + real arm
+# 3. Run: sensor check → EMG + pose calibration → calibration sent to the board → live control
+.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --mearm      # MeArm twin + real arm (first homes it with R)
 .venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py              # Unitree G1 humanoid arm
 ```
 

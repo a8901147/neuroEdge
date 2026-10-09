@@ -43,7 +43,7 @@ been tested with prosthesis users.
 
 ```
 Sensors                       STM32F401 (1 kHz loop, zero heap)                         Outputs
-MyoWare ENV ─ADC─▶ EMA ─▶ GripStateMachine (2 thresholds, 150 ms debounce) ─▶ claw servo
+MyoWare ENV ─ADC─▶ EMA ─▶ GripStateMachine (2 thresholds, 150 ms debounce) ─▶ slew limit ─▶ claw servo
 MPU6050 ×2  ─I2C─▶ raw gravity vectors ─▶ 1€ filter ─▶ Path B decode (tilt, azimuth)
                                                      ─▶ height/reach mapping ─▶ envelope ─▶ shoulder, elbow servos
                                                      ─▶ base mapping, hysteresis, slow follow ─▶ base servo
@@ -54,10 +54,12 @@ PC (Python)        calibration · MuJoCo MeArm twin · MuJoCo Unitree G1 arm+han
 
 The library has two layers:
 
-1. **A generic pipeline, `EdgeNeuro<EmgChannels, ImuChannels, Window, Provider, Filters, Feature, Classifier>`.** It is
-   assembled at compile time from strategies checked by C++20 concepts: IIR and pass-through filters, MAV/RMS
-   features, an LDA classifier, a CSV provider, and a lock-free SPSC ring buffer. It shows that the DSP stays modular at
-   zero runtime cost and with zero allocation, and it is what the latency benchmarks measure (`<1,6>` and `<32,0>`).
+1. **A generic pipeline, `EdgeNeuro<ValueType, EmgChannels, ImuChannels, WindowSize, Provider, EmgFilterT, ImuFilterT,
+   FeatureT, ClassifierT>`** (`include/edgeneuro/pipeline.hpp`). It is assembled at compile time from strategies
+   checked by C++20 concepts: IIR and pass-through filters, MAV/RMS features, an LDA classifier and a CSV provider. It
+   shows that the DSP stays modular at zero runtime cost and with zero allocation, and it is what the latency
+   benchmarks measure (`<1,6>` and `<32,0>`). A lock-free SPSC ring buffer (`ring_buffer.hpp`) is provided and
+   ThreadSanitizer-tested as a separate component; neither the pipeline nor the firmware uses it at present.
 2. **The real control path** (`include/edgeneuro/control/`, `filters/`, `fusion/`). The hardware has one EMG channel,
    and one channel only carries "how hard is this muscle working". A window-and-classify step would add a window's
    worth of latency and gain nothing, so the grip is a threshold state machine and the arm follows the IMUs
@@ -92,14 +94,29 @@ measured on the real arm (five measurement runs, windows intersected, never extr
 together, so the poses in between stay inside the envelope too. Base: azimuth over the full 500–2500 µs, with the ends
 at the person's comfortable left and right reach.
 
+**Sensor-to-DOF mapping.** Three sensors give three inputs: the upper-arm gravity vector, the elbow bend (angle
+between the two gravity vectors) and the EMG grip. What each model drives, from the code
+(`include/edgeneuro/control/mearm_real.hpp` / `mearm_drive.hpp` for the MeArm, `tools/mujoco_bridge/run_demo_live.py`
+and `arm_hand_scene.xml` for the G1):
+
+| Input | Physical MeArm (4 servos = 4 DOF) | Unitree G1 model, left arm + hand (14 actuators) |
+| --- | --- | --- |
+| Upper-arm gravity vector | decoded to tilt and azimuth (Path B): azimuth → base, tilt → elbow servo (claw height) | decomposed along the calibrated FORWARD and LEFT_TWIST directions → shoulder pitch and shoulder roll |
+| Elbow bend | shoulder servo (reach) | elbow |
+| EMG grip | claw | 6 finger joints together (uniform curl) |
+| Not driven | — | shoulder yaw and wrist roll/pitch/yaw (no sensor measures them), thumb opposition (not a curl joint); all held at 0 |
+
 **Steadiness.** The servos run at full speed, and the command is smoothed instead: DLPF 5 Hz on the sensors (this
 suppresses 8–12 Hz physiological tremor while gripping), a 1€ filter on the raw vectors (0.5 Hz at rest, opening up
 with speed), 10 µs hysteresis on the base, and a slow-follow rule (150 µs/s) on the base while the arm is being
 raised, where the azimuth is unreliable near hanging.
 
 **Safety.** The servo outputs are compiled out by default. Each servo starts with a slow ramp (300 µs/s). The `R`
-command homes the arm to a known start pose. An IMU that stops answering, freezes, falls asleep or reads far from 1 g
-makes every servo hold its pulse. A calibration received over UART is checksummed and validated before use.
+command homes the arm to a known start pose. On the board (`include/edgeneuro/control/imu_health.hpp`), an IMU
+reading that is implausible (an axis at full scale, or a magnitude outside 0.3–3 g) or unchanged for 0.3 s makes every
+servo hold its pulse; a sensor found reset (`PWR_MGMT_1`) is woken again. On the PC (`tools/sensor_health.py`), missing
+data, frozen readings and a magnitude far from 1 g are caught as well, and the model holds its pose. A calibration
+received over UART is checksummed and validated before use.
 
 ## 6. Requirements and validation
 
@@ -109,7 +126,7 @@ makes every servo hold its pulse. A calibration received over UART is checksumme
 | R2 | Fixed 1 kHz EMG sampling | TIM2 TRGO → ADC1; report intervals 1.002–1.005 s; 1007 ticks/s in the full loop | Met |
 | R3 | IMU reads never block a tick | Non-blocking I2C state machine; ~274 reads/s per IMU with both on one bus | Met |
 | R4 | No undefined behavior; ring buffer correct under concurrency | ASan + UBSan and TSan presets | Met (all three pass, 2026-10-08; CI runs ASan/UBSan) |
-| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 566 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
+| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 569 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
 | R6 | Fits the MCU | Servo build: 18.4 KB code, 3.3 KB static RAM | Met |
 | R7 | Pipeline latency within a 1 ms sample period on target | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for the real configuration; `<32,0>` classify tick 1.54 ms overruns |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
