@@ -1,4 +1,6 @@
-// Phase 2, iteration 2: Host-side "twin" of the real firmware control loop
+// Phase 2, iteration 2: host-side CSV replay for the MuJoCo G1 scene. NOT the current control logic (2026-10-09): it
+// drives the shoulder from ComplementaryFilter roll/pitch and uses a single grip threshold without the EMA, whereas the
+// live system decodes the raw gravity vector and uses two thresholds. Originally modelled on the firmware loop
 // (firmware/src/phase3_control_loop_main.cpp), replaying a CSV instead of
 // real ADC/I2C hardware, emitting one line per sample to stdout for
 // tools/mujoco_bridge/run_demo.py to drive a MuJoCo whole-arm+hand
@@ -8,11 +10,11 @@
 // Pipeline/LdaClassifier path (used by src/main.cpp and src/gui_demo.cpp) --
 // that's the Phase 1 engine-generality demo, not the real product's control
 // logic. PRD.md §3 (system architecture) explains
-// why the real device uses GripStateMachine (EMG) + ComplementaryFilter
-// (IMU) + SlewRateLimiter (smoothing) instead: window-based classification
+// why the real device uses a GripStateMachine (EMG) and continuous IMU tracking
+// instead (this file's IMU part predates the raw-gravity-vector decode): window-based classification
 // has 200ms-class latency, wrong for continuous orientation tracking or
-// low-latency grip transitions. This demo shows that same real architecture
-// in simulation, not the abandoned classifier path.
+// low-latency grip transitions. This demo shows that split (no classifier) in
+// simulation, with the older IMU decode noted above.
 //
 // Iteration 2 extends iteration 1's single-IMU/wrist-only demo to a full
 // shoulder+elbow reach, matching the confirmed real Phase 3 sensor budget of

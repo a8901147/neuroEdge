@@ -4,6 +4,11 @@
 
 namespace edgeneuro {
 
+// STATUS (2026-10-09): no control path uses this filter any more. The firmware still runs it on the upper-arm IMU and
+// streams roll()/pitch() for diagnostics only; arm direction comes from the raw gravity vector instead (mearm_pathb.hpp
+// on the board, the oblique decomposition in tools/mujoco_bridge/run_demo_live.py on the PC), because Euler-angle
+// roll/pitch fold back past +-90 degrees. The design notes below describe the original intent.
+//
 // Complementary filter: fuses a gyroscope (accurate short-term, drifts
 // without bound over time since it only measures rate) with an
 // accelerometer (noisy sample-to-sample, but accurate on average since it

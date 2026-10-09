@@ -1,7 +1,7 @@
-"""Phase 2, iteration 2: drive a MuJoCo whole-arm + hand simulation from the
-real firmware control loop's logic (GripStateMachine + two ComplementaryFilter
-instances for shoulder/elbow + SlewRateLimiter), replayed by
-src/mujoco_bridge_demo.cpp against a CSV fixture. The arm reaches for and
+"""Phase 2, iteration 2: drive a MuJoCo whole-arm + hand simulation from a CSV
+fixture replayed by src/mujoco_bridge_demo.cpp, with no hardware. It uses an OLDER
+host-side version of the logic (GripStateMachine with one threshold + ComplementaryFilter
+shoulder roll/pitch + SlewRateLimiter), not the live algorithm in run_demo_live.py. The arm reaches for and
 grasps a physical object on tools/mujoco_bridge/arm_hand_scene.xml's pedestal
 -- a real contact-based pickup, not just finger curl overlapping a mesh.
 Sensor count matches the confirmed real Phase 3 hardware budget (2x MPU6050 +
