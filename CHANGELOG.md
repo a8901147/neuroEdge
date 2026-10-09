@@ -7,10 +7,15 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-10
+
+Documentation that describes the system as it is implemented, a demo video of the physical arm, on-target latency
+numbers, and a fix for a race in the live bridge.
+
 ### Added
-- **Demo run on the physical arm** (2026-10-09, on video): from hanging, forward, left, the claw hooked a roll of tape,
-  lifted it, carried it to the right and released it there (it dropped from claw height). A lowered set-down is not yet
-  shown.
+- **Demo run on the physical arm** ([#17], 2026-10-09, on video): from hanging, forward, left, the claw hooked a roll
+  of tape, lifted it, carried it to the right and released it there (it dropped from claw height). A lowered set-down
+  is not yet shown.
 - **Pipeline latency measured on the STM32F401** ([#13]): the host benchmark's two configurations now live in a shared
   header, and the new `pipeline_latency` firmware times them with the DWT cycle counter. At 16 MHz: `<1,6>` 15 µs per
   sample on average (317 µs on the classify tick); `<32,0>` 134 µs on average, but its 1.54 ms classify tick overruns a
@@ -19,7 +24,12 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 ### Changed
 - Documentation rewritten in English to match the current code: README, firmware README, PRD (now a design and
   requirements document) and a condensed development log. Stale references in code comments were updated ([#14]).
-  Every concrete claim was then re-checked against the code; PRD §5 gained the sensor-to-DOF mapping.
+- **Design descriptions corrected to match the implementation** ([#17]): the MuJoCo MeArm model is driven by a
+  different (joint-to-joint) mapping than the physical arm, so it is no longer called a digital twin; control uses
+  only the IMUs' accelerometers (the gyroscopes are read but unused, and the complementary filter is diagnostic only);
+  servo commands are updated at 100 Hz while EMG is sampled at 1 kHz; the measured on-target latency is the generic
+  pipeline's, which the arm does not use; only the IMUs are health-checked. PRD §5 gained the sensor-to-DOF mapping, and
+  every concrete claim in the documents was checked against the code.
 - Every user-facing message in the tools is in English ([#15]).
 
 ### Fixed
@@ -96,7 +106,8 @@ end to end, in the MuJoCo humanoid arm.
 - DLPF and EMA tremor smoothing; EMG threshold as mean + K·std, with a long-term log of real calibration sessions.
 - Sensors can be marked optional instead of crashing when absent ([#1]); a firmware compile job in CI.
 
-[Unreleased]: https://github.com/a8901147/neuroEdge/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/a8901147/neuroEdge/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/a8901147/neuroEdge/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/a8901147/neuroEdge/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/a8901147/neuroEdge/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/a8901147/neuroEdge/compare/v1.0.0...v1.1.0
@@ -114,3 +125,4 @@ end to end, in the MuJoCo humanoid arm.
 [#14]: https://github.com/a8901147/neuroEdge/pull/14
 [#15]: https://github.com/a8901147/neuroEdge/pull/15
 [#16]: https://github.com/a8901147/neuroEdge/pull/16
+[#17]: https://github.com/a8901147/neuroEdge/pull/17
