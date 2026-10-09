@@ -13,7 +13,8 @@ inexpensive, off-the-shelf parts:
 - **Natural, simultaneous control.** Two IMUs read where the arm points and how far the elbow bends; one EMG channel
   opens and closes the grip. No mode switching and no gesture training.
 - **Control on a microcontroller.** For the physical arm, a low-cost Cortex-M4 (STM32F401) does all the processing:
-  EMG sampled at 1 kHz, servo commands updated at 100 Hz, in deterministic C++20 with no heap allocation and no HAL.
+  EMG sampled at 1 kHz, servo commands computed at 100 Hz and applied at the servos' 50 Hz PWM rate, in deterministic
+  C++20 with no heap allocation and no HAL.
   (The MuJoCo models are computed on the PC from the data the board streams.)
 - **Built for reliability.** A two-threshold grip holds while the arm moves; a faulty or disconnected IMU makes the
   arm hold still instead of moving on bad data. (The EMG channel has no such check yet.)
@@ -46,7 +47,8 @@ before releasing it is not yet shown, and no success rate over repeated trials h
 
 On the physical arm, computed on the STM32 (the MuJoCo models use different mappings; see
 [PRD.md §5](PRD.md#5-control-design)). Only the IMUs' accelerometers (gravity direction) are used for control; the
-gyroscopes are read, but no control uses them. Servo commands are updated every 10th tick (100 Hz):
+gyroscopes are read, but no control uses them. Servo commands are computed every 10th tick (100 Hz); TIM3's preload
+applies a new pulse width at the start of each 20 ms PWM frame, so each servo receives a new command at 50 Hz:
 
 | Part | How |
 | --- | --- |
@@ -83,6 +85,11 @@ clock has not been raised to the chip's 84 MHz.
 - As the electrodes are placed now, the EMG picks up the muscles that lift the arm: a relaxed hand moving through the
   demo reached 3848 ADC counts, a firm grip held still only 1318. No threshold can separate the two; the fix is moving
   the electrodes onto the finger flexors.
+- Arm direction and elbow bend come from the accelerometers alone, which assumes the arm's own acceleration is small
+  compared with gravity. During the demo motions |a| departed from 1 g by up to 0.07–0.09 g (95th percentile; about
+  0.03 g at rest)
+  and briefly by more than 1 g. An acceleration perpendicular to gravity barely changes |a|, so the direction error
+  during fast motion is not quantified yet.
 - An accelerometer cannot sense rotation about gravity, so the base direction comes from upper-arm twist, and the twist
   that naturally comes with raising the arm can't be told apart from a deliberate one.
 - The EMG channel is not health-checked: a loose electrode can open or close the claw.

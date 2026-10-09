@@ -7,6 +7,11 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ## [Unreleased]
 
+### Fixed
+- Documentation: servo commands are computed at 100 Hz but applied at the 50 Hz PWM frame rate (TIM3 output-compare
+  preload); 1.4.0's notes said "updated at 100 Hz". The accelerometer-only arm direction is now listed as a known
+  limitation, with the measured |a| deviation during the demo motions.
+
 ## [1.4.0] — 2026-10-10
 
 Documentation that describes the system as it is implemented, a demo video of the physical arm, on-target latency
