@@ -1106,6 +1106,9 @@ int main(void) {
     edgeneuro::GripStateMachine<float> grip(kFallbackThreshold, kOnDuration, kOffDuration);
     g_grip_for_threshold_update = &grip;
     edgeneuro::SlewRateLimiter<float> setpoint(kSlewRate);
+    // DIAGNOSTIC ONLY (2026-10-09): nothing uses shoulder_filter's output for control -- the servos are driven from the
+    // raw gravity vectors (drive::command below) and the PC decodes the raw vector too; roll()/pitch() are only
+    // streamed. The rest of this comment is the original design note.
     // Two independent filters, one per IMU -- ComplementaryFilter has no
     // static/global state (verified when this was first ported to the
     // Host-side src/mujoco_bridge_demo.cpp prototype), so two instances

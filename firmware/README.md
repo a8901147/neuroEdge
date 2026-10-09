@@ -1,11 +1,12 @@
 # firmware/
 
 Bare-metal firmware for the STM32F401RCT6 Black Pill: plain CMake + `arm-none-eabi-gcc`, CMSIS register headers, a
-hand-written vector table and start-up code, with no HAL and no RTOS. Every register field is checked against RM0368
-(or the vendored CMSIS header) before it is written; the source comments cite where.
+hand-written vector table and start-up code, with no HAL and no RTOS. The rule in this repo is that a register field is
+checked against RM0368 (or the vendored CMSIS header) before it is written, and the source comments cite the section.
 
 The product firmware is `phase3_control_loop`. The other targets are bring-up steps, each of which proved one
-peripheral or one claim on the real board before it was combined into the main loop, plus two diagnostic tools.
+peripheral or one claim on the real board before it was combined into the main loop, plus diagnostic and measurement
+targets.
 
 ## Hardware
 
@@ -14,7 +15,7 @@ peripheral or one claim on the real board before it was combined into the main l
 | MCU | STM32F401RCT6 Black Pill (Cortex-M4F, 256 KB Flash, 64 KB SRAM). Runs at the reset-default 16 MHz HSI; no PLL is configured. |
 | Bootloader | WeAct HID bootloader in the first 16 KB of Flash. Apps are linked at `0x08004000` (`linker/STM32F401RCTx_FLASH.ld`); don't move it back to `0x08000000`, which would erase the bootloader. |
 | EMG | MyoWare 2.0, `ENV` (rectified, low-passed envelope) output |
-| IMUs | 2× Adafruit MPU-6050 on one I2C bus: upper arm `0x68` (AD0 open), forearm `0x69` (AD0 to 3.3 V) |
+| IMUs | 2× MPU6050 breakout boards on one I2C bus: upper arm `0x68` (AD0 open), forearm `0x69` (AD0 to 3.3 V) |
 | Arm | MeArm with 4× SG92R servos, on a separate 4×AA supply |
 | Debug | ST-Link V2 (SWD) for flashing and register reads; FT232RL USB-serial adapter for UART (avoid CP2102: see `tools/usb_serial_port.py`) |
 
@@ -34,10 +35,10 @@ peripheral or one claim on the real board before it was combined into the main l
 The board is powered from its own USB port, and every other device connects only signal lines and ground, so no two
 supplies ever drive the same rail.
 
-**Servo power.** The four servos draw up to ~2.6 A at stall, far more than the board's rail can supply. They run from a
-4×AA pack through two WAGO 221 lever connectors (+ and −). A 1000 µF capacitor and a 0.1 µF ceramic capacitor sit
+**Servo power.** Four servos starting or stalling together draw far more current than the board's rail can supply, so
+they run from a 4×AA pack through two WAGO 221 lever connectors (+ and −). A 1000 µF capacitor and a 0.1 µF ceramic capacitor sit
 across the two connectors, and one wire runs from the − connector to the board's GND. Without that common ground the
-servos don't move at all, even though the PWM is correct. The pack should stay above ~4.8 V under load.
+servos don't move at all, even though the PWM is correct. The pack should stay above ~4.8 V (the SG92R's rated voltage) under load.
 
 **Sensor wiring.** 3.3 V, GND, SDA and SCL are distributed through WAGO 221 connectors. Thin dupont wire is below the
 connector's 0.2 mm² minimum, so fold it over or crimp a ferrule on it, and tug-test every wire: an I2C line with an
@@ -126,7 +127,7 @@ bootloader.
 
 | Line | When | Content |
 | --- | --- | --- |
-| `tick=… grip=… gripping=… shoulder_pitch=… shoulder_roll=… elbow=… emg_min=… emg_max=… elbow_raw_a{x,y,z}=… shoulder_raw_a{x,y,z}=… shoulder_raw_g{x,y,z}=…` | every 10 ticks, if it fits | Raw accelerometer vectors (g), gyro (rad/s), raw EMG min/max over the window, and the decoded values the humanoid bridge uses |
+| `tick=… grip=… gripping=… shoulder_pitch=… shoulder_roll=… elbow=… emg_min=… emg_max=… elbow_raw_a{x,y,z}=… shoulder_raw_a{x,y,z}=… shoulder_raw_g{x,y,z}=…` | every 10 ticks, if it fits | The PC uses `grip` (setpoint), `elbow` (bend between the two gravity vectors) and the upper-arm raw vector to drive the MuJoCo models, both raw vectors for its health checks, and `emg_min/max` for EMG calibration. `shoulder_pitch/roll` (complementary filter) and the upper-arm gyro are diagnostic only; nothing uses them for control |
 | `EDGE -> Gripping` / `EDGE -> Released` | on a grip transition | |
 | `diag …` | once a second | Per-IMU completions, NACKs, timeouts, wake results, `PWR_MGMT_1`, bus recoveries, UART skipped/dropped/overrun counts, calibrations applied/rejected/malformed |
 
@@ -144,8 +145,9 @@ arm (`0x68`), 10 = forearm (`0x69`). Read `g_wake_result_shoulder` / `g_wake_res
 code (2 = address NACK).
 
 **Servo limits** (measured on the assembled arm): base 500–2500 µs (1700 turns left), shoulder 1200–2100, elbow 500–1850,
-claw 1300–1500 (travel ends at 1600; the user capped it at 1500). The shoulder × elbow combination is limited further
-by the envelope in `include/edgeneuro/control/mearm_envelope_data.hpp`, generated from `data/mearm_linkage_*.json`.
+claw 1300–1500 (travel ends at 1600; capped at 1500 in software). The shoulder × elbow combination is limited further
+by the envelope in `include/edgeneuro/control/mearm_envelope_data.hpp`, generated by `tools/gen_mearm_envelope.py` from
+the five measurement runs listed in its `SOURCES`.
 
 ## Known issues
 

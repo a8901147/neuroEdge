@@ -8,6 +8,9 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 ## [Unreleased]
 
 ### Added
+- **Demo run on the physical arm** (2026-10-09, on video): from hanging, forward, left, the claw hooked a roll of tape,
+  lifted it, carried it to the right and released it there (it dropped from claw height). A lowered set-down is not yet
+  shown.
 - **Pipeline latency measured on the STM32F401** ([#13]): the host benchmark's two configurations now live in a shared
   header, and the new `pipeline_latency` firmware times them with the DWT cycle counter. At 16 MHz: `<1,6>` 15 µs per
   sample on average (317 µs on the classify tick); `<32,0>` 134 µs on average, but its 1.54 ms classify tick overruns a
@@ -15,12 +18,19 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ### Changed
 - Documentation rewritten in English to match the current code: README, firmware README, PRD (now a design and
-  requirements document) and a condensed development log. Stale references in code comments were updated.
+  requirements document) and a condensed development log. Stale references in code comments were updated ([#14]).
+  Every concrete claim was then re-checked against the code; PRD §5 gained the sensor-to-DOF mapping.
+- Every user-facing message in the tools is in English ([#15]).
+
+### Fixed
+- A live control step could use a sensor sample that never passed the health check ([#16]): the reader thread stored a
+  UART line in several separate updates, and the loops checked one read but computed the pose from another. Each line
+  is now stored atomically and each step checks and uses one snapshot. This was the cause of an intermittent CI failure.
 
 ## [1.3.0] — 2026-10-08
 
 A stable point for the MeArm demo task (hang → forward → left → grip a tape roll → lift → right → place): the EMG grip
-holds while the arm moves, and the hardware is documented as it is now wired. The user verified this code on the real
+holds while the arm moves, and the hardware is documented as it is now wired. This code was verified on the real
 arm on 2026-10-07.
 
 ### Changed
@@ -45,7 +55,7 @@ arm on 2026-10-07.
 
 ## [1.2.0] — 2026-10-04
 
-The physical MeArm follows the user's arm, computed on the STM32 itself from the two IMUs and the EMG sensor ([#5]).
+The physical MeArm follows the operator's arm, computed on the STM32 itself from the two IMUs and the EMG sensor ([#5]).
 
 ### Added
 - Base driven by upper-arm twist; shoulder and elbow set the claw's height and reach (`height_reach`), always inside the
@@ -101,3 +111,6 @@ end to end, in the MuJoCo humanoid arm.
 [#8]: https://github.com/a8901147/neuroEdge/pull/8
 [#9]: https://github.com/a8901147/neuroEdge/pull/9
 [#13]: https://github.com/a8901147/neuroEdge/pull/13
+[#14]: https://github.com/a8901147/neuroEdge/pull/14
+[#15]: https://github.com/a8901147/neuroEdge/pull/15
+[#16]: https://github.com/a8901147/neuroEdge/pull/16

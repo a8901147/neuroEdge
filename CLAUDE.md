@@ -38,7 +38,7 @@ straight to its Reset_Handler over SWD, bypassing the bootloader:
 openocd -f firmware/openocd.cfg -c "init; reset halt; reg msp [read_memory 0x08004000 32 1]; reg pc [expr {[read_memory 0x08004004 32 1] & ~1}]; reg xPSR 0x01000000; resume; exit"
 ```
 
-This needs firmware built after 2026-10-03: before that, `startup.c` never
+This needs firmware from v1.2.0 on (commit 7409a88): before that, `startup.c` never
 enabled the FPU and the apps only ran because the bootloader left it on (a
 direct jump HardFaulted with UFSR.NOCP). Always confirm with
 `tools/check_hardware_ready.py --boot-check` before debugging further. A
@@ -77,12 +77,21 @@ standalone power-on (no ST-Link) still depends on the bootloader.
   actually worked at one pose regardless — don't re-litigate this without
   new evidence.
 
+- **Documentation claims are checked against the code.** README, PRD and
+  firmware/README are read by people judging this project from the code. Write
+  only what the code or a dated measurement record supports: open the code for
+  each concrete claim (numbers, mappings, which component does what) and read
+  the target section before writing any cross-reference ("see PRD §5"). If
+  something cannot be verified, leave it out or say it is unverified.
+
 - **PR workflow since v1.0.0**: this repo has a tagged stable release.
   Flag it proactively when a unit of work looks like a good PR point —
   don't wait to be asked — but don't open the PR itself unprompted.
 
-## Target hardware (confirmed 2026-08-22)
+## Target hardware (sensors confirmed 2026-08-22, arm added 2026-09-21)
 
 STM32F401RCT6 Black Pill, 1x MyoWare 2.0 (EMG, PA0/ADC1), 2x MPU6050
-(I2C1, PB6/PB7, addresses 0x68/0x69 via AD0). FT232RL USB-serial adapter
-(CP2102 has a known firmware-lockup bug — see `tools/usb_serial_port.py`).
+(I2C1, PB6/PB7, addresses 0x68/0x69 via AD0). MeArm with 4x SG92R servos on
+TIM3 CH1-4 (PA6 base, PA7 shoulder, PB0 elbow, PB1 claw), own 4xAA supply.
+FT232RL USB-serial adapter (CP2102 has a known firmware-lockup bug — see
+`tools/usb_serial_port.py`).
