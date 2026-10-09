@@ -12,15 +12,16 @@ inexpensive, off-the-shelf parts:
 
 - **Natural, simultaneous control.** Two IMUs read where the arm points and how far the elbow bends; one EMG channel
   opens and closes the grip. No mode switching and no gesture training.
-- **All processing on a microcontroller.** A low-cost Cortex-M4 (STM32F401) runs the signal processing and control at
-  1 kHz, in deterministic C++20 with no heap allocation and no HAL.
-- **Built for reliability.** A two-threshold grip holds while the arm moves; a faulty or disconnected sensor makes the
-  arm hold still instead of moving on bad data.
-- **Measured, not assumed.** Latency, CPU load, memory and failure modes are measured on the real hardware, including
-  the limits that remain.
+- **Control on a microcontroller.** For the physical arm, a low-cost Cortex-M4 (STM32F401) does all the processing:
+  EMG sampled at 1 kHz, servo commands updated at 100 Hz, in deterministic C++20 with no heap allocation and no HAL.
+  (The MuJoCo models are computed on the PC from the data the board streams.)
+- **Built for reliability.** A two-threshold grip holds while the arm moves; a faulty or disconnected IMU makes the
+  arm hold still instead of moving on bad data. (The EMG channel has no such check yet.)
+- **Measured, not assumed.** Loop rate, memory, CPU load and failure modes are measured on the real hardware, including
+  the limits that remain. End-to-end latency (arm motion → servo motion) has not been measured yet.
 
-**Scope.** This is a research platform: an able-bodied person controls a desktop 4-servo arm (MeArm) and MuJoCo models
-(a digital twin and a Unitree G1 humanoid arm and hand). It has not been tested with prosthesis users.
+**Scope.** This is a research platform: an able-bodied person controls a desktop 4-servo arm (MeArm) and two MuJoCo
+models (a MeArm model and a Unitree G1 humanoid arm and hand). It has not been tested with prosthesis users.
 
 **Demo task:** arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place. The full
 task has been completed end to end on the physical arm with a real roll of tape, controlled live by one person wearing
@@ -30,14 +31,16 @@ the sensors (recorded on video, 2026-10-09). It is one tuned task with one user,
  MyoWare 2.0 (EMG, ENV) ──ADC 1 kHz──┐
  MPU6050 upper arm (0x68) ──I2C1─────┤   STM32F401 Black Pill, 16 MHz       USART2 115200
  MPU6050 forearm  (0x69) ──I2C1─────┤   1 kHz main loop, zero heap  ───────────────────▶ PC: run_demo_live.py
-                                    │                                                    ├─ MuJoCo MeArm twin
+                                    │                                                    ├─ MuJoCo MeArm model
                                     └──▶ TIM3 PWM 50 Hz ──▶ MeArm base / shoulder /      └─ MuJoCo Unitree G1 arm+hand
                                                              elbow / claw servos
 ```
 
 ## What it does
 
-On the physical arm (the Unitree G1 model's mapping differs; see [PRD.md §5](PRD.md#5-control-design)):
+On the physical arm, computed on the STM32 (the MuJoCo models use different mappings; see
+[PRD.md §5](PRD.md#5-control-design)). Only the IMUs' accelerometers (gravity direction) are used for control; the
+gyroscopes are read, but no control uses them. Servo commands are updated every 10th tick (100 Hz):
 
 | Part | How |
 | --- | --- |
@@ -59,7 +62,8 @@ On the physical arm (the Unitree G1 model's mapping differs; see [PRD.md §5](PR
 | Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 569 Python test functions |
 
 Per-sample latency of the generic `EdgeNeuro<>` pipeline, on synthetic input. Both machines run the same engine code
-(`include/edgeneuro/bench/latency_configs.hpp`):
+(`include/edgeneuro/bench/latency_configs.hpp`). The arm's control path does not use this pipeline (PRD §3); its
+real-time evidence is the main loop holding 1 kHz above.
 
 | Mode | Apple M1 (Release) | STM32F401 @ 16 MHz, mean | STM32: the tick that classifies (every 50th) | CPU at 1 kHz |
 | --- | --- | --- | --- | --- |
@@ -75,6 +79,7 @@ clock has not been raised to the chip's 84 MHz.
   the electrodes onto the finger flexors.
 - An accelerometer cannot sense rotation about gravity, so the base direction comes from upper-arm twist, and the twist
   that naturally comes with raising the arm can't be told apart from a deliberate one.
+- The EMG channel is not health-checked: a loose electrode can open or close the claw.
 - In MuJoCo, the humanoid hand's uniform-curl grasp holds the object only at the front-left reach pose
   (`tools/mujoco_bridge/test_grasp_coverage.py`).
 
@@ -90,7 +95,7 @@ src/                 Host demos: terminal and ImGui oscilloscopes, CSV-replay Mu
 tests/               Catch2 tests (host)
 benchmarks/          Google Benchmark latency suite
 tools/               Python: hardware checks, interactive calibration and measurement tools
-tools/mujoco_bridge/ Python: live MuJoCo bridge, MeArm digital twin, Path B / real-arm mapping
+tools/mujoco_bridge/ Python: live MuJoCo bridge, MeArm model, Path B / real-arm mapping
 data/                Recorded real-hardware data (linkage, link angles, arm motion, golden calibration), synthetic fixtures
 docs/                Reference images
 ```
@@ -152,7 +157,7 @@ git clone --no-checkout --depth 1 --filter=blob:none https://github.com/google-d
    && git checkout da76818e269b82289eba39808e2fb91d679d6994)
 
 # 3. Run: sensor check → EMG + pose calibration → calibration sent to the board → live control
-.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --mearm      # MeArm twin + real arm (first homes it with R)
+.venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py --mearm      # MeArm model + real arm (first homes it with R)
 .venv/bin/mjpython tools/mujoco_bridge/run_demo_live.py              # Unitree G1 humanoid arm
 ```
 
@@ -170,8 +175,8 @@ app's reset handler. `--skip-calibration --skip-emg-calibration` reuses the last
 | `tools/measure_servo_response.py` | Record the pulses the board actually sends to the servos (TIM3 CCR1–4 over SWD), phase by phase. |
 | `tools/servo_pose_4ch.py`, `tools/measure_linkage_region.py`, `tools/measure_servo_angles.py` | Pose the servos by hand, measure the arm's safe shoulder × elbow envelope, and measure link angles against pulse width (with `servo_limit_finder_4ch` flashed). |
 | `tools/gen_mearm_envelope.py`, `tools/mujoco_bridge/gen_*.py` | Regenerate the C++ data headers and golden tables from the recorded measurements. |
-| `tools/mujoco_bridge/calibrate_mearm_alignment.py`, `view_mearm.py` | Align the MeArm twin with the real sensors, or inspect the model alone. |
-| `tools/mujoco_bridge/run_demo.py` | Replay a synthetic CSV through the same control logic, with no hardware (needs the `edgeneuro_mujoco_bridge_demo` target built). |
+| `tools/mujoco_bridge/calibrate_mearm_alignment.py`, `view_mearm.py` | Align the MeArm model with the real sensors, or inspect the model alone. |
+| `tools/mujoco_bridge/run_demo.py` | Replay a synthetic CSV into the G1 model with no hardware, to check the MuJoCo scene. It uses an older host-side version of the logic (complementary-filter shoulder decode, single grip threshold), not the live algorithm. Needs the `edgeneuro_mujoco_bridge_demo` target built. |
 | `tools/convert_epn612.py` | Convert the public EMG-EPN-612 dataset into the CSV format the C++ engine reads. |
 
 ### Host demos, no hardware

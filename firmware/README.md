@@ -127,7 +127,7 @@ bootloader.
 
 | Line | When | Content |
 | --- | --- | --- |
-| `tick=… grip=… gripping=… shoulder_pitch=… shoulder_roll=… elbow=… emg_min=… emg_max=… elbow_raw_a{x,y,z}=… shoulder_raw_a{x,y,z}=… shoulder_raw_g{x,y,z}=…` | every 10 ticks, if it fits | Raw accelerometer vectors (g), gyro (rad/s), raw EMG min/max over the window, and the decoded values the humanoid bridge uses |
+| `tick=… grip=… gripping=… shoulder_pitch=… shoulder_roll=… elbow=… emg_min=… emg_max=… elbow_raw_a{x,y,z}=… shoulder_raw_a{x,y,z}=… shoulder_raw_g{x,y,z}=…` | every 10 ticks, if it fits | The PC uses `grip` (setpoint), `elbow` (bend between the two gravity vectors) and the upper-arm raw vector to drive the MuJoCo models, both raw vectors for its health checks, and `emg_min/max` for EMG calibration. `shoulder_pitch/roll` (complementary filter) and the upper-arm gyro are diagnostic only; nothing uses them for control |
 | `EDGE -> Gripping` / `EDGE -> Released` | on a grip transition | |
 | `diag …` | once a second | Per-IMU completions, NACKs, timeouts, wake results, `PWR_MGMT_1`, bus recoveries, UART skipped/dropped/overrun counts, calibrations applied/rejected/malformed |
 

@@ -35,7 +35,7 @@ shoulder × elbow region (09-26 → 09-28).
   IMUs' 5 Hz low-pass filter cut it 26–90×. Reach → grip → lift → hold then ran end to end on live hardware.
 - **09-21 → 09-23: the MeArm.** Direct joint mapping instead of inverse kinematics. "Dead" servos were the supply
   sagging during current spikes, fixed with a bulk capacitor.
-- **09-24 → 09-28: safe by measurement.** MuJoCo twin; Python reference mapping with C++ ports tested against golden
+- **09-24 → 09-28: safe by measurement.** A MuJoCo MeArm model; Python reference mapping with C++ ports tested against golden
   tables. The arm's coupled shoulder × elbow limits were measured in five runs and frozen as a conservative envelope.
 - **09-27 → 09-28: a wiring fault, not a bug (v1.1.0).** A day of "reversed" motion was a loose IMU: rebuilding v1.0.0
   showed the same symptom. Since then, sensor faults are detected automatically and the arm holds still.

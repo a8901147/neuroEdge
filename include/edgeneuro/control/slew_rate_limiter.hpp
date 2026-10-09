@@ -14,7 +14,8 @@ namespace edgeneuro {
 // need a new component at all, just the project's existing IirFilter
 // (include/edgeneuro/filters/iir_filter.hpp) configured as a gentle
 // low-pass, since that jitter is exactly the kind of per-sample noise
-// IirFilter already exists to remove.
+// IirFilter already exists to remove. (Superseded on the real arm: the IMU path now runs a 1-euro filter on the raw
+// gravity vectors -- mearm_input_filter.hpp -- and ComplementaryFilter is diagnostic only.)
 //
 // Deliberately not a Filter (concepts.hpp): that concept's process(value)
 // takes no dt, but slew rate is fundamentally a rate (units/second), so

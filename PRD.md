@@ -33,23 +33,23 @@ been tested with prosthesis users.
 - **Deterministic, allocation-free C++.** Header-only C++20 with templates and concepts, so there are no virtual calls
   and no heap use in the hot loop. The same headers compile for the host (where they are tested) and for the
   Cortex-M4F.
-- **Validate in simulation and on hardware together.** The live sensor stream drives MuJoCo models (a twin of the MeArm
-  and a Unitree G1 humanoid arm and hand) next to the real arm, so a mapping problem can be told apart from a
-  mechanical one.
+- **Validate in simulation and on hardware together.** The live sensor stream also drives two MuJoCo models (a MeArm
+  model and a Unitree G1 humanoid arm and hand), computed on the PC. They show what the sensors decode to; they are not
+  a twin of the physical arm, whose servo mapping, filtering and limits run on the STM32 (§5).
 - **Raw data decides.** Thresholds and filter parameters are settled with captured raw sensor data, never with an
   algorithm's own output; register values are checked against the reference manual (RM0368).
 
 ## 3. System architecture
 
 ```
-Sensors                       STM32F401 (1 kHz loop, zero heap)                         Outputs
+Sensors                       STM32F401 (1 kHz loop; servo commands every 10th tick = 100 Hz; zero heap)   Outputs
 MyoWare ENV ─ADC─▶ EMA ─▶ GripStateMachine (2 thresholds, 150 ms debounce) ─▶ slew limit ─▶ claw servo
 MPU6050 ×2  ─I2C─▶ raw gravity vectors ─▶ 1€ filter ─▶ Path B decode (tilt, azimuth)
                                                      ─▶ height/reach mapping ─▶ envelope ─▶ shoulder, elbow servos
                                                      ─▶ base mapping, hysteresis, slow follow ─▶ base servo
                    health checks ─▶ hold all servos on a sensor fault
                    UART ◀▶ PC: raw stream out; calibration, thresholds, R (home) in
-PC (Python)        calibration · MuJoCo MeArm twin · MuJoCo Unitree G1 arm+hand
+PC (Python)        calibration · MuJoCo MeArm model · MuJoCo Unitree G1 arm+hand (computed on the PC)
 ```
 
 The library has two layers:
@@ -71,7 +71,7 @@ The library has two layers:
 | --- | --- | --- |
 | MCU | STM32F401RCT6 Black Pill, 16 MHz HSI | Cortex-M4 with a single-precision FPU (matches `float`), 64 KB SRAM, low cost |
 | EMG | MyoWare 2.0, `ENV` output to ADC | Analog front end in hardware (MyoWare 2.0 Advanced Guide): amplifier, first-order 20.8 Hz high-pass, full-wave rectifier, 3.6 Hz envelope |
-| IMUs | 2× MPU6050 (upper arm 0x68, forearm 0x69), DLPF 5 Hz | Gravity direction of each arm segment; no magnetometer, so no heading |
+| IMUs | 2× MPU6050 (upper arm 0x68, forearm 0x69), DLPF 5 Hz | Gravity direction of each arm segment: control uses only the accelerometers; the gyroscopes are read but unused. No magnetometer, so no heading |
 | Arm | MeArm, 4× SG92R servos, 4×AA supply | 4 DOF: base, shoulder, elbow, claw |
 | Links | ST-Link (SWD), FT232RL (UART 115200) | SWD register reads are the main debugging tool |
 
@@ -96,9 +96,11 @@ together, so the poses in between stay inside the envelope too. Base: azimuth ov
 at the person's comfortable left and right reach.
 
 **Sensor-to-DOF mapping.** Three sensors give three inputs: the upper-arm gravity vector, the elbow bend (angle
-between the two gravity vectors) and the EMG grip. What each model drives, from the code
-(`include/edgeneuro/control/mearm_real.hpp` / `mearm_drive.hpp` for the MeArm, `tools/mujoco_bridge/run_demo_live.py`
-and `arm_hand_scene.xml` for the G1):
+between the two gravity vectors) and the EMG grip. What each target drives, from the code
+(`include/edgeneuro/control/mearm_real.hpp` / `mearm_drive.hpp` for the physical MeArm, `tools/mujoco_bridge/run_demo_live.py`
+and `arm_hand_scene.xml` for the G1). The MuJoCo MeArm model is driven differently from the physical arm: joint to
+joint through `mearm_pathb.ctrl_from_sensors` (tilt → model shoulder, elbow bend → model elbow), without the
+height/reach crossover, the 1€ filter, the base slow-follow or the measured envelope.
 
 | Input | Physical MeArm (4 servos = 4 DOF) | Unitree G1 model, left arm + hand (14 actuators) |
 | --- | --- | --- |
@@ -129,9 +131,9 @@ received over UART is checksummed and validated before use.
 | R4 | No undefined behavior; ring buffer correct under concurrency | ASan + UBSan and TSan presets | Met (all three pass, 2026-10-08; CI runs ASan/UBSan) |
 | R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 569 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
 | R6 | Fits the MCU | Servo build: 18.4 KB code, 3.3 KB static RAM | Met |
-| R7 | Pipeline latency within a 1 ms sample period on target | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for the real configuration; `<32,0>` classify tick 1.54 ms overruns |
+| R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for `<1,6>`; `<32,0>` classify tick 1.54 ms overruns |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
-| R9 | A sensor fault never moves the arm | Health checks in firmware and on the PC; host tests | Met |
+| R9 | An IMU fault never moves the arm | `ImuHealth` in firmware, `sensor_health` on the PC; host tests | Met for the IMUs; the EMG channel is not health-checked (§7) |
 | R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; full pick-and-place completed on the real arm, 2026-10-09 (video); motion artifact measured | Partly: works for the demo, but limited by electrode placement (§7); no repeated-trial success rate yet |
 
 ## 7. Known limitations
@@ -146,6 +148,8 @@ received over UART is checksummed and validated before use.
   the PLL for 84 MHz would give up to about 5× headroom.
 - **Humanoid grasp.** The G1 hand's uniform-curl grasp holds the object only at the front-left pose. Per-finger grasp
   synthesis was rejected as out of scope.
+- **EMG not health-checked.** Only the IMUs are checked; a loose electrode can open or close the claw.
+- **No end-to-end latency measurement yet** (arm motion → servo motion); see §8.
 - **UART receive** is polled one byte per loop, so the host paces commands (2 ms per byte).
 
 ## 8. Next steps
