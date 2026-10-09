@@ -8,6 +8,8 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 ## [Unreleased]
 
 ### Added
+- **The full demo task completed on the physical arm** (2026-10-09, on video): hang → forward → swing left → grip a
+  roll of tape → lift → swing right → place, controlled live by one person wearing the sensors.
 - **Pipeline latency measured on the STM32F401** ([#13]): the host benchmark's two configurations now live in a shared
   header, and the new `pipeline_latency` firmware times them with the DWT cycle counter. At 16 MHz: `<1,6>` 15 µs per
   sample on average (317 µs on the classify tick); `<32,0>` 134 µs on average, but its 1.54 ms classify tick overruns a

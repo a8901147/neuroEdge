@@ -22,8 +22,9 @@ inexpensive, off-the-shelf parts:
 **Scope.** This is a research platform: an able-bodied person controls a desktop 4-servo arm (MeArm) and MuJoCo models
 (a digital twin and a Unitree G1 humanoid arm and hand). It has not been tested with prosthesis users.
 
-**Demo task** (what the system is built and tuned for): arm hanging → reach forward → swing left → grip a roll of tape
-→ lift → swing right → place.
+**Demo task:** arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place. The full
+task has been completed end to end on the physical arm with a real roll of tape, controlled live by one person wearing
+the sensors (recorded on video, 2026-10-09). It is one tuned task with one user, not a measured success rate.
 
 ```
  MyoWare 2.0 (EMG, ENV) ──ADC 1 kHz──┐

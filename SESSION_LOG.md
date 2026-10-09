@@ -54,3 +54,6 @@ shoulder × elbow region (09-24 → 09-27).
   of motion. The two-threshold grip was verified with the demo motions.
 - **10-08: latency on the target.** At 16 MHz the real configuration takes 15 µs per sample (1.5 % CPU). A 32-channel
   stress test overruns 1 ms on classify ticks, so it would need the faster clock.
+- **10-09: the full task on the real arm.** Hang → forward → swing left → grip a roll of tape → lift → swing right →
+  place, completed end to end on the physical MeArm, controlled live by the person wearing the sensors (recorded on
+  video). One tuned task, one user; a success rate over repeated trials is still to be measured.

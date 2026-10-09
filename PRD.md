@@ -20,7 +20,8 @@ for a real pick-and-place task. The benchmark task, on a 4-servo MeArm:
 > arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place.
 
 Everything is tuned toward this task without being specific to it: there are no hard-coded poses, and the calibration
-and parameters come from the person's own recordings.
+and parameters come from the person's own recordings. **Status:** completed end to end on the physical arm with a real
+roll of tape (video, 2026-10-09); success rate over repeated trials has not been measured.
 
 **Scope:** a research platform. An able-bodied person controls a desktop arm and MuJoCo models; the system has not
 been tested with prosthesis users.
@@ -113,7 +114,7 @@ makes every servo hold its pulse. A calibration received over UART is checksumme
 | R7 | Pipeline latency within a 1 ms sample period on target | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for the real configuration; `<32,0>` classify tick 1.54 ms overruns |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
 | R9 | A sensor fault never moves the arm | Health checks in firmware and on the PC; host tests | Met |
-| R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; motion artifact measured | Partly: limited by electrode placement (§7) |
+| R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; full pick-and-place completed on the real arm, 2026-10-09 (video); motion artifact measured | Partly: works for the demo, but limited by electrode placement (§7); no repeated-trial success rate yet |
 
 ## 7. Known limitations
 
@@ -130,6 +131,7 @@ makes every servo hold its pulse. A calibration received over UART is checksumme
 
 ## 8. Next steps
 
+- Measure the demo's success rate over repeated trials (and with a second person).
 - Move the EMG electrodes to the finger flexors and re-record with `capture_arm_motion.py --set emg`.
 - Measure end-to-end latency (sensor motion → servo motion) with high-speed video, and compare the grip's 150 ms
   debounce against the 100–125 ms that Farrell & Weir (2007) found best for myoelectric control.
