@@ -714,8 +714,8 @@ class LatestSample:
 
     def snapshot_frame(self):
         """One consistent Frame for a control step: the step must check and use the SAME data (2026-10-08: a step that
-        checked one line and then read the sensors again applied the next line unchecked -- CI's intermittent
-        test_a_fault_mid_session failure)."""
+        checked one line and then read the sensors again applied the next line unchecked; found while investigating
+        an intermittent CI failure)."""
         with self._lock:
             return Frame(self.grip, self.shoulder_pitch, self.shoulder_roll, self.elbow,
                          (self.shoulder_raw_ax, self.shoulder_raw_ay, self.shoulder_raw_az),
