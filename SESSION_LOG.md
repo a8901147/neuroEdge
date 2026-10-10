@@ -44,7 +44,8 @@ shoulder × elbow region (09-26 → 09-28).
 ## October 2026: the real arm follows the person
 
 - **10-03: timing, start-up and steadiness.**
-  - A UART busy-wait had cut the 1 kHz loop to 291 ticks/s; a transmit queue restored 1007.
+  - A UART busy-wait had cut the 1 kHz loop to 291 ticks/s; a transmit queue restored 1007 (over 30 s; the HSI clock
+    measured 16.14 MHz with the DWT cycle counter, +0.9 %).
   - The FPU had never been enabled at reset and only worked because the bootloader left it on. Fixed.
   - The base jitter was the arm's own sway, so the servos stay at full speed and the command is filtered (1€ filter +
     hysteresis).
@@ -54,7 +55,7 @@ shoulder × elbow region (09-26 → 09-28).
   arm is raised, cutting unwanted swing 3–5×. Release threshold set below the grip threshold. Recordings showed the remaining grip problem:
   arm motion alone (3848) out-reads a firm grip (1318). That is electrode placement, which no threshold can fix.
 - **10-07: robust wiring (v1.3.0).** Breadboard replaced by lever connectors: bus errors fell from ~15/s to 1 in 28 s
-  of motion. The two-threshold grip was verified with the demo motions.
+  of motion; with the arm still, each IMU completed ~274 reads/s. The two-threshold grip was verified with the demo motions.
 - **10-08: latency on the target.** At 16 MHz the real configuration takes 15 µs per sample (1.5 % CPU). A 32-channel
   stress test overruns 1 ms on classify ticks, so it would need the faster clock.
 - **10-09: most of the task on the real arm (video).** From hanging, forward, left, the claw hooked the tape roll

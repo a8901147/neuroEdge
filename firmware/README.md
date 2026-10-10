@@ -120,7 +120,8 @@ bootloader.
 - *Servos* (servo build only), computed every 10 ticks (100 Hz); TIM3's output-compare preload applies each new pulse
   width at the next 20 ms PWM update, so a servo sees a new command at 50 Hz. Steps: 1€ filter on both raw
   accelerometer vectors → Path B decode → height/reach mapping inside the measured envelope → base hysteresis and slow
-  follow while raising → start-up ramps (`include/edgeneuro/control/`). On an IMU fault nothing is written, so every servo stops where it is.
+  follow while raising → start-up ramps (`include/edgeneuro/control/`). On an IMU fault nothing is written, so every
+  servo stops where it is; only homing (`R`) still moves.
 - *UART.* Output is queued (`TxRing<2048>`) and sent one byte whenever the transmitter is free. A line that doesn't fit
   is skipped whole and counted, never sent half.
 
@@ -136,10 +137,10 @@ bootloader.
 
 | Command | Effect |
 | --- | --- |
-| `O<bits>\n` | Within ~300 ms of boot only: sensors allowed to be absent (bit 0 upper arm, bit 1 forearm). Default: both required. |
+| `O<bits>\n` | Within ~300 ms of boot only: sensors allowed to be absent (bit 0 upper arm, bit 1 forearm); an optional sensor is not health-checked. Default: both required. |
 | `T<on>\n` or `T<on>,<release>\n` | Set the EMG grip thresholds live. A malformed line is dropped whole. |
 | `C<20 values>,<checksum>\n` | The arm calibration: four pose vectors, elbow zero, base reach, as fixed-point integers. Checksum-verified, then validated before use; otherwise the arm keeps its current calibration. Sent by `run_demo_live.py`, one byte every 2 ms (the receiver has no buffer). |
-| `R` | Walk every servo slowly back to the start pose (base/shoulder/elbow 1500 µs, claw 1300 µs open), then resume following. |
+| `R` | Walk every servo slowly back to the start pose (base/shoulder/elbow 1500 µs, claw 1300 µs open), then resume following. Runs even during an IMU fault. |
 
 **Boot failures.** If a required IMU doesn't acknowledge its wake-up write, the LED blinks a code forever: 9 = upper
 arm (`0x68`), 10 = forearm (`0x69`). Read `g_wake_result_shoulder` / `g_wake_result_elbow` over SWD for the I2C failure

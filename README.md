@@ -12,17 +12,19 @@ inexpensive, off-the-shelf parts:
 
 - **Natural, simultaneous control.** Two IMUs read where the arm points and how far the elbow bends; one EMG channel
   opens and closes the grip. No mode switching and no gesture training.
-- **Control on a microcontroller.** For the physical arm, a low-cost Cortex-M4 (STM32F401) does all the processing:
-  EMG sampled at 1 kHz, servo commands computed at 100 Hz and applied at the servos' 50 Hz PWM rate, in deterministic
-  C++20 with no heap allocation and no HAL.
+- **Control on a microcontroller.** For the physical arm, a low-cost Cortex-M4 (STM32F401) does all the real-time
+  processing (the PC only calibrates): EMG sampled at 1 kHz, servo commands computed at 100 Hz and applied at the
+  servos' 50 Hz PWM rate, in deterministic C++20 with no heap allocation and no HAL.
   (The MuJoCo models are computed on the PC from the data the board streams.)
 - **Built for reliability.** A two-threshold grip holds while the arm moves; a faulty or disconnected IMU makes the
   arm hold still instead of moving on bad data. (The EMG channel has no such check yet.)
-- **Measured, not assumed.** Loop rate, memory, CPU load and failure modes are measured on the real hardware, including
-  the limits that remain. End-to-end latency (arm motion → servo motion) has not been measured yet.
+- **Measured, not assumed.** Loop rate, memory and failure modes are measured on the real hardware, including the
+  limits that remain. The control loop's CPU load and end-to-end latency (arm motion → servo motion) have not been
+  measured yet.
 
-**Scope.** This is a research platform: an able-bodied person controls a desktop 4-servo arm (MeArm) and two MuJoCo
-models (a MeArm model and a Unitree G1 humanoid arm and hand). It has not been tested with prosthesis users.
+**Scope.** This is a research platform: an able-bodied person controls a desktop 4-servo arm (MeArm) and, per run, one
+of two MuJoCo models (a MeArm model or a Unitree G1 humanoid arm and hand). It has not been tested with prosthesis
+users.
 
 **Demo task:** arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place.
 **What has been shown so far** (one run on video, 2026-10-09, one person wearing the sensors): from hanging, the arm
@@ -57,7 +59,7 @@ applies a new pulse width at the start of each 20 ms PWM frame, so each servo re
 | Height and reach | Raising the arm lowers the elbow servo (claw up); bending the elbow raises the shoulder servo (reach). Every command, including the poses in between, stays inside a safe shoulder × elbow envelope measured on the real arm. |
 | Elbow bend | Angle between the two IMUs' gravity vectors (dot product), which avoids the ±90° singularity of Euler-angle differences. |
 | Smoothing | MPU6050 DLPF at 5 Hz, then a 1€ filter (0.5 Hz min cutoff, β 1.5) on the servo path. The servos themselves run at full speed. |
-| Safety | On the board, a reading that is implausible (an axis at full scale, or a magnitude outside 0.3–3 g) or unchanged for 0.3 s makes every servo hold its pulse; a sensor that resets is woken again. On the PC, missing data and a magnitude far from 1 g are also caught, and the model holds its pose. Slow start-up ramp; an `R` command walks the arm back to a known start pose. Servo outputs are compiled out unless explicitly enabled. |
+| Safety | On the board, a reading that is implausible (an axis at full scale, or a magnitude outside 0.3–3 g) or unchanged for 0.3 s makes every servo hold its pulse; a sensor that resets is woken again. On the PC, missing data and a magnitude far from 1 g are also caught, and the model holds its pose. Slow start-up ramp; an `R` command walks the arm back to a known start pose (even during an IMU fault). Servo outputs are compiled out unless explicitly enabled. |
 
 ## Measured results
 
@@ -67,7 +69,7 @@ applies a new pulse width at the start of each 20 ms PWM frame, so each servo re
 | IMU reads | Non-blocking I2C state machine on a 100 kHz bus: ~274 completed reads/s per IMU with both IMUs |
 | Heap | No `malloc`/`free`/`new`/`_sbrk` symbols in the firmware image; `malloc_count == 0` asserted on the host and on the target |
 | Firmware size | `phase3_control_loop` with servos on: 18.4 KB of code, 3.3 KB of static RAM (of 240 KB / 64 KB) |
-| Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 569 Python test functions |
+| Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 593 Python test functions |
 
 Per-sample latency of the generic `EdgeNeuro<>` pipeline, on synthetic input. Both machines run the same engine code
 (`include/edgeneuro/bench/latency_configs.hpp`). The arm's control path does not use this pipeline (PRD §3); its
@@ -86,10 +88,9 @@ clock has not been raised to the chip's 84 MHz.
   demo reached 3848 ADC counts, a firm grip held still only 1318. No threshold can separate the two; the fix is moving
   the electrodes onto the finger flexors.
 - Arm direction and elbow bend come from the accelerometers alone, which assumes the arm's own acceleration is small
-  compared with gravity. During the demo motions |a| departed from 1 g by up to 0.07–0.09 g (95th percentile; about
-  0.03 g at rest)
-  and briefly by more than 1 g. An acceleration perpendicular to gravity barely changes |a|, so the direction error
-  during fast motion is not quantified yet.
+  compared with gravity. During the demo motions |a| departed from 1 g by up to 0.06–0.09 g on the upper arm and
+  0.10–0.18 g on the forearm (95th percentile; about 0.03 g at rest), and briefly by more than 1 g. An acceleration
+  perpendicular to gravity barely changes |a|, so the direction error during fast motion is not quantified yet.
 - An accelerometer cannot sense rotation about gravity, so the base direction comes from upper-arm twist, and the twist
   that naturally comes with raising the arm can't be told apart from a deliberate one.
 - The EMG channel is not health-checked: a loose electrode can open or close the claw.
@@ -175,8 +176,9 @@ git clone --no-checkout --depth 1 --filter=blob:none https://github.com/google-d
 ```
 
 After an SWD flash the WeAct bootloader often doesn't hand over to the app, so the `openocd` line jumps straight to the
-app's reset handler. `--skip-calibration --skip-emg-calibration` reuses the last saved calibration;
-`--calibration-file data/shoulder_calibration_golden_2026-09-13.json` uses the committed reference one.
+app's reset handler. `--skip-calibration --skip-emg-calibration` reuses the last saved calibration; adding
+`--calibration-file data/shoulder_calibration_golden_2026-09-13.json` uses the committed reference one (without both
+skip flags, a new calibration is saved into that file).
 
 ### Tools
 
