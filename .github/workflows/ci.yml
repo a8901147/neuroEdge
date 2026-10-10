@@ -169,6 +169,7 @@ jobs:
           python3 test_watch_imu_raw.py
           python3 test_capture_arm_motion.py
           python3 test_measure_servo_response.py
+          python3 test_docs_match_code.py
 
       # test_grasp_coverage.py's own sys.exit(1) for the known-DROPPED
       # poses is intentionally not gated on (see the comment above) -- but

@@ -55,6 +55,14 @@ def with_noise(line):
                        m.group(1) + f"{float(m.group(2)) + _NOISE.gauss(0, 0.003):+.4f}".encode(), line)
 
 
+def with_unused_fields_changed(line):
+    """The same accelerometer vectors, but the firmware's complementary-filter angles and the upper-arm gyro set to large
+    values. The docs say neither drives any model; only the raw accelerometer vectors, the elbow bend and the grip do."""
+    return (line.replace(b"shoulder_pitch=0.000 shoulder_roll=0.000", b"shoulder_pitch=1.400 shoulder_roll=-1.100")
+                .replace(b"shoulder_raw_gx=+0.000 shoulder_raw_gy=+0.000 shoulder_raw_gz=+0.000",
+                         b"shoulder_raw_gx=+3.000 shoulder_raw_gy=-2.500 shoulder_raw_gz=+4.000"))
+
+
 class FakeSerial:
     """Streams the same line over and over (like a live 1kHz stream) until closed."""
 
@@ -158,6 +166,22 @@ def run_preview(line, saved, ticks=800, serial_factory=None, events=None, skip_e
     ctrl = {n: float(d.ctrl[m.actuator(n).id]) for n in ("base", "shoulder", "elbow", "claw")}
     run_preview.last_calibration = json.loads(calib.read_text())
     return ctrl, out.getvalue()
+
+
+class OnlyTheAccelerometerVectorsDriveTheModelTest(unittest.TestCase):
+    """Design claim (README, PRD 5): the models follow the raw gravity vectors; the gyroscopes and the firmware's
+    complementary-filter roll/pitch are diagnostic only."""
+
+    def test_gyro_and_complementary_filter_fields_do_not_move_the_mearm_model(self):
+        for raw in (fx.LEFT, fx.FORWARD):
+            line = uart_line(raw, fx.STRAIGHT)
+            changed = with_unused_fields_changed(line)
+            self.assertNotEqual(line, changed)                 # the fields really were changed
+            base, _ = run_preview(line, fx.SAVED_9_13, ticks=400)
+            other, _ = run_preview(changed, fx.SAVED_9_13, ticks=400)
+            for joint in ("base", "shoulder", "elbow", "claw"):
+                with self.subTest(raw=raw, joint=joint):
+                    self.assertAlmostEqual(base[joint], other[joint], delta=0.02)   # sensor-noise level only
 
 
 class StartPoseTest(unittest.TestCase):

@@ -312,6 +312,31 @@ class RaceBoard(Board):
         return super().read(n)
 
 
+class UnusedFieldsBoard(Board):
+    """The same healthy stream, but with the firmware's complementary-filter angles and the upper-arm gyro set to large
+    values -- fields the docs say no model uses."""
+
+    def read(self, n):
+        line = super().read(n)
+        return (line.replace(b"shoulder_pitch=0.000 shoulder_roll=0.000", b"shoulder_pitch=1.400 shoulder_roll=-1.100")
+                    .replace(b"shoulder_raw_gx=+0.000 shoulder_raw_gy=+0.000 shoulder_raw_gz=+0.000",
+                             b"shoulder_raw_gx=+3.000 shoulder_raw_gy=-2.500 shoulder_raw_gz=+4.000"))
+
+
+class OnlyTheAccelerometerVectorsDriveTheArmTest(unittest.TestCase):
+    """Design claim (README, PRD 5): the G1 arm follows the raw upper-arm gravity vector; the gyroscope and the firmware's
+    complementary-filter roll/pitch are diagnostic only."""
+
+    def test_gyro_and_complementary_filter_fields_do_not_move_the_humanoid_arm(self):
+        for raw in (fx.LEFT, fx.FORWARD):
+            with self.subTest(raw=raw):
+                self.assertIn(b"shoulder_pitch=1.400", UnusedFieldsBoard(raw).read(256))   # the fields really change
+                base, _, _ = run_main(Board(raw), ["--skip-calibration"], ticks=800)
+                other, _, _ = run_main(UnusedFieldsBoard(raw), ["--skip-calibration"], ticks=800)
+                for joint in ("roll", "pitch"):
+                    self.assertAlmostEqual(base[joint], other[joint], delta=0.02)   # sensor-noise level only
+
+
 class OneFramePerStepTest(unittest.TestCase):
     """2026-10-08: a step computed the arm from the line it read first but checked the forearm of a line read LATER, so a
     faulty line was applied whenever a healthy one arrived in between. Forced deterministically: the healthy line is
