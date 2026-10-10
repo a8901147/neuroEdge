@@ -15,7 +15,10 @@ namespace edgeneuro::mearm {
 // Polarity, checked on the real arm (2026-09-28 -> 10-03): base left = higher pulse,
 // raising the arm = lower elbow pulse, bending the elbow = higher shoulder pulse,
 // grip = higher claw pulse.
-// Value ranges are the human-side sensor ranges (run_demo_live.py's).
+// Of the four maps below only claw_map() drives a servo (drive::command); base_map, shoulder_map and elbow_map are the
+// per-joint maps from the firmware's own pitch/roll that drive::command replaced on 2026-09-27, kept with their tests
+// (test_mearm_servo_maps.cpp) as a check of the measured pulse ranges. Their value ranges are the human-side sensor
+// ranges (run_demo_live.py's).
 constexpr unsigned kBaseLoUs = 500u, kBaseHiUs = 2500u;
 constexpr unsigned kShoulderLoUs = 1200u, kShoulderHiUs = 2100u;
 constexpr unsigned kElbowLoUs = 500u, kElbowHiUs = 1850u;

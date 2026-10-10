@@ -56,8 +56,8 @@ class BaseTest(unittest.TestCase):
 
 class BaseReachTest(unittest.TestCase):
     """2026-10-03 (the author's choice): the base keeps its whole 500..2500 us, but reaching its ends takes the arm's own
-    COMFORTABLE left/right reach (measured with measure_base_reach.py) instead of the calibration's ~+-34 deg, so a
-    turn of the arm moves the base less. Without a measured reach nothing changes."""
+    COMFORTABLE left/right reach (base_reach_*_raw; no tool captures it yet) instead of the calibration's ~+-34 deg, so
+    a turn of the arm moves the base less. Without a measured reach nothing changes."""
 
     @staticmethod
     def turned_left(deg):
