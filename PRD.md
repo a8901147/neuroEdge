@@ -56,10 +56,10 @@ PC (Python)        calibration · MuJoCo MeArm model · MuJoCo Unitree G1 arm+ha
 The library has two layers:
 
 1. **A generic pipeline, `EdgeNeuro<ValueType, EmgChannels, ImuChannels, WindowSize, Provider, EmgFilterT, ImuFilterT,
-   FeatureT, ClassifierT>`** (`include/edgeneuro/pipeline.hpp`). It is assembled at compile time from strategies
-   checked by C++20 concepts: IIR and pass-through filters, MAV/RMS features, an LDA classifier and a CSV provider. It
-   shows that the DSP stays modular at zero runtime cost and with zero allocation, and it is what the latency
-   benchmarks measure (`<1,6>` and `<32,0>`). A lock-free SPSC ring buffer (`ring_buffer.hpp`) is provided and
+   FeatureT, ClassifierT>`** (`include/edgeneuro/pipeline.hpp`). It is assembled at compile time from strategies checked
+   by C++20 concepts: IIR and pass-through filters, MAV/RMS features, an LDA classifier and a CSV provider. It shows
+   that the DSP stays modular at zero runtime cost and with zero allocation; its latency is measured on the target in a
+   wearable configuration (1 EMG + 6 IMU channels, R7). A lock-free SPSC ring buffer (`ring_buffer.hpp`) is provided and
    ThreadSanitizer-tested as a separate component; neither the pipeline nor the firmware uses it at present.
 2. **The real control path** (`include/edgeneuro/control/`, `filters/`, `fusion/`). The hardware has one EMG channel,
    and one channel only carries "how hard is this muscle working". A window-and-classify step would add a window's
@@ -71,17 +71,19 @@ The library has two layers:
 | Part | Choice | Why |
 | --- | --- | --- |
 | MCU | STM32F401RCT6 Black Pill, 16 MHz HSI | Cortex-M4 with a single-precision FPU (matches `float`), 64 KB SRAM, low cost |
-| EMG | MyoWare 2.0, `ENV` output to ADC | Analog front end in hardware (MyoWare 2.0 Advanced Guide): amplifier, first-order 20.8 Hz high-pass, full-wave rectifier, 3.6 Hz envelope |
+| EMG | MyoWare 2.0, `ENV` output to ADC | Analog front end in hardware (MyoWare 2.0 Advanced Guide): amplifier, first-order 20.8–498 Hz band-pass, full-wave rectifier, first-order 3.6 Hz envelope. The firmware reads this envelope, not raw EMG |
 | IMUs | 2× MPU6050 (upper arm 0x68, forearm 0x69), DLPF 5 Hz | Gravity direction of each arm segment: control uses only the accelerometers; the gyroscopes are read but unused. No magnetometer, so no heading |
 | Arm | MeArm, 4× SG92R servos, 4×AA supply | 4 DOF: base, shoulder, elbow, claw |
 | Links | ST-Link (SWD), FT232RL (UART 115200) | SWD register reads are the main debugging tool |
 
 ## 5. Control design
 
-**Grip (EMG).** The 12-bit ENV sample is smoothed (EMA, α = 0.1, ~10 ms) and fed to a two-threshold state machine:
-the grip closes after 150 ms above the grip threshold and opens after 150 ms below a lower release threshold. The PC
-records 3.5 s relaxed and 3.5 s gripping and uses the last 2 s of each: the grip threshold is the relaxed mean + 20·std, and the release threshold is
-halfway between the relaxed mean and the grip threshold. The hysteresis lets a lighter grip hold while the arm moves.
+**Grip (EMG).** `ENV` changes slowly (first-order 3.6 Hz low-pass), so it would not need a 1 kHz sample rate; it is read
+once per tick because the control loop runs at 1 kHz, and the EMA (α = 0.1, about 10 samples) averages those readings.
+The smoothed value is fed to a two-threshold state machine: the grip closes after 150 ms above the grip threshold and
+opens after 150 ms below a lower release threshold. The PC records 3.5 s relaxed and 3.5 s gripping and uses the last 2
+s of each: the grip threshold is the relaxed mean + 20·std, and the release threshold is halfway between the relaxed
+mean and the grip threshold. The hysteresis lets a lighter grip hold while the arm moves.
 
 **Arm direction ("Path B").** The upper-arm accelerometer gives a gravity vector. Four calibration poses (hang,
 forward, left twist, right twist) define a frame, and the vector is decoded into tilt (how far the arm is raised) and
@@ -128,12 +130,12 @@ well, and the model holds its pose. A calibration received over UART is checksum
 | # | Requirement | Validated by | Status |
 | --- | --- | --- | --- |
 | R1 | No heap allocation in the hot loop | `NoHeapGuard` (global `operator new` hook) armed around `tick()` in host tests, and on the target in `heap_guard_check`; the firmware image links no `malloc`/`free`/`_sbrk` | Met |
-| R2 | Fixed 1 kHz EMG sampling | TIM2 TRGO → ADC1; report intervals 1.002–1.005 s; 1007 ticks/s in the full loop | Met |
+| R2 | Fixed 1 kHz control loop (one `ENV` sample per tick) | TIM2 TRGO → ADC1; report intervals 1.002–1.005 s; 1007 ticks/s in the full loop | Met |
 | R3 | IMU reads never block a tick | Non-blocking I2C state machine; ~274 reads/s per IMU with both on one bus | Met |
 | R4 | No undefined behavior; ring buffer correct under concurrency | ASan + UBSan and TSan presets | Met (all three pass, 2026-10-08; CI runs ASan/UBSan) |
-| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 593 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
+| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 594 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
 | R6 | Fits the MCU | Servo build: 18.4 KB code, 3.3 KB static RAM | Met |
-| R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for `<1,6>`; `<32,0>` classify tick 1.54 ms overruns |
+| R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz, 1 EMG + 6 IMU channels: mean 15 µs, classify tick 317 µs | Met |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
 | R9 | An IMU fault never moves the arm | `ImuHealth` in firmware, `sensor_health` on the PC; host tests | Met for the IMUs, except that homing (`R`) still walks to the start pose; the EMG channel is not health-checked (§7) |
 | R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; tape picked up, lifted and carried to the right on the real arm, 2026-10-09 (video; released at claw height rather than set down); motion artifact measured | Partly: limited by electrode placement (§7); the claw hooks the roll rather than clamping it; no controlled set-down or repeated-trial success rate yet |
@@ -152,8 +154,6 @@ well, and the model holds its pose. A calibration received over UART is checksum
   Kept as a deliberate design choice (the gyroscopes are unused).
 - **No heading.** Without a magnetometer, left/right comes from upper-arm twist. The twist that naturally comes with
   raising the arm is reduced by the slow-follow rule, not removed.
-- **Clock.** At the default 16 MHz, the 32-channel stress configuration overruns 1 ms on classify ticks. Configuring
-  the PLL for 84 MHz would give up to about 5× headroom.
 - **Humanoid grasp.** The G1 hand's uniform-curl grasp holds the object only at the front-left pose. Per-finger grasp
   synthesis was rejected as out of scope.
 - **EMG not health-checked.** Only the IMUs are checked; a loose electrode can open or close the claw.
@@ -167,7 +167,6 @@ well, and the model holds its pose. A calibration received over UART is checksum
 - Move the EMG electrodes to the finger flexors and re-record with `capture_arm_motion.py --set emg`.
 - Measure end-to-end latency (sensor motion → servo motion) with high-speed video, and compare the grip's 150 ms
   debounce against the 100–125 ms that Farrell & Weir (2007) found best for myoelectric control.
-- Raise the clock to 84 MHz (PLL), with the register values verified against RM0368.
 - RXNE-interrupt UART receive; 400 kHz I2C on soldered wiring.
 
 **Considered and dropped:** a browser (Wasm) demo, a HAL-based `Stm32AdcProvider` with DMA (the polled TIM2/ADC path
