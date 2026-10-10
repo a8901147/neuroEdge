@@ -51,7 +51,7 @@ standalone power-on (no ST-Link) still depends on the bootloader.
   in `firmware/build/_deps/cmsis_device_f4-src/Include/`) before it's
   written — grep the header for the exact bit position/macro rather than
   recalling it from memory. If it can't be verified, say so explicitly in
-  the code comment and flag it to the user instead of presenting a guess as
+  the code comment and flag it to the author instead of presenting a guess as
   fact. AF/pin-mapping claims should cite where they were checked (ST's
   official pin-data XML, not a blog post) with the same rigor.
 

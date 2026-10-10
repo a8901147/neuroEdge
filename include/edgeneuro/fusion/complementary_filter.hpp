@@ -25,9 +25,9 @@ namespace edgeneuro {
 // It also never will go through Pipeline's ImuFilterT slot, by design, not
 // just for lack of a concept match: Pipeline's window/feature/classify path
 // only produces a result once every WindowSize samples (e.g. 200ms at
-// WindowSize=200 @ 1kHz), which is fine for EMG's "did the user hold a
+// WindowSize=200 @ 1kHz), which is fine for EMG's "did the wearer hold a
 // contraction long enough" decision but far too laggy for orientation
-// control that's supposed to track the user's real arm continuously (see
+// control that's supposed to track the wearer's real arm continuously (see
 // PRD.md §3, system architecture). The intended
 // caller reads a sensor, calls update() once per fresh reading, and feeds
 // roll()/pitch() straight to an actuator setpoint -- bypassing Pipeline

@@ -64,7 +64,7 @@ CHECK_PREFIX = "check_"   # phases kept out of the tuning, used only to check th
 
 # 2026-10-04: how much does the base move when the arm is only RAISED (the natural upper-arm twist, which differs by
 # direction) versus an intended swing? Decides the base's "slow follow while raising" from raw data, not a guess.
-# The user's lower-left -> upper-right case raises and swings at once: kept out as a check.
+# The author's lower-left -> upper-right case raises and swings at once: kept out as a check.
 BASE_RAISE_PHASES = [
     ("raise_forward", "Raise forward and lower", 12.0,
      "From hanging, raise straight forward to horizontal and lower again, twice. Only raise: no deliberate "

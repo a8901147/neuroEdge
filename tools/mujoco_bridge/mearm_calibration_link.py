@@ -1,4 +1,4 @@
-"""The MEArm calibration as the one-line UART message phase3_control_loop parses (2026-10-03, the user's choice "B":
+"""The MEArm calibration as the one-line UART message phase3_control_loop parses (2026-10-03, the author's choice "B":
 send the calibration instead of compiling it in, so a re-calibration needs no re-flash). Format and parser:
 include/edgeneuro/control/mearm_calibration_link.hpp --
 

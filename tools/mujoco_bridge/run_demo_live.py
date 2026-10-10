@@ -89,7 +89,7 @@ DEFAULT_BAUD = 115200
 # straight into MuJoCo's ctrl every single physics tick, with no smoothing
 # anywhere in the live tracking loop. First fix tried was an EMA low-pass
 # (CTRL_SMOOTHING_ALPHA blend) -- reduced but didn't fix visible
-# shakiness. Root cause found by the user directly (raw-data-grounded, not
+# shakiness. Root cause found by the author directly (raw-data-grounded, not
 # guessed): the arm hanging at rest with no muscle tension showed NO shake
 # at all, but flicking the sensor's wire immediately produced visible
 # shaking -- i.e. this isn't hand tremor, it's a loose/marginal physical
@@ -136,7 +136,7 @@ GRIPPING_SMOOTHING_ALPHA = 0.01
 # eventually wins at every value tested, sooner or later. 0.6 itself
 # turned out to only hold for 6-10s before slipping (a too-short 1s
 # post-lift settle in the original test made it look stably held -- see
-# grasp_test_common.py's run_grasp_scenario). The user confirmed the real
+# grasp_test_common.py's run_grasp_scenario). The author confirmed the real
 # 6-step task only needs the object held for ~5-10s at a time (reach,
 # carry to a point, release), not indefinitely, so the real question was
 # "which value holds longest within a realistic task window," not "which
@@ -220,7 +220,7 @@ SHOULDER_ROLL_RANGE = (-0.8727, 2.2515)
 
 ELBOW_ACTUATOR = "left_elbow_joint"
 # 2026-09-02, corrected after visual comparison against the frozen right
-# arm (which the user pointed out clearly hangs straight, unlike the left
+# arm (which the author pointed out clearly hangs straight, unlike the left
 # one): -1.0472 is NOT "arm straight" -- that was determined from the
 # RAW ANGLE BETWEEN the upper-arm and forearm body vectors alone, which
 # turned out to be the wrong metric. It ignores that those two "segment"
@@ -962,7 +962,7 @@ def send_emg_threshold(ser, threshold, release=None):
         ser.write(f"T{int(threshold)},{int(release)}\n".encode("ascii"))
 
 
-# 2026-10-04: two thresholds (hysteresis), the standard cure for an on/off myoelectric switch that chatters. The user
+# 2026-10-04: two thresholds (hysteresis), the standard cure for an on/off myoelectric switch that chatters. The author
 # found the grip let go too easily: in the 13:12 calibration the relaxed level was ~1170, the threshold 1876, and the
 # clench's lowest 10% only ~1908 (5% already below) -- a gentler hold while the arm moves dips under the threshold and
 # the 0.15 s off-debounce releases it. Gripping still needs the full threshold; letting go needs falling below a release
@@ -1006,7 +1006,7 @@ EMG_SETTLE_TAIL_SECONDS = 2.0
 # coverage sweep the way GRIP_SCALE was.
 EMG_THRESHOLD_K = 20.0
 
-# 2026-09-19: long-term observation, not a live decision -- the user isn't
+# 2026-09-19: long-term observation, not a live decision -- the author isn't
 # confident mean+K*std (however well-sourced, see EMG_THRESHOLD_K's own
 # comment) is actually the right algorithm, and wants real relax/contract
 # data from ordinary use over the coming week(s) before revisiting the
@@ -1221,7 +1221,7 @@ def apply_anchor_map(anchors, x, out_lo, out_hi):
     to [out_lo, out_hi] (either order). x is a decoded sensor value (e.g.
     pitch_equiv in radians), y is the MeArm model ctrl that value should
     produce -- both captured together by calibrate_mearm_alignment.py while
-    the user holds a real pose that matches a known model pose, so polarity,
+    the operator holds a real pose that matches a known model pose, so polarity,
     range and center offset all come from data instead of being assumed
     (the full-anatomical-ROM rescale() this replaces compressed a ~90deg
     real arm raise into ~14deg of model motion).
@@ -1466,7 +1466,7 @@ def _diag_int(text, key):
 
 
 def send_calibration_to_board(ser, latest, saved, timeout_s=None):
-    """Sends the arm calibration to phase3_control_loop over UART (mearm_calibration_link; 2026-10-03, the user's
+    """Sends the arm calibration to phase3_control_loop over UART (mearm_calibration_link; 2026-10-03, the author's
     choice "B": the real arm uses it at once, no re-flash) and waits for the board's diag line to confirm it (cal_applied
     goes up). Never fatal: a board that does not confirm (servos-off build, older firmware) keeps its compiled-in
     calibration, and that is said plainly. Returns True when confirmed."""
@@ -1674,7 +1674,7 @@ def run_mearm_preview(args):
     health, poller = wait_until_sensors_healthy(latest, max_s=MEARM_HEALTH_PREFLIGHT_MAX_S,
                                                 repeat_s=MEARM_HEALTH_REPEAT_WARNING_S, prefix="--mearm: ")
 
-    # 2026-10-03 (the user's design): start every session from the same place. The firmware keeps driving the real
+    # 2026-10-03 (the author's design): start every session from the same place. The firmware keeps driving the real
     # servos whether or not this script runs, so they can be anywhere; once the person has let the arm hang, R walks
     # every servo back to the start pose (base/shoulder/elbow 1500, claw 1300 = open) and the arm is followed from there.
     # EMG grip threshold (2026-10-03): the same as the humanoid path -- before R, so the claw responds properly at once
@@ -2147,7 +2147,7 @@ def main():
             print(f"Calibration saved to {args.calibration_file} -- next run can pass "
                   f"--skip-calibration to reuse it instead of re-prompting.")
 
-    # 2026-10-03 (the user's choice "B"): the calibration also goes to the board, so a servos-ON phase3_control_loop
+    # 2026-10-03 (the author's choice "B"): the calibration also goes to the board, so a servos-ON phase3_control_loop
     # (the real MEArm) uses the very calibration just loaded/captured -- no re-flash. Checks/sending only: how the
     # humanoid arm is computed here is unchanged. Not with a deliberately absent shoulder IMU (no shoulder calibration).
     if not shoulder_optional:

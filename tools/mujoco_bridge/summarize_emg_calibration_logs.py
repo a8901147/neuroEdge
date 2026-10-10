@@ -1,7 +1,7 @@
 """Lists every entry run_demo_live.py's calibrate_emg_threshold() has
 logged to emg_calibration_logs/ (see EMG_CALIBRATION_LOG_DIR's own comment
 in run_demo_live.py -- this is the long-term "is mean+K*std actually the
-right algorithm" observation the user asked for 2026-09-19, not something
+right algorithm" observation the author asked for 2026-09-19, not something
 this script itself judges). One row per real calibration session: when,
 which EMG_THRESHOLD_K/git commit produced it, the computed threshold and
 margin, and whether it was auto-flagged SUSPECT (contracted_mean never

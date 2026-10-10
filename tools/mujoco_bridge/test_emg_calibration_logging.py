@@ -57,7 +57,7 @@ class LogEmgCalibrationTest(unittest.TestCase):
         self.assertNotIn("SUSPECT", names[0])
 
     def test_suspect_session_filename_is_tagged_without_opening_the_file(self):
-        # The whole point (per the user's own request) is telling suspect
+        # The whole point (per the author's own request) is telling suspect
         # sessions apart from a directory listing alone.
         self._log(suspect=True)
         names = [p.name for p in rdl.EMG_CALIBRATION_LOG_DIR.glob("*.json")]

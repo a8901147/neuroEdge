@@ -209,7 +209,7 @@ class CalibrationCaptureTest(unittest.TestCase):
 
 
 class CalibrationToBoardTest(unittest.TestCase):
-    """2026-10-03 (the user's choice "B", "the humanoid arm the same way"): after its calibration -- loaded with
+    """2026-10-03 (the author's choice "B", "the humanoid arm the same way"): after its calibration -- loaded with
     --skip-calibration or captured interactively -- the humanoid path also SENDS it to the board, so a servos-ON board
     uses the very calibration the person just made. How the humanoid arm itself is computed is unchanged."""
 
@@ -264,7 +264,7 @@ class RuntimeTest(unittest.TestCase):
 
 class HardwareWarningTest(unittest.TestCase):
     """2026-09-28: a brief drop-out the value checks cannot see (the data looks fine again a moment later) -- the firmware
-    reports it (no I2C answer, re-woken) and the user must be told, while the arm keeps following (the data is usable)."""
+    reports it (no I2C answer, re-woken) and the operator must be told, while the arm keeps following (the data is usable)."""
 
     def test_dropouts_reported_by_the_firmware_are_shown_and_the_arm_keeps_following(self):
         board = Board(fx.LEFT)

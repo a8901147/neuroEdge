@@ -147,14 +147,14 @@ class BaseRaiseSetTest(unittest.TestCase):
             self.assertIn(n, names)
 
     def test_a_slow_raise_is_recorded_too(self):
-        # 2026-10-04 (the user's point): "raising" is decided by the direction of motion, not its speed -- checked on a
+        # 2026-10-04 (the author's point): "raising" is decided by the direction of motion, not its speed -- checked on a
         # REAL slow raise, not only on a recording stretched in time
         slow = [p for p in cam.PHASE_SETS["base_raise"] if p[0] == "raise_slow"]
         self.assertEqual(len(slow), 1)
         self.assertIn("slowly", slow[0][3])
 
     def test_the_diagonal_raise_is_kept_out_as_a_check(self):
-        # the user's case (lower-left -> upper-right): raising and swinging at once; checks, does not tune
+        # the author's case (lower-left -> upper-right): raising and swinging at once; checks, does not tune
         checks = [p for p in cam.PHASE_SETS["base_raise"] if p[0].startswith(cam.CHECK_PREFIX)]
         self.assertTrue(any("diagonal" in p[0] and "not in the task" in p[3] for p in checks))
 

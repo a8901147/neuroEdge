@@ -228,7 +228,7 @@ class ReadyToStartTest(unittest.TestCase):
 
 
 class QuietPrototypeTest(unittest.TestCase):
-    """The user's priorities for a breadboard prototype (2026-09-28): what matters is that the numbers are right and the
+    """The author's priorities for a breadboard prototype (2026-09-28): what matters is that the numbers are right and the
     link is up; how FAST the data comes does not. So a slow rate is not announced, and a flaky-but-recovering link is
     said once and then summarised every 30 s -- while wrong or missing data stays loud (and holds the model)."""
 

@@ -54,7 +54,7 @@ _FIRMWARE_NAME = {"shoulder": "upper_arm", "elbow": "forearm"}
 
 Problem = namedtuple("Problem", "sensor kind detail")
 # ok/problems: can the data be trusted right now (problems hold the model). warnings: what the hardware reported recently --
-# a brief drop-out, a power reset -- which the user must be told about, but which leave the data usable.
+# a brief drop-out, a power reset -- which the operator must be told about, but which leave the data usable.
 Report = namedtuple("Report", "ok problems warnings", defaults=((),))
 
 

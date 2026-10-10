@@ -32,7 +32,7 @@ import mearm_pulse_map as pm  # noqa: E402
 
 ANGLE_FILE = HERE.parent.parent / "data" / "mearm_angles_20260927-133753_signed.json"
 MODES = ("geometric", "stretch", "height_reach")
-# 2026-09-27: stretch (the arm follows from the first movement); 2026-10-03: height_reach -- the user's design, checked on
+# 2026-09-27: stretch (the arm follows from the first movement); 2026-10-03: height_reach -- the author's design, checked on
 # the real arm: the forearm servo sets the claw's height, the upper-arm servo its reach (see pulses()).
 DEFAULT_MODE = "height_reach"
 REST_SHOULDER_US = env.REST_SHOULDER
@@ -64,7 +64,7 @@ def pulses(arm, cal, upper_raw, elbow_bend, mode=DEFAULT_MODE):
         shoulder = hi_ctrl - min(max(frac, 0.0), 1.0) * (hi_ctrl - lo_ctrl)
     ps, _ = arm.angles.pulses_from_model_ctrl(shoulder, pb.ELBOW_EXTENDED)
     s, _ = env.clamp(arm.table, ps, env.REST_ELBOW)
-    # The elbow (2026-09-28, the user's hand checks on the real arm): the person's bend is spread over the elbow window the
+    # The elbow (2026-09-28, the author's hand checks on the real arm): the person's bend is spread over the elbow window the
     # envelope allows AT THIS SHOULDER -- straight = its top, fully bent = its bottom, a LOWER pulse = more bent (the
     # direction checked by hand; the first mapping ran the other way). Converting the model's elbow angle instead left a
     # dead zone: the straight end lay outside the envelope and the first ~45 deg of a real bend were clamped flat.
@@ -94,7 +94,7 @@ def smooth_elbow_window(table, shoulder_us):
 
 
 def _height_reach(arm, cal, upper_raw, elbow_bend):
-    """2026-10-03 (the user's design): the person's arm drives the two servos CROSSWISE -- raising the arm (hanging ->
+    """2026-10-03 (the author's design): the person's arm drives the two servos CROSSWISE -- raising the arm (hanging ->
     raised, Path B's tilt with its fades) lowers the ELBOW servo across the elbow window the envelope allows at the
     current shoulder pulse (claw up); bending the elbow (straight -> fully bent) raises the SHOULDER servo across the
     measured shoulder range (reach). Hanging + straight = (1500, 1500) = the R start pose. An invalid upper-arm reading
@@ -132,7 +132,7 @@ def saved_base_reach(cal, saved):
 
 def base_pulse(cal, upper_raw, reach=None):
     """Base servo pulse (whole us), left = higher (measured 2026-09-28): the whole 500..2500 us is spread over the arm's
-    azimuth from `reach` right to `reach` left (2026-10-03, the user's choice: the arm's comfortable reach, so a turn of
+    azimuth from `reach` right to `reach` left (2026-10-03, the author's choice: the arm's comfortable reach, so a turn of
     the arm moves the base less while the base keeps its full range). reach=None: default_base_reach (unchanged
     behaviour). Path B's fades still apply (rest near hanging and behind the body); an invalid reading -> rest."""
     left, right = reach if reach is not None else default_base_reach(cal)

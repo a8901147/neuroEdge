@@ -41,7 +41,7 @@ TEST_CASE("ThresholdCalibrator matches this project's real Stage 5a data", "[con
 
 TEST_CASE("ThresholdCalibrator is invalid when relaxed and contracted ranges overlap", "[control]") {
     // Simulates a bad calibration run -- e.g. poor electrode contact, or
-    // the user didn't actually contract during the "contract" phase.
+    // the wearer didn't actually contract during the "contract" phase.
     ThresholdCalibrator<float> cal;
     cal.observe_relaxed(1000.0f);
     cal.observe_contracted(800.0f); // lower than the relaxed reading -- no real separation

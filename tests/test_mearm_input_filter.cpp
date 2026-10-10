@@ -92,11 +92,11 @@ TEST_CASE("hysteresis: holds inside the band, follows beyond it, takes the first
     REQUIRE(h.apply(1400u, 10u) == 1400u);
 }
 
-TEST_CASE("arm held forward: the fast jitter the user saw is gone, the slow drift (real motion) still passes",
+TEST_CASE("arm held forward: the fast jitter the author saw is gone, the slow drift (real motion) still passes",
           "[mearm][input_filter]") {
     // Modelled on the real capture (data/servo_response_20261003-135305.json, "held forward"): the base's own wander was
     // almost all below 1 Hz (std 100.8 us of slow drift -- the arm really drifting a few degrees), on top of fast jitter
-    // (std 10.6 us inside 0.2 s windows, single steps up to 45 us) -- the "fast shaking" the user reported. At ~30 us of
+    // (std 10.6 us inside 0.2 s windows, single steps up to 45 us) -- the "fast shaking" the author reported. At ~30 us of
     // base per degree of arm azimuth: drift ~ +-3 deg at 0.1-0.3 Hz, jitter ~0.35 deg per sample.
     Pipeline p;
     unsigned seed = 12345u;

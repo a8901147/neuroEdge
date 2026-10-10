@@ -11,9 +11,9 @@ namespace edgeneuro {
 // work, but only by luck against that one real-hardware run).
 //
 // Caller contract: during the "relax" phase, call observe_relaxed() with
-// every sample while the user is deliberately at rest; during the
+// every sample while the wearer is deliberately at rest; during the
 // "contract" phase (after switching phases), call observe_contracted()
-// with every sample while the user is deliberately holding a contraction.
+// with every sample while the wearer is deliberately holding a contraction.
 // Order matters -- this class does not detect which phase it's in, the
 // caller decides that from wall-clock timing (see emg_grip_control_main.cpp).
 template <typename ValueType>

@@ -9,13 +9,13 @@
        elbow joint's rotation axis was backwards -- confirmed by rendering
        both signs, see prior git history) that went undetected for a long
        time simply because elbow_bend never read high enough in practice to
-       expose it; (2) the user wanted a fully open-source, verified
+       expose it; (2) the author wanted a fully open-source, verified
        shoulder-to-hand arm rather than a custom weld.
 
        The FULL G1 humanoid body (pelvis/legs/waist/head/right arm) is
        included too, not just the left arm -- added after an intermediate
        version welded the bare left arm onto a small hand-made box+sphere
-       "torso_reference" placeholder, which the user pointed out was its
+       "torso_reference" placeholder, which the author pointed out was its
        own unnecessary reinvention now that the real, complete body is
        already sitting right there in the same source file. Every joint
        EXCEPT the left arm's 14 (shoulder x3, elbow, wrist x3, hand x7) is
@@ -486,7 +486,7 @@
 
          2026-09-05 MOVED AGAIN: the position above was reachable but nearly
          centered on the body (only 0.19m left of the shoulder) rather than
-         a clear front-LEFT reach the user asked for. Re-ran the same
+         a clear front-LEFT reach the author asked for. Re-ran the same
          settled-mj_step search biased toward a real, comfortable abduction
          angle (roll=+0.80, well short of SHOULDER_ROLL_RANGE's +2.2515rad
          ceiling) -- fingertip centroid came out at (0.051,0.332,0.99),
@@ -498,7 +498,7 @@
 
          2026-09-08: widened footprint 0.03->0.09 (half-size, so 6cm->18cm
          square) and lowered top surface ~2.5cm (ball dropped 0.99->0.965)
-         per the user's real-hardware request -- a slipped/rolled object was
+         per the author's real-hardware request -- a slipped/rolled object was
          landing on the floor, out of reach, instead of staying on the
          pedestal. FOUND BROKEN via run_grasp_scenario: the 18cm pedestal
          made the object completely unreachable with the existing

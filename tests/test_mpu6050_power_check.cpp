@@ -1,5 +1,5 @@
 // edgeneuro::mpu6050::power_check: reading the sensor's OWN power register instead of inferring its state from the data
-// (2026-09-28, the user's request: use what the hardware says, not the result). Register facts are independent literals
+// (2026-09-28, the author's request: use what the hardware says, not the result). Register facts are independent literals
 // from InvenSense RM-MPU-6000A-00 Rev 4.0 (checked against the original text, SESSION_LOG 2026-09-28):
 //   PWR_MGMT_1 = register 107 (0x6B); bit 6 = SLEEP; reset value 0x40 (all other registers except WHO_AM_I reset to 0x00);
 //   USER_CTRL 0x6A, PWR_MGMT_2 0x6C are documented neighbours with no read side effect (0x6D-0x71 are undocumented and

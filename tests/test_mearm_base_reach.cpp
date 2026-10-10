@@ -1,4 +1,4 @@
-// The base's comfortable reach (2026-10-03, the user's choice): the base keeps its whole 500..2500 us, but its ends are
+// The base's comfortable reach (2026-10-03, the author's choice): the base keeps its whole 500..2500 us, but its ends are
 // reached at the arm's own comfortable left/right reach (measure_base_reach.py) instead of the calibration's ~+-34 deg,
 // so a turn of the arm moves the base less. Without a measured reach: exactly the previous mapping. Same numbers as
 // tools/mujoco_bridge/test_mearm_real.py's BaseReachTest (Python is the source of truth).

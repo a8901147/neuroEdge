@@ -105,7 +105,7 @@ class SensorCheckTest(unittest.TestCase):
         self.assertIn("[NOTE]", text)
         self.assertIn("upper arm", text)
         self.assertIn("dropped out", text)
-        self.assertIn("breadboard", text)                              # the user's wording: it may be the breadboard
+        self.assertIn("breadboard", text)                              # the author's wording: it may be the breadboard
 
     def test_the_real_firmware_line_is_parsed_into_both_sensors(self):
         up, fore = chr_.parse_tick_raw(REAL_TICK)

@@ -35,7 +35,7 @@
 // (PRD.md §3, system architecture) that IMU
 // orientation bypasses Pipeline entirely: Pipeline's window/classify only
 // produces a result once every WindowSize samples, which is far too laggy
-// for orientation that's supposed to track the user's real arm
+// for orientation that's supposed to track the wearer's real arm
 // continuously. The real Phase 3 path is closer to what this file already
 // does (read sensor, update() every fresh reading, use roll()/pitch()
 // directly) than to a Pipeline integration -- future work here is

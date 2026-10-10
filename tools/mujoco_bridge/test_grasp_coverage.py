@@ -41,7 +41,7 @@ front_left_high/mild_adduction never actually pick the object up at all
 project uses to place a pedestal only guarantees geometric reachability,
 not that the uniform-curl grip (all 6 GRIP_ACTUATORS scaled by the same
 fraction, see run_demo_live.py's GRIP_ACTUATORS comment) actually cups the
-object correctly from that approach angle. Per the user's explicit
+object correctly from that approach angle. Per the author's explicit
 direction, this is accepted scope, not something to fix with per-finger
 control -- the practical takeaway is to keep the real 6-step task's reach
 poses close to front_left, not to expect the grasp to generalize.

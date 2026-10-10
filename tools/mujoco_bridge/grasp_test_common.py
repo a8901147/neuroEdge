@@ -63,7 +63,7 @@ DEFAULT_BALL_FRICTION = "1.0 0.02 0.005"
 # hand's approach, not the height drop; re-picked smaller and re-verified
 # HELD via a real run_grasp_scenario call with the unmodified REACH_CTRL).
 # 2026-09-13: dropped 0.15m (object 0.98->0.83, pedestal 0.930->0.780) per
-# the user's request to bring the object down from above-shoulder height
+# the author's request to bring the object down from above-shoulder height
 # to roughly chest height -- see arm_hand_scene.xml's own comment for the
 # real shoulder-height measurement this was based on. NOT yet re-verified
 # against REACH_CTRL below as of this edit.
@@ -119,7 +119,7 @@ def load_model(ball_radius=DEFAULT_BALL_RADIUS, ball_friction=DEFAULT_BALL_FRICT
     friction/position overridden. Substitutes the exact attribute strings in
     the XML text (confirmed unique in the file) rather than editing the
     shared XML on disk -- lets test_grasp_object.py's --ball-radius/
-    --ball-friction flags experiment (per the user's own idea: maybe a
+    --ball-friction flags experiment (per the author's own idea: maybe a
     smaller/grippier ball is what it takes) without mutating the file every
     other script in this directory also loads. pedestal_pos/object_pos
     (added 2026-09-06 for test_grasp_coverage.py) let a caller relocate the
@@ -234,7 +234,7 @@ def run_grasp_scenario(model, data, viewer, grip_at_t, grip_phase_seconds,
     mid-fall and hadn't yet crossed the distance/height thresholds, not
     because it was actually stable. POST_LIFT_SETTLE_SECONDS is set to
     match how long the real 6-step task actually needs the object held
-    (confirmed with the user: ~5-10s per carry), not "as long as possible"
+    (confirmed with the author: ~5-10s per carry), not "as long as possible"
     -- there's no value that holds forever, so the only meaningful
     question is whether a candidate holds for at least as long as the
     real task needs, checked at a realistic settle time instead of an
