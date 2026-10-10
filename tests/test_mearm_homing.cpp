@@ -1,4 +1,4 @@
-// "R" (2026-10-03, the user's design): run_demo_live.py --mearm asks the person to let the arm hang, and on Enter sends R;
+// "R" (2026-10-03, the author's design): run_demo_live.py --mearm asks the person to let the arm hang, and on Enter sends R;
 // the firmware then walks all four servos back to the start pose (the rest pulses) at the SLOW start-up rate, ignoring
 // the sensors meanwhile, and once there follows the arm again -- starting slowly. With the arm hanging the arm's own
 // command is that same pose (9/13 calibration: hanging + straight elbow = 1500/1500/1500), so nothing jumps.

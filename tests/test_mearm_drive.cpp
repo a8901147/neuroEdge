@@ -74,7 +74,7 @@ TEST_CASE("the claw follows grip through the measured claw map", "[mearm][drive]
     const auto* cal = compiled();
     const edgeneuro::mearm::pathb::Vec3 hang{C::kHangX, C::kHangY, C::kHangZ};
     REQUIRE(D::command(cal, hang, C::kZeroElbow, 0.0f, true).claw == 1300u);       // relaxed = open = the claw's rest
-    // gripping = 1500, which is also the claw's limit (the user, 2026-10-03; measured travel was 1300..1600)
+    // gripping = 1500, which is also the claw's limit (the author, 2026-10-03; measured travel was 1300..1600)
     REQUIRE(D::command(cal, hang, C::kZeroElbow, 1.0f, true).claw == 1500u);
     REQUIRE(M::kClawHiUs == 1500u);
     const unsigned mid = D::command(cal, hang, C::kZeroElbow, kNaN, true).claw;    // a NaN grip never gives a wild pulse
@@ -130,7 +130,7 @@ TEST_CASE("the default is: sensors assumed healthy only when the caller says so 
     REQUIRE(cmd.hold);
 }
 
-// 2026-09-28: to tell a bad servo / weak supply apart, the user drives ONE servo at a time from the sensors
+// 2026-09-28: to tell a bad servo / weak supply apart, the author drives ONE servo at a time from the sensors
 // (EDGENEURO_SERVO_MASK, bit0 base, bit1 shoulder, bit2 elbow, bit3 claw); the others hold their rest pulse.
 TEST_CASE("only(): a masked-off servo gets its rest pulse, the enabled ones are untouched, hold is kept", "[mearm][drive]") {
     const auto* cal = compiled();

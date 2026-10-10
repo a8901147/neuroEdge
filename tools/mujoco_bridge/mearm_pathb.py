@@ -24,7 +24,7 @@ Path A's and stays exactly as it is; nothing here imports or modifies it.
 Sensing limits worth remembering (they shape the design):
   * Azimuth is not measured, it is a GESTURE PROXY: an accelerometer cannot see
     rotation about gravity, so left/right only shows up through the thumb-twist
-    the user adds (+-28 deg of decoded azimuth stands in for a much larger
+    the wearer adds (+-28 deg of decoded azimuth stands in for a much larger
     physical swing; the anchors below supply the gain).
   * Azimuth is undefined at tilt 0 (hanging) and noisy near it -> the base
     output is faded in over a tilt window instead of trusting it there.

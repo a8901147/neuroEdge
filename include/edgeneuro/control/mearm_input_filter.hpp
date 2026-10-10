@@ -68,7 +68,7 @@ private:
     bool initialized_ = false;
 };
 
-// The base follows SLOWLY while the arm is being raised or lowered (2026-10-04, the user's choice; SESSION_LOG). Recorded
+// The base follows SLOWLY while the arm is being raised or lowered (2026-10-04, the author's choice; SESSION_LOG). Recorded
 // on the real arm (data/arm_motion_20261004-021240.json): held still the base is steady, but on the way up or down --
 // above all just after leaving the hanging pose, where the arm's azimuth is very sensitive to a small sideways offset --
 // the base target jumped by up to ~1000 us. An accelerometer cannot tell an intended turn from the twist that comes with
@@ -76,7 +76,7 @@ private:
 // mainly sideways) it follows at once, so it always ends where it would have.
 // Slow while, over the last kRaiseRateWindowS, the arm moved more than sensor noise AND either
 //   * more up/down (change of tilt from HANG) than sideways -- decided by the DIRECTION of the motion, not its speed, so
-//     a slow raise still counts (the user's point), or
+//     a slow raise still counts (the author's point), or
 //   * it is still near hanging (tilt < kNearHangDeg): there a raise's first moments look SIDEWAYS (the arm crosses the
 //     HANG direction) and the azimuth is unreliable -- in the recording every wrong jump was below ~40 deg (raise
 //     forward at 19.8 deg -> 1243 us, the diagonal at 24.6 deg -> 1599 us), and without this rule the base was pulled

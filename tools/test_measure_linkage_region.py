@@ -835,7 +835,7 @@ class OutputAndOptionsTest(unittest.TestCase):
 
     def test_with_the_elbow_moved_out_of_the_way_the_shoulder_may_be_measured_up_to_its_own_limit(self):
         # 2026-09-28: the 9/27 strain at 2100 was measured with the elbow at 1500, where its linkage hits the upper arm;
-        # the user then held shoulder 2000 / elbow 900 and 2100 / elbow 700 without strain. The top-end guard only
+        # the author then held shoulder 2000 / elbow 900 and 2100 / elbow 700 without strain. The top-end guard only
         # applies with the elbow at 1500; the bottom end (1200: the shoulder binds by itself) keeps its guard.
         self.assertEqual(m.parse_shoulders("2025,2100", elbow_hold=700), (2025, 2100))
         for bad in ("2125", "1250"):

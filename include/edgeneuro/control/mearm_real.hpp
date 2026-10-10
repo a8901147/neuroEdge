@@ -9,7 +9,7 @@
 
 namespace edgeneuro::mearm::real {
 
-// C++ port of tools/mujoco_bridge/mearm_real.py in STRETCH mode (the user's choice, SESSION_LOG 2026-09-27): upper-arm
+// C++ port of tools/mujoco_bridge/mearm_real.py in STRETCH mode (the author's choice, SESSION_LOG 2026-09-27): upper-arm
 // gravity vector + elbow reading -> REAL (shoulder, elbow) servo pulses, always inside the measured safe envelope.
 //   Path B decode -> model shoulder command (spread over the arm's safe shoulder range: "stretch") + the elbow the person
 //   asks for (the model's RELATIVE elbow = the angle between upper arm and forearm; NOT the MuJoCo linkage projection)
@@ -66,7 +66,7 @@ inline ElbowWindow smooth_elbow_window(float shoulder_us) {
     return {top_at(E::kCount - 1u), bottom_at(E::kCount - 1u)};
 }
 
-// height_reach (2026-10-03, the user's design, checked on the real arm; mearm_real.py's default mode): the MEArm's forearm
+// height_reach (2026-10-03, the author's design, checked on the real arm; mearm_real.py's default mode): the MEArm's forearm
 // servo sets the claw's HEIGHT and its upper-arm servo its REACH, so the person's arm drives them crosswise --
 //   raising the arm (Path B's tilt, hanging -> raised, with its fades) lowers the ELBOW servo across the elbow window the
 //   envelope allows at the current shoulder pulse (claw up);

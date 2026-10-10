@@ -1,8 +1,8 @@
-// The base follows SLOWLY while the arm is being raised or lowered (2026-10-04, the user's choice). Recorded on the real
+// The base follows SLOWLY while the arm is being raised or lowered (2026-10-04, the author's choice). Recorded on the real
 // arm the same day (data/base_raise_20261004.csv): held still the base is steady (67 us over 8 s), but on the way up or
 // down -- above all just after leaving the hanging pose, where the arm's azimuth is very sensitive to a small sideways
 // offset -- the base target jumped (raise forward 1152..1739 us, raise left-front down to 533). "Raising" is decided by
-// the DIRECTION of the motion (more up/down than sideways), not by its speed, so a slow raise still counts (the user's
+// the DIRECTION of the motion (more up/down than sideways), not by its speed, so a slow raise still counts (the author's
 // point); only sensor noise is ignored. Not raising, the base follows at once, so it ends where it always would.
 //
 // The real recording is fed through the firmware's whole servo-block pipeline (1-euro filter -> drive::command ->
@@ -112,7 +112,7 @@ TEST_CASE("real raises: the base swings much less on the way up and down", "[mea
 }
 
 TEST_CASE("a slow raise still counts as raising (decided by direction, not speed)", "[mearm][base_follow]") {
-    // the user's point: the same real path raised 3x and 5x slower must still be calmed
+    // the author's point: the same real path raised 3x and 5x slower must still be calmed
     for (double slower : {3.0, 5.0}) {
         for (const char* phase : {"raise_forward", "raise_left_front"}) {
             INFO(phase << " " << slower << "x slower");
@@ -141,7 +141,7 @@ TEST_CASE("once the arm stops, the base ends exactly where it always would", "[m
     }
 }
 
-TEST_CASE("check (not used to choose the numbers): the user's lower-left -> upper-right raise loses its spike",
+TEST_CASE("check (not used to choose the numbers): the author's lower-left -> upper-right raise loses its spike",
           "[mearm][base_follow]") {
     const Run r = run("check_diagonal");
     CHECK(span(r.after) <= span(r.before) * 8 / 10);

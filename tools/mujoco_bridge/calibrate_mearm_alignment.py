@@ -9,7 +9,7 @@ spherical tilt/azimuth one, the same as the offline default.) The other half -- 
 that angle produce?" -- was a full-anatomical-ROM rescale() that compressed
 a real ~90deg arm raise into ~14deg of model motion, left the base off
 center, and left elbow/claw polarity as a guess. Here the MODEL shows a
-target pose, the user copies it with their real arm, and the decoded sensor
+target pose, the operator copies it with their real arm, and the decoded sensor
 values at that moment become the measured calibration: the raw HANG/FORWARD/
 LEFT/RIGHT vectors (tilt and azimuth anchors are derived from them by
 mearm_pathb.Calibration) and the elbow's real (bend -> model ctrl) anchors.
@@ -66,7 +66,7 @@ WAIT_HINT_SECONDS = 5.0     # first 'still waiting' hint; repeated every 2x this
 HEALTH_PREFLIGHT_MAX_S = None
 HEALTH_REPEAT_WARNING_S = 3.0
 
-# Model target poses shown to the user (MeArm ctrl values). Shoulder ctrl's
+# Model target poses shown to the operator (MeArm ctrl values). Shoulder ctrl's
 # high end is the LOWEST arm elevation and its low end the HIGHEST (measured
 # 2026-09-24: elevation 43deg at +0.898, 87deg at -0.141); elbow ctrl's low
 # end is EXTENDED and high end FOLDED (interior angle ~110deg vs ~40deg).

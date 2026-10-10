@@ -161,7 +161,7 @@ def run_preview(line, saved, ticks=800, serial_factory=None, events=None, skip_e
 
 
 class StartPoseTest(unittest.TestCase):
-    """2026-10-03 (the user's design): before following, the person is asked to let the arm hang; on Enter the
+    """2026-10-03 (the author's design): before following, the person is asked to let the arm hang; on Enter the
     firmware is sent R, which walks every servo back to the start pose (base/shoulder/elbow 1500, claw 1300 open)."""
 
     def test_the_person_is_asked_to_let_the_arm_hang_and_R_is_sent_only_after_enter(self):
@@ -225,7 +225,7 @@ class CalibrationBoard(FakeSerial):
 
 
 class CalibrationToBoardTest(unittest.TestCase):
-    """2026-10-03 (the user's choice "B"): the calibration goes to the board over UART -- the real arm uses it at once,
+    """2026-10-03 (the author's choice "B"): the calibration goes to the board over UART -- the real arm uses it at once,
     no re-flash. --skip-calibration sends the saved one; otherwise the four poses are captured first (the humanoid
     path's own calibrate_pose), saved, then sent. Sent before R, and confirmed from the board's diag line."""
 
@@ -337,7 +337,7 @@ class EmgThresholdTest(unittest.TestCase):
 
 
 class EmgReleaseThresholdTest(unittest.TestCase):
-    """2026-10-04: two thresholds. The user found the grip let go too easily: in the 13:12 calibration the relaxed level
+    """2026-10-04: two thresholds. The author found the grip let go too easily: in the 13:12 calibration the relaxed level
     was ~1170, the threshold 1876, and the clench's lowest 10% only ~1908 -- a gentler hold while the arm moves dips under
     1876. The board now grips above the threshold and lets go only below a lower RELEASE threshold, halfway between the
     relaxed level and the threshold. Shared by --mearm and the humanoid path (apply_emg_threshold)."""

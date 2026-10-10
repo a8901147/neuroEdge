@@ -5,7 +5,7 @@
 
 namespace edgeneuro::mearm::calibration_link {
 
-// The MEArm calibration sent over UART (2026-10-03, the user's choice "B"): run_demo_live.py sends it instead of the
+// The MEArm calibration sent over UART (2026-10-03, the author's choice "B"): run_demo_live.py sends it instead of the
 // calibration being compiled in (no re-flash after a re-calibration). One line:
 //   C<v0>,<v1>,...,<v19>,<checksum>\n
 // 20 values, each round(value * 1e6) as a signed decimal integer:

@@ -19,7 +19,7 @@ namespace edgeneuro::mearm {
 constexpr unsigned kBaseLoUs = 500u, kBaseHiUs = 2500u;
 constexpr unsigned kShoulderLoUs = 1200u, kShoulderHiUs = 2100u;
 constexpr unsigned kElbowLoUs = 500u, kElbowHiUs = 1850u;
-// claw: measured travel 1300 (open) .. 1600 (closed), 2026-09-23; limited to 1300..1500 by the user (2026-10-03) --
+// claw: measured travel 1300 (open) .. 1600 (closed), 2026-09-23; limited to 1300..1500 by the author (2026-10-03) --
 // a full grip commands 1500, and nothing ever sends more
 constexpr unsigned kClawLoUs = 1300u, kClawHiUs = 1500u;
 

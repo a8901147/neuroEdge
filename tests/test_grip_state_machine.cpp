@@ -141,7 +141,7 @@ TEST_CASE("GripStateMachine::reset clears accumulated time and returns to Releas
     REQUIRE_FALSE(gsm.is_gripping());
 }
 
-// 2026-10-04: two thresholds (hysteresis). The user found the grip "lets go too easily": in the 2026-10-04 13:12
+// 2026-10-04: two thresholds (hysteresis). The author found the grip "lets go too easily": in the 2026-10-04 13:12
 // calibration the relaxed level was ~1170, the threshold 1876, and the clench's lowest 10% only ~1908 (5% of it already
 // below) -- a grip held more gently while the arm moves dips under 1876 and is released after 0.15 s. Gripping still
 // needs the full threshold; once gripping, only falling below the lower RELEASE threshold for off_duration lets go.

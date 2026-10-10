@@ -418,7 +418,7 @@ class SafetyForRealServosTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# REAL live-session replay. The user's own `run_demo_live.py --mearm` terminal
+# REAL live-session replay. The author's own `run_demo_live.py --mearm` terminal
 # output of 2026-09-24 (9/13 calibration loaded), 86 consecutive lines of
 # (printed shoulder_pitch, printed shoulder_roll, printed elbow_ctrl) while
 # they lifted the arm toward the left-front and lowered it again. They
@@ -494,7 +494,7 @@ class RealLiveLogReplayTest(unittest.TestCase):
             self.assertAlmostEqual(re_, row["roll"], places=2)
 
     def test_the_real_motion_really_was_a_big_raise_to_the_left_front(self):
-        # Documents what the user actually did (they said they lifted high
+        # Documents what the author actually did (they said they lifted high
         # enough; the data agrees): above horizontal, and always left of forward.
         tilts = [math.degrees(r["tilt"]) for r in self.rows]
         azimuths = [math.degrees(r["az"]) for r in self.rows]

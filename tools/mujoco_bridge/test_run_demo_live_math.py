@@ -154,7 +154,7 @@ class SelectRawSmoothingAlphaTest(unittest.TestCase):
 
 class GrippingSmoothingReducesRealTremorTest(unittest.TestCase):
     """2026-09-13: a PROPERTY test against real captured tremor data, not a
-    pinned exact number -- see the user's own explicit concern that a
+    pinned exact number -- see the author's own explicit concern that a
     tuned-value regression test would fight legitimate future retuning.
     _REAL_EXERTION_GX below is shoulder_raw_gx (rad/s) captured live during
     an actual sustained muscle contraction (DLPF_CFG=6 already applied in
@@ -163,7 +163,7 @@ class GrippingSmoothingReducesRealTremorTest(unittest.TestCase):
     identical samples (spread=0.0), traced to the bus wedging/recovering
     77 times since boot (shoulder_completions=0, shoulder_nacks=3580 in a
     single 1s diag window) rather than a genuinely quiet signal; this
-    fixture is the recapture after the user reseated the I2C wiring
+    fixture is the recapture after the author reseated the I2C wiring
     (confirmed healthy after: 256/256 completions, 0 nacks/timeouts).
 
     Only asserts smoothing measurably reduces spread -- not by how much,

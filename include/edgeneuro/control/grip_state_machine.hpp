@@ -99,7 +99,7 @@ public:
     // threshold arrived -- only the comparison in the NEXT update() call
     // uses the new value.
     void set_threshold(ValueType threshold) noexcept { set_thresholds(threshold, threshold); }
-    // 2026-10-04: grip above `threshold`, release only below `release` (capped at `threshold`). The user found a single
+    // 2026-10-04: grip above `threshold`, release only below `release` (capped at `threshold`). The author found a single
     // threshold let go too easily: a grip held more gently while the arm moves dips under the grip threshold.
     void set_thresholds(ValueType threshold, ValueType release) noexcept {
         threshold_ = threshold;

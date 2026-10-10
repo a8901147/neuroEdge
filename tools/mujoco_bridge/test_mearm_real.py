@@ -55,7 +55,7 @@ class BaseTest(unittest.TestCase):
 
 
 class BaseReachTest(unittest.TestCase):
-    """2026-10-03 (the user's choice): the base keeps its whole 500..2500 us, but reaching its ends takes the arm's own
+    """2026-10-03 (the author's choice): the base keeps its whole 500..2500 us, but reaching its ends takes the arm's own
     COMFORTABLE left/right reach (measured with measure_base_reach.py) instead of the calibration's ~+-34 deg, so a
     turn of the arm moves the base less. Without a measured reach nothing changes."""
 
@@ -160,7 +160,7 @@ class DirectionTest(unittest.TestCase):
                 self.assertGreater(pulses[0] - pulses[-1], 300, (mode, pulses))          # a real, visible bend
 
     def test_the_real_elbow_follows_from_the_first_degrees_of_a_bend_no_dead_zone(self):
-        # 2026-09-28 real arm (elbow-only test): the first ~45 deg of the user's bend did not move the real elbow at all --
+        # 2026-09-28 real arm (elbow-only test): the first ~45 deg of the author's bend did not move the real elbow at all --
         # the mirrored straight end lay outside the envelope and was clamped flat. Now every few degrees must move it.
         for mode in ("geometric", "stretch"):
             for raw in (fx.HANG, fx._slerp(fx.HANG, fx.FORWARD, 0.5), fx.FORWARD):
@@ -184,7 +184,7 @@ class DirectionTest(unittest.TestCase):
 
 
 class HeightReachTest(unittest.TestCase):
-    """2026-10-03 (the user's design, checked on the real arm): the MEArm's forearm servo sets the claw's HEIGHT and its
+    """2026-10-03 (the author's design, checked on the real arm): the MEArm's forearm servo sets the claw's HEIGHT and its
     upper-arm servo its REACH, so the person's arm drives them crosswise -- raising the arm lowers the ELBOW servo's
     pulse (claw up), bending the elbow raises the SHOULDER servo's pulse. Both still inside the measured envelope."""
 
@@ -302,7 +302,7 @@ class ModeTest(unittest.TestCase):
         self.assertEqual(real.pulses(ARM, CAL, fx.FORWARD, fx.STRAIGHT, mode="stretch")[0], hi)
 
     def test_the_default_mode_is_height_reach_the_users_choice(self):
-        # 2026-09-27: stretch; 2026-10-03: the user chose height_reach (see HeightReachTest)
+        # 2026-09-27: stretch; 2026-10-03: the author chose height_reach (see HeightReachTest)
         self.assertEqual(real.DEFAULT_MODE, "height_reach")
         for raw in (fx.HANG, fx._slerp(fx.HANG, fx.FORWARD, 0.3), fx.FORWARD):
             self.assertEqual(real.pulses(ARM, CAL, raw, fx.STRAIGHT),
