@@ -636,10 +636,12 @@ class SensorHealthTest(unittest.TestCase):
         self.assertGreater(ctrl["base"], 0.5)                  # and then ran normally
 
     def test_a_line_arriving_between_the_check_and_the_use_is_never_applied(self):
-        """CI 2026-10-07/08 (3 failures, always base=-0.9083...): a step checked one sample, then read the sensors AGAIN to
-        compute the pose, so a line that arrived in between -- here the first line of a frozen forearm, with the arm
-        already swung RIGHT -- was applied unchecked, and the model then held that wrong pose. Forced deterministically:
-        the fake port hands over that line exactly inside the loop's own plausibility check."""
+        """Found 2026-10-08 while investigating CI failures (always base=-0.9083...): a step checked one sample, then read
+        the sensors AGAIN to compute the pose, so a line that arrived in between -- here the first line of a frozen
+        forearm, with the arm already swung RIGHT -- was applied unchecked, and the model then held that wrong pose.
+        Forced deterministically: the fake port hands over that line exactly inside the loop's own plausibility check.
+        (That base value itself came from the test noise moving a full-scale axis below 1.99, reproduced exactly on
+        2026-10-10 -- see with_noise.)"""
         frozen_right = self.frozen_forearm(fx.RIGHT)
         armed, released, stored = threading.Event(), threading.Event(), threading.Event()
         real_plausible = rdl.sensor_health.plausible

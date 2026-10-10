@@ -59,7 +59,8 @@ numbers, and a fix for a race in the live bridge.
 ### Fixed
 - A live control step could use a sensor sample that never passed the health check ([#16]): the reader thread stored a
   UART line in several separate updates, and the loops checked one read but computed the pose from another. Each line
-  is now stored atomically and each step checks and uses one snapshot. This was the cause of an intermittent CI failure.
+  is now stored atomically and each step checks and uses one snapshot. Found while investigating an intermittent CI
+  failure.
 
 ## [1.3.0] — 2026-10-08
 
