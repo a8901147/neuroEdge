@@ -45,13 +45,16 @@ def uart_line(shoulder_raw, elbow, grip=0.0, gripping=0):
 
 _NOISE = __import__("random").Random(7)
 _RAW_RE = re.compile(rb"(_raw_a[xyz]=)([-+]?\d+\.\d+)")
+SATURATION_G = rdl.sensor_health.SATURATION_G   # full scale: a saturated axis is pinned there, not noisy
 
 
 def with_noise(line):
     """Real accelerometers are never bit-for-bit constant: perturb every raw accel value a little (sensor_health treats a
     long run of identical readings as a frozen sensor -- the 2026-09-27 failure)."""
-    # (an exact 0 is left alone: the firmware's all-zero "no reading yet" default is exactly zero, not noisy)
-    return _RAW_RE.sub(lambda m: m.group(0) if float(m.group(2)) == 0.0 else
+    # Left alone: an exact 0 (the firmware's all-zero "no reading yet" default) and an axis at full scale (+-1.99 g or
+    # more). A saturated axis reads 1.999939 bit for bit, like the real 9/27 failure; noise that took it below 1.99 made
+    # one frozen line look plausible, and the model followed it (CI 2026-10-10, base -0.9083...).
+    return _RAW_RE.sub(lambda m: m.group(0) if float(m.group(2)) == 0.0 or abs(float(m.group(2))) >= SATURATION_G else
                        m.group(1) + f"{float(m.group(2)) + _NOISE.gauss(0, 0.003):+.4f}".encode(), line)
 
 

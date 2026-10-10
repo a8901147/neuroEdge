@@ -46,13 +46,16 @@ def uart_line(shoulder_raw, elbow, grip=0.0, gripping=0):
 
 _NOISE = __import__("random").Random(7)
 _RAW_RE = __import__("re").compile(rb"(_raw_a[xyz]=)([-+]?\d+\.\d+)")
+SATURATION_G = rdl.sensor_health.SATURATION_G   # full scale: a saturated axis is pinned there, not noisy
 
 
 def with_noise(line):
     """Real accelerometers are never bit-for-bit constant: perturb every raw accel value a little (sensor_health treats a
     long run of identical readings as a frozen sensor -- the 2026-09-27 failure)."""
-    # (an exact 0 is left alone: the firmware's all-zero "no reading yet" default is exactly zero, not noisy)
-    return _RAW_RE.sub(lambda m: m.group(0) if float(m.group(2)) == 0.0 else
+    # Left alone: an exact 0 (the firmware's all-zero "no reading yet" default) and an axis at full scale (+-1.99 g or
+    # more). A saturated axis reads 1.999939 bit for bit, like the real 9/27 failure; noise that took it below 1.99 made
+    # one frozen line look plausible, and the model followed it (CI 2026-10-10, base -0.9083...).
+    return _RAW_RE.sub(lambda m: m.group(0) if float(m.group(2)) == 0.0 or abs(float(m.group(2))) >= SATURATION_G else
                        m.group(1) + f"{float(m.group(2)) + _NOISE.gauss(0, 0.003):+.4f}".encode(), line)
 
 
@@ -619,8 +622,14 @@ class SensorHealthTest(unittest.TestCase):
         # frozen until the preview has actually said so, then healthy: not "the first 200 reads", which on a slower
         # machine (CI, 2026-10-04) were used up before the health check even started. If it never warns, the board
         # stays frozen, the preflight times out and this fails.
+        def warned():
+            # the preview's captured output; once the test has restored the real stdout, a reader thread still running
+            # must not crash on it (CI 2026-10-10 printed that AttributeError into the log)
+            captured = getattr(sys.stdout, "getvalue", None)
+            return captured is not None and "HARDWARE FAULT" in captured()
+
         def factory():
-            return ScriptedSerial(lambda n: frozen if "HARDWARE FAULT" not in sys.stdout.getvalue() else self.GOOD_LEFT)
+            return ScriptedSerial(lambda n: self.GOOD_LEFT if warned() else frozen)
         with mock.patch.object(rdl, "MEARM_HEALTH_PREFLIGHT_MAX_S", 20.0):
             ctrl, out = run_preview(None, fx.SAVED_9_13, serial_factory=factory)
         self.assertIn("HARDWARE FAULT", out)                           # it said so while waiting
