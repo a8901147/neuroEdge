@@ -11,6 +11,18 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 - Documentation: servo commands are computed at 100 Hz but applied at the 50 Hz PWM frame rate (TIM3 output-compare
   preload); 1.4.0's notes said "updated at 100 Hz". The accelerometer-only arm direction is now listed as a known
   limitation, with the measured |a| deviation during the demo motions.
+- Documentation, after a second audit against the code and the raw recordings:
+  - The |a| deviation now includes the forearm IMU (0.10–0.18 g at the 95th percentile), which the elbow bend also
+    relies on; the upper-arm range is 0.06–0.09 g, not 0.07–0.09 g.
+  - The `R` homing command runs even during an IMU fault (the start pose is known-safe); R9 names this exception.
+  - The base reaches its ends at 1.2× the calibrated LEFT/RIGHT azimuth. A measured comfortable reach is accepted
+    by the firmware, but no tool captures one, so the PRD no longer says the ends are at the person's reach.
+  - The control loop's own CPU load is not measured (the CPU figures are the generic pipeline's); each run drives one
+    of the two MuJoCo models, not both; an optional sensor (`O<bits>`) is not health-checked.
+
+### Added
+- `tools/test_docs_match_code.py` (run in CI): each stated parameter, rate, design claim, test count and measured
+  number in README, PRD and firmware/README is compared with the code or recomputed from the committed recordings.
 
 ## [1.4.0] — 2026-10-10
 

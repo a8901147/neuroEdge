@@ -1,6 +1,6 @@
 # EdgeNeuro: Design and Requirements
 
-**Author:** Chang-Jui Tseng · **Last updated:** 2026-10-09
+**Author:** Chang-Jui Tseng · **Last updated:** 2026-10-10
 
 This document covers what the system is for, how it is built, the requirements it has to meet, and how each one is
 checked. Commands are in [README.md](README.md) and [firmware/README.md](firmware/README.md); the dated record of how
@@ -14,7 +14,7 @@ pattern recognition needs many EMG channels and per-user training. Delay matters
 100–125 ms to be the best controller delay for myoelectric control.
 
 **Goal:** natural, simultaneous control of an arm (direction, height, reach and grip) from inexpensive wearable sensors
-(one EMG channel, two IMUs), with every computation on a low-cost microcontroller, smooth enough and reliable enough
+(one EMG channel, two IMUs), with the real-time control on a low-cost microcontroller, smooth enough and reliable enough
 for a real pick-and-place task. The benchmark task, on a 4-servo MeArm:
 
 > arm hanging → reach forward → swing left → grip a roll of tape → lift → swing right → place.
@@ -34,9 +34,9 @@ been tested with prosthesis users.
 - **Deterministic, allocation-free C++.** Header-only C++20 with templates and concepts, so there are no virtual calls
   and no heap use in the hot loop. The same headers compile for the host (where they are tested) and for the
   Cortex-M4F.
-- **Validate in simulation and on hardware together.** The live sensor stream also drives two MuJoCo models (a MeArm
-  model and a Unitree G1 humanoid arm and hand), computed on the PC. They show what the sensors decode to; they are not
-  a twin of the physical arm, whose servo mapping, filtering and limits run on the STM32 (§5).
+- **Validate in simulation and on hardware together.** The live sensor stream also drives a MuJoCo model, one of two per
+  run (a MeArm model or a Unitree G1 humanoid arm and hand), computed on the PC. They show what the sensors decode to;
+  they are not a twin of the physical arm, whose servo mapping, filtering and limits run on the STM32 (§5).
 - **Raw data decides.** Thresholds and filter parameters are settled with captured raw sensor data, never with an
   algorithm's own output; register values are checked against the reference manual (RM0368).
 
@@ -48,7 +48,7 @@ MyoWare ENV ─ADC─▶ EMA ─▶ GripStateMachine (2 thresholds, 150 ms debou
 MPU6050 ×2  ─I2C─▶ raw gravity vectors ─▶ 1€ filter ─▶ Path B decode (tilt, azimuth)
                                                      ─▶ height/reach mapping ─▶ envelope ─▶ shoulder, elbow servos
                                                      ─▶ base mapping, hysteresis, slow follow ─▶ base servo
-                   health checks ─▶ hold all servos on a sensor fault
+                   IMU health checks ─▶ hold all servos on an IMU fault
                    UART ◀▶ PC: raw stream out; calibration, thresholds, R (home) in
 PC (Python)        calibration · MuJoCo MeArm model · MuJoCo Unitree G1 arm+hand (computed on the PC)
 ```
@@ -93,8 +93,9 @@ sets its reach, so the person's arm maps crosswise onto it: raising the arm lowe
 bending the elbow raises the shoulder servo (reach). Every (shoulder, elbow) command is clamped into an envelope
 measured on the real arm (five measurement runs; between measured shoulder positions the windows are intersected,
 never interpolated; the shoulder is clamped to the measured range). The two servos also step
-together, so the poses in between stay inside the envelope too. Base: azimuth over the full 500–2500 µs, with the ends
-at the person's comfortable left and right reach.
+together, so the poses in between stay inside the envelope too. Base: azimuth over the full 500–2500 µs, reaching
+the ends at 1.2× the calibrated LEFT/RIGHT azimuth. (The firmware also accepts a measured comfortable reach in the
+calibration message, but no tool captures one yet.)
 
 **Sensor-to-DOF mapping.** Three sensors give three inputs: the upper-arm gravity vector, the elbow bend (angle
 between the two gravity vectors) and the EMG grip. What each target drives, from the code
@@ -116,11 +117,11 @@ with speed), 10 µs hysteresis on the base, and a slow-follow rule (150 µs/s) o
 raised, where the azimuth is unreliable near hanging.
 
 **Safety.** The servo outputs are compiled out by default. Each servo starts with a slow ramp (300 µs/s). The `R`
-command homes the arm to a known start pose. On the board (`include/edgeneuro/control/imu_health.hpp`), an IMU
-reading that is implausible (an axis at full scale, or a magnitude outside 0.3–3 g) or unchanged for 0.3 s makes every
-servo hold its pulse; a sensor found reset (`PWR_MGMT_1`) is woken again. On the PC (`tools/sensor_health.py`), missing
-data, frozen readings and a magnitude far from 1 g are caught as well, and the model holds its pose. A calibration
-received over UART is checksummed and validated before use.
+command homes the arm to a known start pose, also during an IMU fault (the start pose is known-safe). On the board
+(`include/edgeneuro/control/imu_health.hpp`), an IMU reading that is implausible (an axis at full scale, or a magnitude
+outside 0.3–3 g) or unchanged for 0.3 s makes every servo hold its pulse; a sensor found reset (`PWR_MGMT_1`) is woken
+again. On the PC (`tools/sensor_health.py`), missing data, frozen readings and a magnitude far from 1 g are caught as
+well, and the model holds its pose. A calibration received over UART is checksummed and validated before use.
 
 ## 6. Requirements and validation
 
@@ -130,11 +131,11 @@ received over UART is checksummed and validated before use.
 | R2 | Fixed 1 kHz EMG sampling | TIM2 TRGO → ADC1; report intervals 1.002–1.005 s; 1007 ticks/s in the full loop | Met |
 | R3 | IMU reads never block a tick | Non-blocking I2C state machine; ~274 reads/s per IMU with both on one bus | Met |
 | R4 | No undefined behavior; ring buffer correct under concurrency | ASan + UBSan and TSan presets | Met (all three pass, 2026-10-08; CI runs ASan/UBSan) |
-| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 569 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
+| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 593 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
 | R6 | Fits the MCU | Servo build: 18.4 KB code, 3.3 KB static RAM | Met |
 | R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz: `<1,6>` mean 15 µs, classify tick 317 µs | Met for `<1,6>`; `<32,0>` classify tick 1.54 ms overruns |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
-| R9 | An IMU fault never moves the arm | `ImuHealth` in firmware, `sensor_health` on the PC; host tests | Met for the IMUs; the EMG channel is not health-checked (§7) |
+| R9 | An IMU fault never moves the arm | `ImuHealth` in firmware, `sensor_health` on the PC; host tests | Met for the IMUs, except that homing (`R`) still walks to the start pose; the EMG channel is not health-checked (§7) |
 | R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; tape picked up, lifted and carried to the right on the real arm, 2026-10-09 (video; released at claw height rather than set down); motion artifact measured | Partly: limited by electrode placement (§7); the claw hooks the roll rather than clamping it; no controlled set-down or repeated-trial success rate yet |
 
 ## 7. Known limitations
@@ -143,12 +144,12 @@ received over UART is checksummed and validated before use.
   a firm still grip (1318). The MyoWare's high-pass corner (20.8 Hz) is near the 20 Hz De Luca et al. recommend against
   movement artifact, though it is first-order rather than their 12 dB/octave; gating on arm motion only cut false grips
   from 4 to 2. The fix is electrode placement over the finger flexors.
-- **Accelerometer-only direction.** Arm direction and elbow bend come from the accelerometers alone, which assumes
-  the arm's own acceleration is small compared with gravity. Recorded demo motions (`data/arm_motion_20261004-*.json`)
-  show |a| departing from 1 g by up to 0.07–0.09 g (95th percentile; about 0.03 g at rest) and briefly by more than
-  1 g. An acceleration perpendicular to gravity barely changes |a|, so the direction error during fast motion is not
-  quantified yet; the DLPF and the 1€ filter reduce it but do not remove it. Kept as a deliberate design choice (the
-  gyroscopes are unused).
+- **Accelerometer-only direction.** Arm direction and elbow bend come from the accelerometers alone, which assumes the
+  arm's own acceleration is small compared with gravity. Recorded demo motions (`data/arm_motion_20261004-*.json`) show
+  |a| departing from 1 g by up to 0.06–0.09 g on the upper arm and 0.10–0.18 g on the forearm (95th percentile; about
+  0.03 g at rest) and briefly by more than 1 g. An acceleration perpendicular to gravity barely changes |a|, so the
+  direction error during fast motion is not quantified yet; the DLPF and the 1€ filter reduce it but do not remove it.
+  Kept as a deliberate design choice (the gyroscopes are unused).
 - **No heading.** Without a magnetometer, left/right comes from upper-arm twist. The twist that naturally comes with
   raising the arm is reduced by the slow-follow rule, not removed.
 - **Clock.** At the default 16 MHz, the 32-channel stress configuration overruns 1 ms on classify ticks. Configuring

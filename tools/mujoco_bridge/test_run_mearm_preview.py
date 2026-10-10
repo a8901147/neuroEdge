@@ -25,6 +25,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest import mock
 
@@ -53,6 +54,14 @@ def with_noise(line):
     # (an exact 0 is left alone: the firmware's all-zero "no reading yet" default is exactly zero, not noisy)
     return _RAW_RE.sub(lambda m: m.group(0) if float(m.group(2)) == 0.0 else
                        m.group(1) + f"{float(m.group(2)) + _NOISE.gauss(0, 0.003):+.4f}".encode(), line)
+
+
+def with_unused_fields_changed(line):
+    """The same accelerometer vectors, but the firmware's complementary-filter angles and the upper-arm gyro set to large
+    values. The docs say neither drives any model; only the raw accelerometer vectors, the elbow bend and the grip do."""
+    return (line.replace(b"shoulder_pitch=0.000 shoulder_roll=0.000", b"shoulder_pitch=1.400 shoulder_roll=-1.100")
+                .replace(b"shoulder_raw_gx=+0.000 shoulder_raw_gy=+0.000 shoulder_raw_gz=+0.000",
+                         b"shoulder_raw_gx=+3.000 shoulder_raw_gy=-2.500 shoulder_raw_gz=+4.000"))
 
 
 class FakeSerial:
@@ -158,6 +167,36 @@ def run_preview(line, saved, ticks=800, serial_factory=None, events=None, skip_e
     ctrl = {n: float(d.ctrl[m.actuator(n).id]) for n in ("base", "shoulder", "elbow", "claw")}
     run_preview.last_calibration = json.loads(calib.read_text())
     return ctrl, out.getvalue()
+
+
+class _TinyAlternatingNoise:
+    """In place of _NOISE: +-0.0001 g, alternating. Every reading still changes (so no sensor looks frozen), but two runs
+    see practically the same vectors, so a comparison between them is not decided by random noise (it was, on CI)."""
+
+    def __init__(self):
+        self.sign = 1.0
+
+    def gauss(self, _mu, _sigma):
+        self.sign = -self.sign
+        return 1e-4 * self.sign
+
+
+class OnlyTheAccelerometerVectorsDriveTheModelTest(unittest.TestCase):
+    """Design claim (README, PRD 5): the models follow the raw gravity vectors; the gyroscopes and the firmware's
+    complementary-filter roll/pitch are diagnostic only."""
+
+    def test_gyro_and_complementary_filter_fields_do_not_move_the_mearm_model(self):
+        for raw in (fx.LEFT, fx.FORWARD):
+            line = uart_line(raw, fx.STRAIGHT)
+            changed = with_unused_fields_changed(line)
+            self.assertNotEqual(line, changed)                 # the fields really were changed
+            with unittest.mock.patch.object(sys.modules[__name__], "_NOISE", _TinyAlternatingNoise()):
+                base, _ = run_preview(line, fx.SAVED_9_13, ticks=400)
+                other, _ = run_preview(changed, fx.SAVED_9_13, ticks=400)
+            for joint in ("base", "shoulder", "elbow", "claw"):
+                with self.subTest(raw=raw, joint=joint):
+                    # used, the changed fields would move a joint by ~1 rad; +-0.0001 g of noise moves it by far less
+                    self.assertAlmostEqual(base[joint], other[joint], delta=0.005)
 
 
 class StartPoseTest(unittest.TestCase):
