@@ -89,7 +89,7 @@ DEFAULT_BAUD = 115200
 # straight into MuJoCo's ctrl every single physics tick, with no smoothing
 # anywhere in the live tracking loop. First fix tried was an EMA low-pass
 # (CTRL_SMOOTHING_ALPHA blend) -- reduced but didn't fix visible
-# shakiness. Root cause found directly (raw-data-grounded, not
+# shakiness. Root cause found by the author directly (raw-data-grounded, not
 # guessed): the arm hanging at rest with no muscle tension showed NO shake
 # at all, but flicking the sensor's wire immediately produced visible
 # shaking -- i.e. this isn't hand tremor, it's a loose/marginal physical
@@ -136,7 +136,7 @@ GRIPPING_SMOOTHING_ALPHA = 0.01
 # eventually wins at every value tested, sooner or later. 0.6 itself
 # turned out to only hold for 6-10s before slipping (a too-short 1s
 # post-lift settle in the original test made it look stably held -- see
-# grasp_test_common.py's run_grasp_scenario). The real
+# grasp_test_common.py's run_grasp_scenario). The author confirmed the real
 # 6-step task only needs the object held for ~5-10s at a time (reach,
 # carry to a point, release), not indefinitely, so the real question was
 # "which value holds longest within a realistic task window," not "which
@@ -220,7 +220,7 @@ SHOULDER_ROLL_RANGE = (-0.8727, 2.2515)
 
 ELBOW_ACTUATOR = "left_elbow_joint"
 # 2026-09-02, corrected after visual comparison against the frozen right
-# arm (which clearly hangs straight, unlike the left
+# arm (which the author pointed out clearly hangs straight, unlike the left
 # one): -1.0472 is NOT "arm straight" -- that was determined from the
 # RAW ANGLE BETWEEN the upper-arm and forearm body vectors alone, which
 # turned out to be the wrong metric. It ignores that those two "segment"
@@ -714,8 +714,8 @@ class LatestSample:
 
     def snapshot_frame(self):
         """One consistent Frame for a control step: the step must check and use the SAME data (2026-10-08: a step that
-        checked one line and then read the sensors again applied the next line unchecked -- CI's intermittent
-        test_a_fault_mid_session failure)."""
+        checked one line and then read the sensors again applied the next line unchecked; found while investigating
+        an intermittent CI failure)."""
         with self._lock:
             return Frame(self.grip, self.shoulder_pitch, self.shoulder_roll, self.elbow,
                          (self.shoulder_raw_ax, self.shoulder_raw_ay, self.shoulder_raw_az),
@@ -1674,7 +1674,7 @@ def run_mearm_preview(args):
     health, poller = wait_until_sensors_healthy(latest, max_s=MEARM_HEALTH_PREFLIGHT_MAX_S,
                                                 repeat_s=MEARM_HEALTH_REPEAT_WARNING_S, prefix="--mearm: ")
 
-    # 2026-10-03: start every session from the same place. The firmware keeps driving the real
+    # 2026-10-03 (the author's design): start every session from the same place. The firmware keeps driving the real
     # servos whether or not this script runs, so they can be anywhere; once the person has let the arm hang, R walks
     # every servo back to the start pose (base/shoulder/elbow 1500, claw 1300 = open) and the arm is followed from there.
     # EMG grip threshold (2026-10-03): the same as the humanoid path -- before R, so the claw responds properly at once

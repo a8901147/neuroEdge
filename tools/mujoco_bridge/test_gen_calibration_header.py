@@ -35,7 +35,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("constexpr bool kHasBaseReach = false;", gen.render(fx.SAVED_9_13))
 
     def test_a_measured_base_reach_is_compiled_in_too(self):
-        # 2026-10-03: the arm's comfortable left/right reach (measure_base_reach.py), raw vectors like the other poses
+        # 2026-10-03: the arm's comfortable left/right reach (no tool captures it yet), raw vectors like the other poses
         left = [0.3, 0.6, 0.75]
         right = [0.25, -0.62, 0.74]
         text = gen.render(dict(fx.SAVED_9_13, base_reach_left_raw=left, base_reach_right_raw=right))

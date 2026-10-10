@@ -198,8 +198,9 @@ static constexpr uint32_t kImuMaxTicksPerRead = 50u; // abort+retry a read stuck
 // above normal voluntary arm motion (well under 3Hz), the strongest
 // available cutoff (5Hz) sits between the two and should attenuate the
 // tremor while barely touching intentional movement -- unlike CFG=3, whose
-// 42-44Hz bandwidth doesn't touch a 9-10Hz signal at all. Not yet
-// re-verified against a fresh capture at this setting.
+// 42-44Hz bandwidth doesn't touch a 9-10Hz signal at all. Verified on the
+// real hardware the same day: during a firm grip the gyro spread fell from
+// 0.5 rad/s (CFG=3) to 0.02 rad/s (CFG=6), 26-90x (SESSION_LOG 09-12).
 static constexpr uint8_t kMpu6050ConfigReg = 0x1Au;
 static constexpr uint8_t kDlpfCfg6 = 0x06u;
 
@@ -575,41 +576,14 @@ static void tim3_pwm_50hz_4ch_init(void) {
 }
 
 // ============================================================================
-// 2026-09-23: real per-joint pulse ranges, measured with servo_limit_
-// finder_4ch against the ACTUALLY ASSEMBLED MEArm (not the bare-servo
-// placeholder this replaced -- see git history / SESSION_LOG.md's
-// 2026-09-21 entry for that earlier PLACEHOLDER version). Each channel's
-// real range is narrower than the bare SG92R's own 450-2500us limit,
-// confirming the linkage geometry (not the servo itself) is what caps
-// each joint's usable range, same conclusion the MeArm community
-// calibration data (README.md's Phase 4 section) already predicted.
-//
-// Channel <-> joint identity confirmed against a real MeArm assembly
-// guide (DroneBot Workshop's build instructions: "left servo controls
-// the shoulder joint" facing the arm from the front) AND a live check on
-// this specific unit (channel 2 physically raises/lowers the whole arm,
-// not just the forearm) -- not assumed from the part's channel number
-// alone.
-//
-// value_min/value_max are unchanged from the placeholder version (real
-// human-anatomy ranges, run_demo_live.py's SHOULDER_PITCH_RANGE/
-// SHOULDER_ROLL_RANGE/ELBOW_RANGE, and grip's 0..1 scale).
-//
-// POLARITY CAVEAT: which physical end of pulse_min_us/pulse_max_us a
-// more-negative vs. more-positive value_min/value_max should drive is
-// NOT yet verified live (servo_limit_finder_4ch measured the RANGE, not
-// which direction is which) -- inherited as-is from the placeholder
-// version's guess. First live test after flashing this: raise a real
-// arm (shoulder_pitch going more negative) and confirm the MEArm's
-// shoulder servo actually LIFTS, not lowers -- if backwards, swap that
-// map's pulse_min_us/pulse_max_us arguments (ServoAngleMap supports this
-// directly, see its own header comment / test_servo_angle_map.cpp's
-// "reversed pulse polarity" case), don't touch value_min/value_max.
-// 2026-09-27: the four servos are no longer fed by per-joint maps from the firmware's own pitch/roll (the 2026-09-26
-// review found them unsafe: opposite elbow direction, no calibration, no linkage/collision envelope). main() now calls
-// edgeneuro::mearm::drive::command (include/edgeneuro/control/mearm_drive.hpp, host-tested): the same Path B decode as
-// the MuJoCo preview with the compiled-in calibration, the measured link-angle lines and the measured safe envelope for
-// shoulder/elbow; the base holds its rest pulse (not measured yet); the claw follows grip.
+// What the four servos are sent: main() calls edgeneuro::mearm::drive::command (include/edgeneuro/control/
+// mearm_drive.hpp, host-tested) -- shoulder/elbow from the Path B decode through the height/reach mapping into the
+// measured safe envelope, the base from the decoded azimuth, the claw from grip -- then the input filter, the base's
+// hysteresis and slow follow, homing and the start-up ramps below. Pulse ranges, rest pulses and polarity (checked on
+// the real arm 2026-09-28 -> 10-03) are in mearm_servo_maps.hpp; channel <-> joint identity was checked on this unit
+// (channel 2 raises/lowers the whole arm). Until 2026-09-27 each servo was fed by a per-joint map from this file's own
+// pitch/roll; the 2026-09-26 review found that unsafe (wrong elbow direction, no calibration, no envelope) -- see git
+// history.
 #endif // EDGENEURO_DRIVE_SERVOS
 
 static void adc1_init_timer_triggered(void) {
@@ -1207,20 +1181,11 @@ int main(void) {
 
     float sp = 0.0f; // last EMG setpoint, for the periodic report below (updated only on EOC)
 
-    // Raw, pre-remap ELBOW accelerometer axes -- printed alongside the
-    // computed shoulder_pitch/shoulder_roll/elbow so a single UART line
-    // carries both, letting a combined raw+simulated log correlate the two
-    // directly (see tools/mujoco_bridge's combined_calibrate.py-style
-    // scripts) instead of separate capture runs.
+    // Raw, unremapped accelerometer vectors (g) of both IMUs: the inputs of every control computation -- the elbow
+    // bend, the IMU health check and the servo block (Path B) -- and streamed as-is for the PC, which decodes them too.
     float elbow_raw_ax = 0.0f;
     float elbow_raw_ay = 0.0f;
     float elbow_raw_az = 0.0f;
-    // Temporary (2026-09-01): both sensors got remounted with a new,
-    // consistent convention (pin-header edge facing the hand/distal
-    // direction on both) -- the existing ax/ay/az remap below was derived
-    // for the OLD mount and no longer applies to either reader. Re-add the
-    // shoulder side's raw axes (removed once the last remount's remap was
-    // confirmed) to re-derive it from scratch rather than re-guessing.
     float shoulder_raw_ax = 0.0f;
     float shoulder_raw_ay = 0.0f;
     float shoulder_raw_az = 0.0f;
@@ -1246,9 +1211,9 @@ int main(void) {
         // conversions). With two devices sharing one bus, expect roughly
         // half Stage 5c's single-IMU rate per device (~591-593/s measured
         // there -> ~290-295/s each here), since each transaction takes the
-        // same bus time regardless of address -- re-measure via
-        // shoulder_completions/elbow_completions below once wired, rather
-        // than assuming.
+        // same bus time regardless of address. Measured with both wired
+        // (diag line's shoulder_/elbow_completions, 2026-10-07, arm still):
+        // ~274/s each.
         ImuReader &active_reader = active_is_shoulder ? shoulder_reader : elbow_reader;
         const bool was_idle_before_this_pass = active_reader.is_idle();
         if (was_idle_before_this_pass) {
@@ -1442,12 +1407,10 @@ int main(void) {
                 usart2_send_string(grip.is_gripping() ? "EDGE -> Gripping\r\n" : "EDGE -> Released\r\n");
             }
 
-            // Stage 6: 100Hz (every 10 ticks), not 1kHz or the old 1Hz --
-            // at 115200 baud a ~95-byte line supports up to ~120 lines/sec
-            // (see usart2_init()'s BRR comment); 100Hz is comfortably
-            // inside that budget and far more than MuJoCo's own
-            // launch_passive loop needs, since it paces itself
-            // independently to model.opt.timestep on the Python side.
+            // Every 10th tick (100 Hz): the servo block and the tick line. The line has grown to ~346 bytes, more
+            // than 115200 baud can carry 100 times a second: a line that does not fit in the transmit queue is skipped
+            // whole (uart_line_fits), and the PC receives ~34 lines/s (measured 2026-10-03). The servos do not depend
+            // on the line rate -- they are computed here on the board.
             // Format matches tools/mujoco_bridge/run_demo.py's LINE_RE
             // exactly (shared with src/mujoco_bridge_demo.cpp's CSV-replay
             // prototype), so the same Python parsing code works unchanged
@@ -1503,12 +1466,12 @@ int main(void) {
                 }
 
                 // Drive the 4 MEArm servos from this tick's raw upper-arm vector and elbow reading through
-                // edgeneuro::mearm::drive::command (see its header: Path B decode with the compiled-in
-                // calibration -> the measured link-angle lines -> the measured safe envelope; base held at
-                // rest; claw from grip), then each servo's start-up ramp. Runs on every 10th tick (100 Hz,
-                // this block's own cadence -- so the ramps' time step is 10 ticks, NOT 1). Before the first
-                // real IMU sample the raw vector is all zero, which drive::command treats as "no valid
-                // reading" and answers with the rest pose.
+                // edgeneuro::mearm::drive::command (see its header: Path B decode with the current calibration
+                // -> height/reach mapping -> the measured safe envelope; base from the decoded azimuth; claw from
+                // grip), then each servo's start-up ramp. Runs on every 10th tick (100 Hz, this block's own
+                // cadence -- so the ramps' time step is 10 ticks, NOT 1). Before the first real IMU sample the raw
+                // vectors are all zero: ImuHealth reports a fault, so nothing is written and every servo keeps the
+                // rest pulse tim3_pwm_50hz_4ch_init() set.
 #if EDGENEURO_DRIVE_SERVOS
                 imu_health.update({shoulder_raw_ax, shoulder_raw_ay, shoulder_raw_az},
                                   {elbow_raw_ax, elbow_raw_ay, elbow_raw_az});
@@ -1560,15 +1523,9 @@ int main(void) {
                 usart2_send_float(shoulder_filter.roll());
                 usart2_send_string(" elbow=");
                 usart2_send_float(elbow_bend);
-                // Temporary debug fields (2026-08-23): raw 12-bit ADC
-                // min/max over the last ~10ms window, before any threshold
-                // comparison. `grip`/`gripping` above are GripStateMachine's
-                // OUTPUT (only moves once the raw signal clears
-                // kFallbackThreshold=2037 for on_duration seconds), so they
-                // can't distinguish "no real EMG signal reaching the ADC at
-                // all" from "signal present but too weak to cross the
-                // threshold" -- added to check which one this is. Remove
-                // once confirmed one way or the other.
+                // Raw 12-bit ADC min/max over the last ~10 ms window, before the EMA or any threshold (added
+                // 2026-08-23 as a debug field). run_demo_live.py's EMG calibration computes the grip and release
+                // thresholds from these, and capture_arm_motion.py records them, so they stay.
                 usart2_send_string(" emg_min=");
                 usart2_send_uint(emg_window_min);
                 usart2_send_string(" emg_max=");

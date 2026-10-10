@@ -7,6 +7,29 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-10-10
+
+The parameters, rates and design statements in README, PRD and firmware/README are now checked against the code in CI,
+and the numbers taken from the committed recordings are recomputed from them. No change to what the firmware or the PC
+tools do.
+
+### Added
+- `tools/test_docs_match_code.py` (CI): stated parameters, rates, design statements and test counts are compared
+  with the code; numbers taken from the recordings in `data/` are recomputed. Numbers that come from hardware runs or
+  builds (loop rate, latency, firmware size, coverage) are not part of it.
+
+### Changed
+- The documents state:
+  - Servo commands are computed at 100 Hz and applied at the 50 Hz PWM frame (TIM3 preload).
+  - Accelerometer-only direction is a known limitation, with |a| measured on both IMUs during the demo motions (upper
+    arm 0.06–0.09 g, forearm 0.10–0.18 g, 95th percentile).
+  - `R` homing runs even during an IMU fault (the start pose is known-safe).
+  - The base reaches its ends at 1.2× the calibrated LEFT/RIGHT azimuth; the firmware also accepts a measured
+    comfortable reach, which no tool captures yet.
+  - CPU figures are the generic pipeline's; each run drives one of the two MuJoCo models; an optional sensor is not
+    health-checked.
+- Code comments describe the current design.
+
 ## [1.4.0] — 2026-10-10
 
 Documentation that describes the system as it is implemented, a demo video of the physical arm, on-target latency
@@ -34,7 +57,8 @@ numbers, and a fix for a race in the live bridge.
 ### Fixed
 - A live control step could use a sensor sample that never passed the health check: the reader thread stored a
   UART line in several separate updates, and the loops checked one read but computed the pose from another. Each line
-  is now stored atomically and each step checks and uses one snapshot. This was the cause of an intermittent CI failure.
+  is now stored atomically and each step checks and uses one snapshot. Found while investigating an intermittent CI
+  failure.
 
 ## [1.3.0] — 2026-10-08
 
@@ -105,7 +129,8 @@ end to end, in the MuJoCo humanoid arm.
 - DLPF and EMA tremor smoothing; EMG threshold as mean + K·std, with a long-term log of real calibration sessions.
 - Sensors can be marked optional instead of crashing when absent; a firmware compile job in CI.
 
-[Unreleased]: https://github.com/a8901147/neuroEdge/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/a8901147/neuroEdge/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/a8901147/neuroEdge/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/a8901147/neuroEdge/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/a8901147/neuroEdge/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/a8901147/neuroEdge/compare/v1.1.0...v1.2.0

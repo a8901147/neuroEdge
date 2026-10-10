@@ -16,9 +16,8 @@ namespace edgeneuro::mearm::pathb {
 // this against data/pathb_golden.csv (the 2026-09-24 real log through Python).
 //
 // Outputs are MODEL ctrl radians (mearm_scene.xml actuator space), NOT servo
-// pulse widths: a servo-side mapping from these to real pulses (polarity and
-// limits measured on the real arm, SESSION_LOG TODO C) is a separate, later step.
-// Not wired into phase3_control_loop yet.
+// pulse widths. The firmware uses this decode through mearm_real.hpp, which
+// turns the decoded tilt/azimuth into real pulses inside the measured envelope.
 constexpr float kBaseLimit = 1.08210414f;
 constexpr float kBaseSwing = 0.9f;                  // model base rotation for the calibrated LEFT/RIGHT
 constexpr float kElbowSwingRad = 2.25147473507f;    // radians(129deg), 9/05 real capture (relative swing only)

@@ -25,6 +25,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest import mock
 
@@ -45,14 +46,25 @@ def uart_line(shoulder_raw, elbow, grip=0.0, gripping=0):
 
 _NOISE = __import__("random").Random(7)
 _RAW_RE = __import__("re").compile(rb"(_raw_a[xyz]=)([-+]?\d+\.\d+)")
+SATURATION_G = rdl.sensor_health.SATURATION_G   # full scale: a saturated axis is pinned there, not noisy
 
 
 def with_noise(line):
     """Real accelerometers are never bit-for-bit constant: perturb every raw accel value a little (sensor_health treats a
     long run of identical readings as a frozen sensor -- the 2026-09-27 failure)."""
-    # (an exact 0 is left alone: the firmware's all-zero "no reading yet" default is exactly zero, not noisy)
-    return _RAW_RE.sub(lambda m: m.group(0) if float(m.group(2)) == 0.0 else
+    # Left alone: an exact 0 (the firmware's all-zero "no reading yet" default) and an axis at full scale (+-1.99 g or
+    # more). A saturated axis reads 1.999939 bit for bit, like the real 9/27 failure; noise that took it below 1.99 made
+    # one frozen line look plausible, and the model followed it (CI 2026-10-10, base -0.9083...).
+    return _RAW_RE.sub(lambda m: m.group(0) if float(m.group(2)) == 0.0 or abs(float(m.group(2))) >= SATURATION_G else
                        m.group(1) + f"{float(m.group(2)) + _NOISE.gauss(0, 0.003):+.4f}".encode(), line)
+
+
+def with_unused_fields_changed(line):
+    """The same accelerometer vectors, but the firmware's complementary-filter angles and the upper-arm gyro set to large
+    values. The docs say neither drives any model; only the raw accelerometer vectors, the elbow bend and the grip do."""
+    return (line.replace(b"shoulder_pitch=0.000 shoulder_roll=0.000", b"shoulder_pitch=1.400 shoulder_roll=-1.100")
+                .replace(b"shoulder_raw_gx=+0.000 shoulder_raw_gy=+0.000 shoulder_raw_gz=+0.000",
+                         b"shoulder_raw_gx=+3.000 shoulder_raw_gy=-2.500 shoulder_raw_gz=+4.000"))
 
 
 class FakeSerial:
@@ -160,8 +172,38 @@ def run_preview(line, saved, ticks=800, serial_factory=None, events=None, skip_e
     return ctrl, out.getvalue()
 
 
+class _TinyAlternatingNoise:
+    """In place of _NOISE: +-0.0001 g, alternating. Every reading still changes (so no sensor looks frozen), but two runs
+    see practically the same vectors, so a comparison between them is not decided by random noise (it was, on CI)."""
+
+    def __init__(self):
+        self.sign = 1.0
+
+    def gauss(self, _mu, _sigma):
+        self.sign = -self.sign
+        return 1e-4 * self.sign
+
+
+class OnlyTheAccelerometerVectorsDriveTheModelTest(unittest.TestCase):
+    """Design claim (README, PRD 5): the models follow the raw gravity vectors; the gyroscopes and the firmware's
+    complementary-filter roll/pitch are diagnostic only."""
+
+    def test_gyro_and_complementary_filter_fields_do_not_move_the_mearm_model(self):
+        for raw in (fx.LEFT, fx.FORWARD):
+            line = uart_line(raw, fx.STRAIGHT)
+            changed = with_unused_fields_changed(line)
+            self.assertNotEqual(line, changed)                 # the fields really were changed
+            with unittest.mock.patch.object(sys.modules[__name__], "_NOISE", _TinyAlternatingNoise()):
+                base, _ = run_preview(line, fx.SAVED_9_13, ticks=400)
+                other, _ = run_preview(changed, fx.SAVED_9_13, ticks=400)
+            for joint in ("base", "shoulder", "elbow", "claw"):
+                with self.subTest(raw=raw, joint=joint):
+                    # used, the changed fields would move a joint by ~1 rad; +-0.0001 g of noise moves it by far less
+                    self.assertAlmostEqual(base[joint], other[joint], delta=0.005)
+
+
 class StartPoseTest(unittest.TestCase):
-    """2026-10-03: before following, the person is asked to let the arm hang; on Enter the
+    """2026-10-03 (the author's design): before following, the person is asked to let the arm hang; on Enter the
     firmware is sent R, which walks every servo back to the start pose (base/shoulder/elbow 1500, claw 1300 open)."""
 
     def test_the_person_is_asked_to_let_the_arm_hang_and_R_is_sent_only_after_enter(self):
@@ -337,7 +379,7 @@ class EmgThresholdTest(unittest.TestCase):
 
 
 class EmgReleaseThresholdTest(unittest.TestCase):
-    """2026-10-04: two thresholds. The grip let go too easily: in the 13:12 calibration the relaxed level
+    """2026-10-04: two thresholds. The author found the grip let go too easily: in the 13:12 calibration the relaxed level
     was ~1170, the threshold 1876, and the clench's lowest 10% only ~1908 -- a gentler hold while the arm moves dips under
     1876. The board now grips above the threshold and lets go only below a lower RELEASE threshold, halfway between the
     relaxed level and the threshold. Shared by --mearm and the humanoid path (apply_emg_threshold)."""
@@ -580,18 +622,26 @@ class SensorHealthTest(unittest.TestCase):
         # frozen until the preview has actually said so, then healthy: not "the first 200 reads", which on a slower
         # machine (CI, 2026-10-04) were used up before the health check even started. If it never warns, the board
         # stays frozen, the preflight times out and this fails.
+        def warned():
+            # the preview's captured output; once the test has restored the real stdout, a reader thread still running
+            # must not crash on it (CI 2026-10-10 printed that AttributeError into the log)
+            captured = getattr(sys.stdout, "getvalue", None)
+            return captured is not None and "HARDWARE FAULT" in captured()
+
         def factory():
-            return ScriptedSerial(lambda n: frozen if "HARDWARE FAULT" not in sys.stdout.getvalue() else self.GOOD_LEFT)
+            return ScriptedSerial(lambda n: self.GOOD_LEFT if warned() else frozen)
         with mock.patch.object(rdl, "MEARM_HEALTH_PREFLIGHT_MAX_S", 20.0):
             ctrl, out = run_preview(None, fx.SAVED_9_13, serial_factory=factory)
         self.assertIn("HARDWARE FAULT", out)                           # it said so while waiting
         self.assertGreater(ctrl["base"], 0.5)                  # and then ran normally
 
     def test_a_line_arriving_between_the_check_and_the_use_is_never_applied(self):
-        """CI 2026-10-07/08 (3 failures, always base=-0.9083...): a step checked one sample, then read the sensors AGAIN to
-        compute the pose, so a line that arrived in between -- here the first line of a frozen forearm, with the arm
-        already swung RIGHT -- was applied unchecked, and the model then held that wrong pose. Forced deterministically:
-        the fake port hands over that line exactly inside the loop's own plausibility check."""
+        """Found 2026-10-08 while investigating CI failures (always base=-0.9083...): a step checked one sample, then read
+        the sensors AGAIN to compute the pose, so a line that arrived in between -- here the first line of a frozen
+        forearm, with the arm already swung RIGHT -- was applied unchecked, and the model then held that wrong pose.
+        Forced deterministically: the fake port hands over that line exactly inside the loop's own plausibility check.
+        (That base value itself came from the test noise moving a full-scale axis below 1.99, reproduced exactly on
+        2026-10-10 -- see with_noise.)"""
         frozen_right = self.frozen_forearm(fx.RIGHT)
         armed, released, stored = threading.Event(), threading.Event(), threading.Event()
         real_plausible = rdl.sensor_health.plausible

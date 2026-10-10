@@ -10,8 +10,11 @@ namespace edgeneuro::mearm::linkage {
 // Python is the source of truth; tests/test_mearm_linkage.cpp checks this port
 // against data/linkage_golden.csv (generated from the Python).
 //
-// NOT wired into phase3_control_loop yet: the band limits below are MeArmPilot's
-// (measured on THEIR unit), not this arm's -- SESSION_LOG TODO C.
+// The band limits below are MeArmPilot's (measured on THEIR unit), not this arm's.
+// They shape only the model's elbow (project_elbow), which the firmware ignores; it uses just
+// the rest/raised/extended/folded constants, to scale Path B's output in
+// mearm_real.hpp; the real servos are limited by the envelope measured on this arm
+// (mearm_envelope_data.hpp, SESSION_LOG TODO C).
 constexpr float kShoulderRest = 0.898057932f;   // model shoulder ctrl, arm hanging
 constexpr float kShoulderRaised = -0.141261412f;
 constexpr float kElbowExtended = 0.994603031f;
