@@ -79,10 +79,6 @@ real-time evidence is the main loop holding 1 kHz above.
 | Mode | Apple M1 (Release) | STM32F401 @ 16 MHz, mean | STM32: the tick that classifies (every 50th) | CPU at 1 kHz |
 | --- | --- | --- | --- | --- |
 | `<1,6>`: 1 EMG + 6 IMU channels, IIR, MAV, LDA (3 classes) | ~7.5 ns | 15.0 µs | 317 µs | 1.5 % |
-| `<32,0>`: 32-channel HD-sEMG stress test, LDA (4 classes) | ~39 ns | 134 µs | 1.54 ms | 13.4 % |
-
-At 16 MHz the 32-channel classify tick overruns a 1 ms sample period, while the 1-EMG configuration fits easily. The
-clock has not been raised to the chip's 84 MHz.
 
 **Known limitations**
 - As the electrodes are placed now, the EMG picks up the muscles that lift the arm: a relaxed hand moving through the

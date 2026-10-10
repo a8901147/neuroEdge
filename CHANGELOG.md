@@ -10,6 +10,8 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 ### Changed
 - The documents describe the EMG input as the MyoWare's hardware envelope (`ENV`, rectified EMG low-passed at 3.6 Hz),
   and give 1 kHz as the control loop's rate.
+- README and PRD report the generic pipeline's on-target latency for the wearable configuration (1 EMG + 6 IMU
+  channels) only. The 32-channel stress configuration stays in the benchmark code (`latency_configs.hpp`).
 
 ## [1.4.1] — 2026-10-10
 
