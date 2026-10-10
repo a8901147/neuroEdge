@@ -25,6 +25,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest import mock
 
@@ -168,6 +169,18 @@ def run_preview(line, saved, ticks=800, serial_factory=None, events=None, skip_e
     return ctrl, out.getvalue()
 
 
+class _TinyAlternatingNoise:
+    """In place of _NOISE: +-0.0001 g, alternating. Every reading still changes (so no sensor looks frozen), but two runs
+    see practically the same vectors, so a comparison between them is not decided by random noise (it was, on CI)."""
+
+    def __init__(self):
+        self.sign = 1.0
+
+    def gauss(self, _mu, _sigma):
+        self.sign = -self.sign
+        return 1e-4 * self.sign
+
+
 class OnlyTheAccelerometerVectorsDriveTheModelTest(unittest.TestCase):
     """Design claim (README, PRD 5): the models follow the raw gravity vectors; the gyroscopes and the firmware's
     complementary-filter roll/pitch are diagnostic only."""
@@ -177,11 +190,13 @@ class OnlyTheAccelerometerVectorsDriveTheModelTest(unittest.TestCase):
             line = uart_line(raw, fx.STRAIGHT)
             changed = with_unused_fields_changed(line)
             self.assertNotEqual(line, changed)                 # the fields really were changed
-            base, _ = run_preview(line, fx.SAVED_9_13, ticks=400)
-            other, _ = run_preview(changed, fx.SAVED_9_13, ticks=400)
+            with unittest.mock.patch.object(sys.modules[__name__], "_NOISE", _TinyAlternatingNoise()):
+                base, _ = run_preview(line, fx.SAVED_9_13, ticks=400)
+                other, _ = run_preview(changed, fx.SAVED_9_13, ticks=400)
             for joint in ("base", "shoulder", "elbow", "claw"):
                 with self.subTest(raw=raw, joint=joint):
-                    self.assertAlmostEqual(base[joint], other[joint], delta=0.02)   # sensor-noise level only
+                    # used, the changed fields would move a joint by ~1 rad; +-0.0001 g of noise moves it by far less
+                    self.assertAlmostEqual(base[joint], other[joint], delta=0.005)
 
 
 class StartPoseTest(unittest.TestCase):

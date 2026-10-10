@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest import mock
 
@@ -323,6 +324,18 @@ class UnusedFieldsBoard(Board):
                              b"shoulder_raw_gx=+3.000 shoulder_raw_gy=-2.500 shoulder_raw_gz=+4.000"))
 
 
+class _TinyAlternatingNoise:
+    """In place of _NOISE: +-0.0001 g, alternating. Every reading still changes (so no sensor looks frozen), but two runs
+    see practically the same vectors, so a comparison between them is not decided by random noise (it was, on CI)."""
+
+    def __init__(self):
+        self.sign = 1.0
+
+    def gauss(self, _mu, _sigma):
+        self.sign = -self.sign
+        return 1e-4 * self.sign
+
+
 class OnlyTheAccelerometerVectorsDriveTheArmTest(unittest.TestCase):
     """Design claim (README, PRD 5): the G1 arm follows the raw upper-arm gravity vector; the gyroscope and the firmware's
     complementary-filter roll/pitch are diagnostic only."""
@@ -331,10 +344,12 @@ class OnlyTheAccelerometerVectorsDriveTheArmTest(unittest.TestCase):
         for raw in (fx.LEFT, fx.FORWARD):
             with self.subTest(raw=raw):
                 self.assertIn(b"shoulder_pitch=1.400", UnusedFieldsBoard(raw).read(256))   # the fields really change
-                base, _, _ = run_main(Board(raw), ["--skip-calibration"], ticks=800)
-                other, _, _ = run_main(UnusedFieldsBoard(raw), ["--skip-calibration"], ticks=800)
+                with unittest.mock.patch.object(sys.modules[__name__], "_NOISE", _TinyAlternatingNoise()):
+                    base, _, _ = run_main(Board(raw), ["--skip-calibration"], ticks=800)
+                    other, _, _ = run_main(UnusedFieldsBoard(raw), ["--skip-calibration"], ticks=800)
                 for joint in ("roll", "pitch"):
-                    self.assertAlmostEqual(base[joint], other[joint], delta=0.02)   # sensor-noise level only
+                    # used, the changed fields would move a joint by ~1 rad; +-0.0001 g of noise moves it by far less
+                    self.assertAlmostEqual(base[joint], other[joint], delta=0.005)
 
 
 class OneFramePerStepTest(unittest.TestCase):
