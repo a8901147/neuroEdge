@@ -7,11 +7,16 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-10-10
+
+Documentation, tests and code comments checked against the code and the committed recordings. No change to what the
+firmware or the PC tools do.
+
 ### Fixed
-- Documentation: servo commands are computed at 100 Hz but applied at the 50 Hz PWM frame rate (TIM3 output-compare
-  preload); 1.4.0's notes said "updated at 100 Hz". The accelerometer-only arm direction is now listed as a known
-  limitation, with the measured |a| deviation during the demo motions.
-- Documentation, after a second audit against the code and the raw recordings:
+- Documentation ([#19]): servo commands are computed at 100 Hz but applied at the 50 Hz PWM frame rate (TIM3
+  output-compare preload); 1.4.0's notes said "updated at 100 Hz". The accelerometer-only arm direction is now listed as
+  a known limitation, with the measured |a| deviation during the demo motions.
+- Documentation, after a second audit against the code and the raw recordings ([#21]):
   - The |a| deviation now includes the forearm IMU (0.10–0.18 g at the 95th percentile), which the elbow bend also
     relies on; the upper-arm range is 0.06–0.09 g, not 0.07–0.09 g.
   - The `R` homing command runs even during an IMU fault (the start pose is known-safe); R9 names this exception.
@@ -19,10 +24,16 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
     by the firmware, but no tool captures one, so the PRD no longer says the ends are at the person's reach.
   - The control loop's own CPU load is not measured (the CPU figures are the generic pipeline's); each run drives one
     of the two MuJoCo models, not both; an optional sensor (`O<bits>`) is not health-checked.
+- Code comments that described an earlier design ([#22]): the base "held at rest", Path B and the linkage "not wired
+  in yet", an unverified DLPF setting, and a `measure_base_reach.py` that never existed.
+
+### Changed
+- Code comments and test docstrings say who "the user" was: the author, the operator or the wearer ([#20]).
 
 ### Added
-- `tools/test_docs_match_code.py` (run in CI): each stated parameter, rate, design claim, test count and measured
-  number in README, PRD and firmware/README is compared with the code or recomputed from the committed recordings.
+- `tools/test_docs_match_code.py` (run in CI, [#21]): each stated parameter, rate, design claim, test count and
+  measured number in README, PRD and firmware/README is compared with the code or recomputed from the committed
+  recordings.
 
 ## [1.4.0] — 2026-10-10
 
@@ -123,7 +134,8 @@ end to end, in the MuJoCo humanoid arm.
 - DLPF and EMA tremor smoothing; EMG threshold as mean + K·std, with a long-term log of real calibration sessions.
 - Sensors can be marked optional instead of crashing when absent ([#1]); a firmware compile job in CI.
 
-[Unreleased]: https://github.com/a8901147/neuroEdge/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/a8901147/neuroEdge/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/a8901147/neuroEdge/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/a8901147/neuroEdge/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/a8901147/neuroEdge/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/a8901147/neuroEdge/compare/v1.1.0...v1.2.0
@@ -143,3 +155,7 @@ end to end, in the MuJoCo humanoid arm.
 [#15]: https://github.com/a8901147/neuroEdge/pull/15
 [#16]: https://github.com/a8901147/neuroEdge/pull/16
 [#17]: https://github.com/a8901147/neuroEdge/pull/17
+[#19]: https://github.com/a8901147/neuroEdge/pull/19
+[#20]: https://github.com/a8901147/neuroEdge/pull/20
+[#21]: https://github.com/a8901147/neuroEdge/pull/21
+[#22]: https://github.com/a8901147/neuroEdge/pull/22
