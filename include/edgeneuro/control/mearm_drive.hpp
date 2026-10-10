@@ -16,8 +16,9 @@ inline bool make_compiled_calibration(pathb::Calibration& out) {
                                     {kLeftX, kLeftY, kLeftZ}, {kRightX, kRightY, kRightZ}, kZeroElbow, out);
 }
 
-// The compiled-in comfortable base reach (measure_base_reach.py -> gen_calibration_header.py), or the default mapping
-// when none was measured. False only if a compiled-in reach is unusable (then the caller should use the default).
+// The compiled-in comfortable base reach (the calibration file's base_reach_*_raw ->
+// gen_calibration_header.py), or the default mapping when none was measured (no tool captures that reach yet, so the
+// default applies). False only if a compiled-in reach is unusable (then the caller should use the default).
 inline bool make_compiled_base_reach(const pathb::Calibration& cal, real::BaseReach& out) {
     using namespace calibration_data;
     if (!kHasBaseReach) {

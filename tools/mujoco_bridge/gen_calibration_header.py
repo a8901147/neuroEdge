@@ -29,7 +29,7 @@ def render(saved):
         for axis, v in zip("XYZ", saved[key]):
             rows.append(f"constexpr float k{name}{axis} = {float(v):.9f}f;")
     rows.append(f"constexpr float kZeroElbow = {float(saved['zero_elbow']):.9f}f;")
-    # the arm's comfortable left/right reach (2026-10-03, measure_base_reach.py): where the base hits its ends
+    # the arm's comfortable left/right reach (2026-10-03; no tool captures it yet): where the base hits its ends
     rows.append(f"constexpr bool kHasBaseReach = {'true' if has_reach else 'false'};")
     for name, key in (("BaseReachLeft", "base_reach_left_raw"), ("BaseReachRight", "base_reach_right_raw")):
         for axis, v in zip("XYZ", saved[key] if has_reach else (0.0, 0.0, 0.0)):

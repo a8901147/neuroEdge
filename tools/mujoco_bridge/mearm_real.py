@@ -120,7 +120,7 @@ def default_base_reach(cal):
 
 
 def saved_base_reach(cal, saved):
-    """The measured comfortable reach from shoulder_calibration.json's raw vectors (measure_base_reach.py), or None."""
+    """The measured comfortable reach from shoulder_calibration.json's raw vectors, or None (none is captured yet)."""
     if "base_reach_left_raw" not in saved or "base_reach_right_raw" not in saved:
         return None
     _t, left = cal.decode(saved["base_reach_left_raw"])
