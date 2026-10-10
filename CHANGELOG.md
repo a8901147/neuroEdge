@@ -7,6 +7,10 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ## [Unreleased]
 
+### Changed
+- The documents describe the EMG input as the MyoWare's hardware envelope (`ENV`, rectified EMG low-passed at 3.6 Hz),
+  and give 1 kHz as the control loop's rate.
+
 ## [1.4.1] — 2026-10-10
 
 The parameters, rates and design statements in README, PRD and firmware/README are now checked against the code in CI,
@@ -51,7 +55,7 @@ numbers, and a fix for a race in the live bridge.
 - **Design descriptions corrected to match the implementation** ([#17]): the MuJoCo MeArm model is driven by a
   different (joint-to-joint) mapping than the physical arm, so it is no longer called a digital twin; control uses
   only the IMUs' accelerometers (the gyroscopes are read but unused, and the complementary filter is diagnostic only);
-  servo commands are updated at 100 Hz while EMG is sampled at 1 kHz; the measured on-target latency is the generic
+  servo commands are updated at 100 Hz in a 1 kHz control loop; the measured on-target latency is the generic
   pipeline's, which the arm does not use; only the IMUs are health-checked. PRD §5 gained the sensor-to-DOF mapping, and
   every concrete claim in the documents was checked against the code.
 - Every user-facing message in the tools is in English ([#15]).
@@ -126,7 +130,7 @@ First stable release: two MPU6050s and the MyoWare EMG drive a full reach → gr
 end to end, in the MuJoCo humanoid arm.
 
 ### Added
-- Zero-heap-allocation C++ control loop on the STM32F401 (1 kHz EMG, non-blocking I2C for both IMUs).
+- Zero-heap-allocation C++ control loop on the STM32F401 (1 kHz loop reading the EMG envelope, non-blocking I2C for both IMUs).
 - Live bridge into MuJoCo (`run_demo_live.py`) with pose and EMG calibration.
 - DLPF and EMA tremor smoothing; EMG threshold as mean + K·std, with a long-term log of real calibration sessions.
 - Sensors can be marked optional instead of crashing when absent ([#1]); a firmware compile job in CI.

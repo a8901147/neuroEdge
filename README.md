@@ -11,9 +11,10 @@ and multi-gesture schemes need many EMG channels, per-user training, and often a
 inexpensive, off-the-shelf parts:
 
 - **Natural, simultaneous control.** Two IMUs read where the arm points and how far the elbow bends; one EMG channel
-  opens and closes the grip. No mode switching and no gesture training.
+  (the MyoWare's hardware envelope, `ENV`: rectified EMG low-passed at 3.6 Hz) opens and closes the grip. No mode
+  switching and no gesture training.
 - **Control on a microcontroller.** For the physical arm, a low-cost Cortex-M4 (STM32F401) does all the real-time
-  processing (the PC only calibrates): EMG sampled at 1 kHz, servo commands computed at 100 Hz and applied at the
+  processing (the PC only calibrates): a 1 kHz control loop, servo commands computed at 100 Hz and applied at the
   servos' 50 Hz PWM rate, in deterministic C++20 with no heap allocation and no HAL.
   (The MuJoCo models are computed on the PC from the data the board streams.)
 - **Built for reliability.** A two-threshold grip holds while the arm moves; a faulty or disconnected IMU makes the
@@ -37,8 +38,8 @@ before releasing it is not yet shown, and no success rate over repeated trials h
 *The run described above, in real time (27 s, sound removed). [Higher-resolution video (MP4)](docs/demo.mp4).*
 
 ```
- MyoWare 2.0 (EMG, ENV) ──ADC 1 kHz──┐
- MPU6050 upper arm (0x68) ──I2C1─────┤   STM32F401 Black Pill, 16 MHz       USART2 115200
+ MyoWare 2.0 ENV (3.6 Hz) ──ADC─────┐
+ MPU6050 upper arm (0x68) ──I2C1────┤   STM32F401 Black Pill, 16 MHz        USART2 115200
  MPU6050 forearm  (0x69) ──I2C1─────┤   1 kHz main loop, zero heap  ───────────────────▶ PC: run_demo_live.py
                                     │                                                    ├─ MuJoCo MeArm model
                                     └──▶ TIM3 PWM 50 Hz ──▶ MeArm base / shoulder /      └─ MuJoCo Unitree G1 arm+hand
@@ -65,11 +66,11 @@ applies a new pulse width at the start of each 20 ms PWM frame, so each servo re
 
 | What | Result |
 | --- | --- |
-| Main loop | 1 kHz ADC sampling triggered by TIM2 (1007 ticks/s measured over 30 s; the internal HSI clock runs +0.9 %) |
+| Main loop | 1 kHz, timed by TIM2 triggering the ADC (one `ENV` sample per tick; 1007 ticks/s measured over 30 s; the internal HSI clock runs +0.9 %) |
 | IMU reads | Non-blocking I2C state machine on a 100 kHz bus: ~274 completed reads/s per IMU with both IMUs |
 | Heap | No `malloc`/`free`/`new`/`_sbrk` symbols in the firmware image; `malloc_count == 0` asserted on the host and on the target |
 | Firmware size | `phase3_control_loop` with servos on: 18.4 KB of code, 3.3 KB of static RAM (of 240 KB / 64 KB) |
-| Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 593 Python test functions |
+| Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 594 Python test functions |
 
 Per-sample latency of the generic `EdgeNeuro<>` pipeline, on synthetic input. Both machines run the same engine code
 (`include/edgeneuro/bench/latency_configs.hpp`). The arm's control path does not use this pipeline (PRD §3); its
