@@ -73,7 +73,7 @@ class ParametersStatedInTheDocsTest(unittest.TestCase):
         self.assertEqual(doc(PRD, rf"opens after {NUM} ms below") / 1000, off)
         self.assertEqual(doc(PRD, rf"2 thresholds, {NUM} ms debounce"), on * 1000)
         self.assertEqual(doc(FW_README, rf"{NUM} s debounce each way"), on)
-        self.assertEqual(doc(PRD, rf"EMA, α = {NUM}"), alpha)
+        self.assertEqual(doc(PRD, rf"EMA \(α = {NUM}"), alpha)
         self.assertEqual(doc(FW_README, rf"EMA \(α = {NUM}\)"), alpha)
 
     def test_base_steadiness(self):
@@ -151,10 +151,26 @@ class RatesStatedInTheDocsTest(unittest.TestCase):
         self.assertNotRegex(PHASE3, r"RCC->(PLLCFGR|CFGR)\s*[|&]?=")
         self.assertIn("16 MHz HSI", FW_README)
 
-    def test_emg_is_sampled_at_1_khz(self):
+    def test_the_control_loop_runs_at_1_khz(self):
+        # TIM2 triggers the ADC once per ms; each conversion is one tick of the main loop
         psc, arr = code(PHASE3, rf"TIM2->PSC = {NUM}u"), code(PHASE3, rf"TIM2->ARR = {NUM}u")
         self.assertEqual(CORE_HZ / (psc + 1) / (arr + 1), 1000)
-        self.assertIn("EMG sampled at 1 kHz", README)
+        self.assertIn("a 1 kHz control loop", README)
+        self.assertIn("Fixed 1 kHz control loop (one `ENV` sample per tick)", PRD)
+
+    def test_the_emg_input_is_the_myoware_envelope_not_raw_emg(self):
+        # the ADC reads channel 0 (PA0, analog), which the pin map wires to the MyoWare's ENV output. ENV's 3.6 Hz
+        # first-order envelope is the MyoWare 2.0 Advanced Guide's figure (hardware, not checkable here).
+        self.assertRegex(PHASE3, r"ADC1->SQR3 &= ~ADC_SQR3_SQ1;")                  # first conversion = channel 0
+        self.assertRegex(PHASE3, r"GPIOA->MODER \|= \(3u << \(0u \* 2u\)\);")       # PA0 analog
+        self.assertIn("| PA0 | ADC1_IN0 | MyoWare `ENV` |", FW_README)
+        for name, text in (("README", README), ("PRD", PRD), ("firmware/README", FW_README)):
+            with self.subTest(name):
+                self.assertIn("3.6 Hz", text)
+                # the 1 kHz is the loop's rate, never stated as the EMG's
+                self.assertNotRegex(text, r"(?i)EMG[^.|\n]{0,40}1 ?kHz|1 ?kHz[^.|\n]{0,15}EMG")
+        # and why 1 kHz is not the envelope's need: it is read once per loop tick, and the EMA averages those readings
+        self.assertIn("it would not need a 1 kHz sample rate", " ".join(PRD.split()))
 
     def test_servo_commands_are_computed_at_100_hz_and_applied_at_the_50_hz_pwm_frame(self):
         # computed: the servo block runs on every 10th 1 kHz tick

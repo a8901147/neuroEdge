@@ -14,7 +14,7 @@ targets.
 | --- | --- |
 | MCU | STM32F401RCT6 Black Pill (Cortex-M4F, 256 KB Flash, 64 KB SRAM). Runs at the reset-default 16 MHz HSI; no PLL is configured. |
 | Bootloader | WeAct HID bootloader in the first 16 KB of Flash. Apps are linked at `0x08004000` (`linker/STM32F401RCTx_FLASH.ld`); don't move it back to `0x08000000`, which would erase the bootloader. |
-| EMG | MyoWare 2.0, `ENV` (rectified, low-passed envelope) output |
+| EMG | MyoWare 2.0, `ENV` output: rectified EMG low-passed at 3.6 Hz (MyoWare 2.0 Advanced Guide), not raw EMG |
 | IMUs | 2× MPU6050 breakout boards on one I2C bus: upper arm `0x68` (AD0 open), forearm `0x69` (AD0 to 3.3 V) |
 | Arm | MeArm with 4× SG92R servos, on a separate 4×AA supply |
 | Debug | ST-Link V2 (SWD) for flashing and register reads; FT232RL USB-serial adapter for UART (avoid CP2102: see `tools/usb_serial_port.py`) |
@@ -90,7 +90,7 @@ bootloader.
 
 | Target | What it does / proved | UART |
 | --- | --- | --- |
-| **`phase3_control_loop`** | **The product firmware.** 1 kHz EMG + two IMUs + (optionally) the four servos. See below. | 115200 |
+| **`phase3_control_loop`** | **The product firmware.** 1 kHz control loop: the EMG envelope (`ENV`) + two IMUs + (optionally) the four servos. See below. | 115200 |
 | `pipeline_latency` | Per-tick latency of the generic `EdgeNeuro<>` pipeline, using the DWT cycle counter (results in the root README). | 115200 |
 | `i2c_bus_scan` | Diagnostic: scans every I2C1 address; the results are read over SWD (`g_scan_bitmap`). Run by `check_hardware_ready.py --i2c-scan`. | – |
 | `servo_pwm_test` | First servo on PA6: sweeps between the unit's measured limits (450–2500 µs). | – |
