@@ -37,6 +37,14 @@ before releasing it is not yet shown, and no success rate over repeated trials h
 
 *The run described above, in real time (27 s, sound removed). [Higher-resolution video (MP4)](docs/demo.mp4).*
 
+**The same sensors driving the MuJoCo humanoid** (one run on video, 2026-10-13, inset: the operator). The G1 model's arm
+follows the operator's arm; its hand closes on a ball when the operator grips and releases it when the operator relaxes.
+In this model the hand holds the ball only at the front-left reach pose (see Limitations).
+
+![The MuJoCo Unitree G1 arm following the operator's arm, grasping a ball and releasing it](docs/demo_mujoco_g1.gif)
+
+*Screen recording of the MuJoCo viewer, in real time (24 s, sound removed). [Higher-resolution video (MP4)](docs/demo_mujoco_g1.mp4).*
+
 ```
  MyoWare 2.0 ENV (3.6 Hz) ──ADC─────┐
  MPU6050 upper arm (0x68) ──I2C1────┤   STM32F401 Black Pill, 16 MHz        USART2 115200
