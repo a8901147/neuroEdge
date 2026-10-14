@@ -45,6 +45,16 @@ In this model the hand holds the ball only at the front-left reach pose (see Lim
 
 *Screen recording of the MuJoCo viewer, in real time (24 s, sound removed). [Higher-resolution video (MP4)](docs/demo_mujoco_g1.mp4).*
 
+**What the EMG channel sees** (one wearer, one session, 2026-10-13). The terminal is `tools/watch_emg_raw.py`, which
+prints the board's `emg_min`/`emg_max` for each ~10 ms window of the MyoWare envelope (raw 12-bit ADC counts) with a bar
+for `emg_max`. With the hand relaxed it stayed at about 700–750; a grip raised it to about 1,000–1,550; moving the
+cable with the hand still relaxed made it jump to about 3,800, far above the grip. This is why the grip threshold alone
+cannot be trusted, and the EMG channel has no health check yet (see Limitations).
+
+| Hand relaxed | Grip | Cable moved, hand relaxed |
+| --- | --- | --- |
+| ![EMG envelope with the hand relaxed](docs/emg_relaxed.gif) | ![EMG envelope during a grip](docs/emg_grip.gif) | ![EMG envelope while the cable is moved](docs/emg_cable_moved.gif) |
+
 ```
  MyoWare 2.0 ENV (3.6 Hz) ──ADC─────┐
  MPU6050 upper arm (0x68) ──I2C1────┤   STM32F401 Black Pill, 16 MHz        USART2 115200

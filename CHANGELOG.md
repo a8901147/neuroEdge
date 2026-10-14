@@ -9,6 +9,7 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ### Added
 - README: a video of the MuJoCo Unitree G1 model driven by the live sensors (`docs/demo_mujoco_g1.gif`, `.mp4`).
+- README: three short recordings of the EMG envelope (relaxed, grip, cable moved), `docs/emg_*.gif`.
 
 ### Changed
 - `docs/demo.mp4` re-encoded from the original recording at 1920×1080 (was 1280×720).
