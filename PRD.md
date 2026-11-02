@@ -138,14 +138,16 @@ well, and the model holds its pose. A calibration received over UART is checksum
 | R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz, 1 EMG + 6 IMU channels: mean 15 µs, classify tick 317 µs | Met |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
 | R9 | An IMU fault never moves the arm | `ImuHealth` in firmware, `sensor_health` on the PC; host tests | Met for the IMUs, except that homing (`R`) still walks to the start pose; the EMG channel is not health-checked (§7) |
-| R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; tape picked up, lifted and carried to the right on the real arm, 2026-10-09 (video; released at claw height rather than set down); motion artifact measured | Partly: limited by electrode placement (§7); the claw hooks the roll rather than clamping it; no controlled set-down or repeated-trial success rate yet |
+| R10 | Grip is reliable during arm motion | Two-threshold grip verified with demo motions on 2026-10-07; tape picked up, lifted and carried to the right on the real arm, 2026-10-09 (video; released at claw height rather than set down); motion artifact measured | Partly: limited by EMG motion artifact (§7); the claw hooks the roll rather than clamping it; no controlled set-down or repeated-trial success rate yet |
 
 ## 7. Known limitations
 
-- **EMG motion artifact.** With the current electrode placement, arm motion alone reached 3848 ADC counts, more than
-  a firm still grip (1318). The MyoWare's high-pass corner (20.8 Hz) is near the 20 Hz De Luca et al. recommend against
-  movement artifact, though it is first-order rather than their 12 dB/octave; gating on arm motion only cut false grips
-  from 4 to 2. The fix is electrode placement over the finger flexors.
+- **EMG motion artifact.** Arm motion alone reached 3848 ADC counts, more than a firm still grip (1318). Tugging the
+  sensor cable with the arm still reproduces such spikes (the author's test, not recorded), so cable motion is a cause;
+  crosstalk from the arm-lifting muscles is not ruled out. The MyoWare's high-pass corner (20.8 Hz) is near the 20 Hz De
+  Luca et al. recommend against movement artifact, but it is first-order rather than their 12 dB/octave, and once
+  rectified into `ENV` an artifact looks like muscle activity, so the firmware cannot filter it out; gating on arm
+  motion only cut false grips from 4 to 2.
 - **Accelerometer-only direction.** Arm direction and elbow bend come from the accelerometers alone, which assumes the
   arm's own acceleration is small compared with gravity. Recorded demo motions (`data/arm_motion_20261004-*.json`) show
   |a| departing from 1 g by up to 0.06–0.09 g on the upper arm and 0.10–0.18 g on the forearm (95th percentile; about
@@ -164,7 +166,9 @@ well, and the model holds its pose. A calibration received over UART is checksum
 
 - Complete the set-down step (lower, then release) and measure the demo's success rate over repeated trials (and with a
   second person).
-- Move the EMG electrodes to the finger flexors and re-record with `capture_arm_motion.py --set emg`.
+- Secure the EMG sensor cable (strain relief) and re-record with `capture_arm_motion.py --set emg`; if spikes remain
+  with the arm raised and still, move the electrodes. Alternatively, read the MyoWare's RAW output and high-pass it more
+  steeply in firmware.
 - Measure end-to-end latency (sensor motion → servo motion) with high-speed video, and compare the grip's 150 ms
   debounce against the 100–125 ms that Farrell & Weir (2007) found best for myoelectric control.
 - RXNE-interrupt UART receive; 400 kHz I2C on soldered wiring.

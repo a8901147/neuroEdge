@@ -290,8 +290,13 @@ class MeasurementsStatedInTheDocsTest(unittest.TestCase):
             return max((r["emg"][0] + r["emg"][1]) / 2 for r in self.phases[phase] if r.get("emg"))
         self.assertEqual(round(peak("relaxed_task")), doc(README, rf"reached {NUM} ADC counts"))
         self.assertEqual(round(peak("grip_firm_still")), doc(README, rf"a firm grip held still only {NUM}"))
-        self.assertEqual(round(peak("relaxed_task")), doc(PRD, rf"arm motion alone reached {NUM} ADC counts"))
+        self.assertEqual(round(peak("relaxed_task")), doc(PRD, rf"Arm motion alone reached {NUM} ADC counts"))
         self.assertEqual(round(peak("grip_firm_still")), doc(PRD, rf"a firm still grip \({NUM}\)"))
+        # the cause stated is the author's observation (tugging the cable reproduces the spikes), with muscle crosstalk
+        # left open -- the recording cannot separate the two
+        for text in (README, PRD):
+            self.assertIn("Tugging the sensor cable with the arm still reproduces such spikes", text)
+            self.assertIn("is not ruled out", text)
 
 
 if __name__ == "__main__":

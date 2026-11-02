@@ -97,9 +97,10 @@ real-time evidence is the main loop holding 1 kHz above.
 | `<1,6>`: 1 EMG + 6 IMU channels, IIR, MAV, LDA (3 classes) | ~7.5 ns | 15.0 µs | 317 µs | 1.5 % |
 
 **Known limitations**
-- As the electrodes are placed now, the EMG picks up the muscles that lift the arm: a relaxed hand moving through the
-  demo reached 3848 ADC counts, a firm grip held still only 1318. No threshold can separate the two; the fix is moving
-  the electrodes onto the finger flexors.
+- Moving the arm can make the EMG read higher than a grip: a relaxed hand moving through the demo reached 3848 ADC
+  counts, a firm grip held still only 1318, so no threshold can separate the two. Tugging the sensor cable with the arm
+  still reproduces such spikes (the author's test), so cable motion is a cause; crosstalk from the muscles that lift the
+  arm is not ruled out. Securing the cable is the next step.
 - Arm direction and elbow bend come from the accelerometers alone, which assumes the arm's own acceleration is small
   compared with gravity. During the demo motions |a| departed from 1 g by up to 0.06–0.09 g on the upper arm and
   0.10–0.18 g on the forearm (95th percentile; about 0.03 g at rest), and briefly by more than 1 g. An acceleration

@@ -14,6 +14,9 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 ### Changed
 - `DEVELOPMENT.md` rewritten: build and test commands, starting the app over SWD, and the rules the code and documents follow.
 - `docs/demo.mp4` re-encoded from the original recording at 1920×1080 (was 1280×720).
+- The EMG motion artifact is attributed to what was observed: tugging the sensor cable with the arm still reproduces the
+  spikes, and crosstalk from the arm-lifting muscles is not ruled out (it was stated as electrode placement). The next
+  step is securing the cable.
 - The documents describe the EMG input as the MyoWare's hardware envelope (`ENV`, rectified EMG low-passed at 3.6 Hz),
   and give 1 kHz as the control loop's rate.
 - README and PRD report the generic pipeline's on-target latency for the wearable configuration (1 EMG + 6 IMU
