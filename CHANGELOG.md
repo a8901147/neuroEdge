@@ -12,6 +12,7 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 - README: two short recordings of the EMG envelope (relaxed, grip), `docs/emg_relaxed.gif`, `docs/emg_grip.gif`.
 
 ### Changed
+- `DEVELOPMENT.md` rewritten: build and test commands, starting the app over SWD, and the rules the code and documents follow.
 - `docs/demo.mp4` re-encoded from the original recording at 1920×1080 (was 1280×720).
 - The documents describe the EMG input as the MyoWare's hardware envelope (`ENV`, rectified EMG low-passed at 3.6 Hz),
   and give 1 kHz as the control loop's rate.

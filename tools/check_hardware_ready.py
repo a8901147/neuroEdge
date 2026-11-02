@@ -232,7 +232,7 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
     """
     print("\n--- Boot sanity check (does execution actually reach the app?) ---")
     print(
-        f"    If this was just flashed, start the app with the SWD jump (DEVELOPMENT.md, 2026-10-03):\n"
+        f"    If this was just flashed, start the app with the SWD jump (DEVELOPMENT.md):\n"
         f"    {START_APP_CMD}\n"
         f"    Polling for up to {poll_seconds:.0f}s..."
     )

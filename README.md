@@ -225,6 +225,7 @@ engine over 20,000 rows of real recorded EMG with `malloc_count == 0` (it skips 
 - [firmware/README.md](firmware/README.md): firmware targets, wiring, UART protocol
 - [CHANGELOG.md](CHANGELOG.md): releases
 - [SESSION_LOG.md](SESSION_LOG.md): development history and debugging findings, by date
+- [DEVELOPMENT.md](DEVELOPMENT.md): build, flash and test commands; rules for code and documents
 
 ## References
 
@@ -232,6 +233,11 @@ engine over 20,000 rows of real recorded EMG with `malloc_count == 0` (it skips 
   *Prosthetics and Orthotics International*, 31(3), 236–257.
 - Farrell, T. R. & Weir, R. F. (2007). The optimal controller delay for myoelectric prostheses. *IEEE Transactions on
   Neural Systems and Rehabilitation Engineering*, 15(1), 111–118.
+
+## Development
+
+Written with AI coding assistance (Claude). The hardware build, experiments, measurements and design decisions
+are the author's.
 
 ## License
 
