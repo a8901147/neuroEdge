@@ -19,6 +19,7 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 - `DEVELOPMENT.md` rewritten: build and test commands, starting the app over SWD, and the rules the code and documents follow.
 - The EMG calibration refuses a result whose grip the board could not detect, sends nothing, and offers to record
   again; the check uses each window's midpoint, close to what the firmware's EMA compares.
+- The documents name the project neuroEdge, as the repository is named (`EdgeNeuro<>` stays the pipeline template).
 - PRD §7 lists the EMG level's dependence on posture, re-attached electrodes and wear time, as seen on the live
   readings (not recorded); E5 in docs/EVALUATION.md plans the recordings.
 - `phase3_control_loop_main.cpp` is split into hardware modules under `firmware/src/phase3/`, and its comments no

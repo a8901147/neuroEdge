@@ -1,4 +1,4 @@
-# EdgeNeuro
+# neuroEdge
 
 Low-cost, intuitive control of a robotic arm from a person's own arm motion and muscle activity: a testbed for the
 problems that keep myoelectric prosthetic arms expensive and hard to use.
@@ -7,7 +7,7 @@ problems that keep myoelectric prosthetic arms expensive and hard to use.
 
 Myoelectric prosthetic arms are costly, and a large share of users abandon them (Biddiss & Chau, 2007). The control
 itself is part of the problem. Users switch modes to move one joint at a time, grips drop or fire when the arm moves,
-and multi-gesture schemes need many EMG channels, per-user training, and often a PC. EdgeNeuro addresses these with
+and multi-gesture schemes need many EMG channels, per-user training, and often a PC. neuroEdge addresses these with
 inexpensive, off-the-shelf parts:
 
 - **Natural, simultaneous control.** Two IMUs read where the arm points and how far the elbow bends; one EMG channel
@@ -113,6 +113,8 @@ real-time evidence is the main loop holding 1 kHz above.
 
 ## Repository layout
 
+The C++ code is in the `edgeneuro` namespace; `EdgeNeuro<>` is its generic pipeline template.
+
 ```
 include/edgeneuro/   Header-only C++20 library, shared by the host and the firmware
   pipeline.hpp ...   Generic EdgeNeuro<> engine: concepts, IIR/MAV/RMS, LDA, CSV provider; a standalone SPSC ring buffer
@@ -125,7 +127,7 @@ benchmarks/          Google Benchmark latency suite
 tools/               Python: hardware checks, interactive calibration and measurement tools
 tools/mujoco_bridge/ Python: live MuJoCo bridge, MeArm model, Path B / real-arm mapping
 data/                Recorded real-hardware data (linkage, link angles, arm motion, golden calibration), synthetic fixtures
-docs/                Demo video (GIF + MP4) and reference images
+docs/                Demo video (GIF + MP4), reference images, evaluation plan
 ```
 
 ## Build and test (host)

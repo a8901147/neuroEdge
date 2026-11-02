@@ -1,4 +1,4 @@
-# EdgeNeuro: Design and Requirements
+# neuroEdge: Design and Requirements
 
 **Author:** Chang-Jui Tseng · **Last updated:** 2026-11-02
 
