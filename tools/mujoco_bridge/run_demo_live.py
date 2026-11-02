@@ -862,7 +862,7 @@ def reader_thread_main(ser, latest):
                     continue
                 # Neither LINE_RE nor DIAG_LINE_RE matched -- previously
                 # silently dropped, which hid real firmware output (e.g. the
-                # boot-time "Stage 5b: ..." banner, or a "wake write FAILED"
+                # boot-time banner, or a "wake write FAILED"
                 # error right before blink_code()'s infinite halt loop in
                 # phase3_control_loop_main.cpp) with nothing to show for it
                 # but a script that looked hung. Printed here instead so a

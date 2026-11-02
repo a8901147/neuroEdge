@@ -24,6 +24,10 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 - README and PRD report the generic pipeline's on-target latency for the wearable configuration (1 EMG + 6 IMU
   channels) only. The 32-channel stress configuration stays in the benchmark code (`latency_configs.hpp`).
 
+### Fixed
+- After the once-a-second power-register read, the I2C turn passed twice (back to the same sensor), so that sensor
+  read twice in a row.
+
 ## [1.4.1] — 2026-10-10
 
 The parameters, rates and design statements in README, PRD and firmware/README are now checked against the code in CI,

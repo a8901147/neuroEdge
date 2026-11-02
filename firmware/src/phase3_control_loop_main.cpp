@@ -94,7 +94,7 @@ int main(void) {
     // (done by i2c1_init) does not release it.
     i2c1_bus_recovery();
 
-    usart2_send_string("Stage 5b: combined EMG+IMU 1kHz loop, non-blocking I2C\r\n");
+    usart2_send_string("phase3_control_loop: EMG + 2 IMUs, 1 kHz loop\r\n");
 
     read_optional_sensors_config();
 
@@ -243,7 +243,6 @@ int main(void) {
                 mpu6050_write_reg_blocking(addr, 0x6Bu, edgeneuro::mpu6050::kPwrMgmt1Awake);
                 mpu6050_write_reg_blocking(addr, kMpu6050ConfigReg, kDlpfCfg6);
             }
-            active_is_shoulder = !active_is_shoulder;
         } else if (completed) {
             const uint8_t *b = active_reader.buf();
             const float raw_ax = (float)be16(&b[0]) / 16384.0f;
