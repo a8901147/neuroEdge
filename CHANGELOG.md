@@ -13,6 +13,8 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ### Changed
 - `DEVELOPMENT.md` rewritten: build and test commands, starting the app over SWD, and the rules the code and documents follow.
+- The EMG calibration refuses a result whose grip the board could not detect, sends nothing, and offers to record
+  again; the check uses each window's midpoint, close to what the firmware's EMA compares.
 - `phase3_control_loop_main.cpp` is split into hardware modules under `firmware/src/phase3/`, and its comments no
   longer carry the development history. The generated code is unchanged.
 - `docs/demo.mp4` re-encoded from the original recording at 1920×1080 (was 1280×720).

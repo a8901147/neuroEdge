@@ -133,7 +133,7 @@ well, and the model holds its pose. A calibration received over UART is checksum
 | R2 | Fixed 1 kHz control loop (one `ENV` sample per tick) | TIM2 TRGO → ADC1; report intervals 1.002–1.005 s; 1007 ticks/s in the full loop | Met |
 | R3 | IMU reads never block a tick | Non-blocking I2C state machine; ~274 reads/s per IMU with both on one bus | Met |
 | R4 | No undefined behavior; ring buffer correct under concurrency | ASan + UBSan and TSan presets | Met (all three pass, 2026-10-08; CI runs ASan/UBSan) |
-| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 594 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
+| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 597 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
 | R6 | Fits the MCU | Servo build: 18.4 KB code, 3.3 KB static RAM | Met |
 | R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz, 1 EMG + 6 IMU channels: mean 15 µs, classify tick 317 µs | Met |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |

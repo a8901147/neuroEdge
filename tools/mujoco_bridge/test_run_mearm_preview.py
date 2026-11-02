@@ -440,6 +440,45 @@ class EmgReleaseThresholdTest(unittest.TestCase):
         self.assertEqual(result.release, rdl.emg_release_threshold(mean, int(result)))
         self.assertEqual(sent, [f"T{int(result)},{result.release}\n".encode()])
 
+    # Relaxed level ~1180 +- 8 -> threshold ~1343. A weak clench whose window MAX clears it but whose midpoint (what
+    # the board's 10 ms EMA sees) does not.
+    RELAXED = [(i * 0.0125, 1150, 1170 + (i % 3) * 10) for i in range(160)]
+    WEAK = [(i * 0.0125, 1100, 1500) for i in range(160)]
+    FIRM = [(i * 0.0125, 2300, 2500) for i in range(160)]
+
+    def calibrate(self, tails, answers, interactive=True):
+        tails = iter(tails)
+        sent, logged = [], []
+
+        class Port:
+            def write(self, b):
+                sent.append(b)
+        with mock.patch.object(rdl, "capture_emg_window", lambda *a, **k: next(tails)), \
+                mock.patch.object(rdl, "log_emg_calibration", lambda *a: logged.append(a[-1])), \
+                mock.patch("builtins.input", side_effect=answers), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = rdl.calibrate_emg_threshold(Port(), types.SimpleNamespace(snapshot_emg_raw=lambda: (1150, 1170)),
+                                                 interactive=interactive)
+        return result, sent, logged
+
+    def test_a_grip_the_board_could_not_detect_is_refused_and_nothing_is_sent(self):
+        result, sent, _ = self.calibrate([self.RELAXED, self.WEAK], [], interactive=False)
+        self.assertIsNone(result)
+        self.assertEqual(sent, [])
+
+    def test_a_refused_calibration_can_be_recorded_again(self):
+        # relax, fist, Enter = again, relax, fist
+        result, sent, logged = self.calibrate([self.RELAXED, self.WEAK, self.RELAXED, self.FIRM], ["", "", "", "", ""])
+        self.assertIsNotNone(result)
+        self.assertEqual(sent, [f"T{int(result)},{result.release}\n".encode()])
+        self.assertEqual(logged, [True, False])     # both attempts logged, the first one as suspect
+
+    def test_a_refused_calibration_can_be_skipped(self):
+        result, sent, logged = self.calibrate([self.RELAXED, self.WEAK], ["", "", "s"])
+        self.assertIsNone(result)
+        self.assertEqual(sent, [])
+        self.assertEqual(logged, [True])
+
 
 class RunMearmPreviewEndToEndTest(unittest.TestCase):
     def test_arm_left_drives_the_model_base_left_via_path_b_default(self):

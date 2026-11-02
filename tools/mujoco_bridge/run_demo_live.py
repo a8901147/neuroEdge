@@ -1044,8 +1044,8 @@ def log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std
     try a completely different algorithm against the same real data
     without needing to re-capture it.
 
-    `suspect` (bool) -- reuses calibrate_emg_threshold's own existing
-    "contracted_mean didn't clear threshold" check, not a new heuristic --
+    `suspect` (bool) -- calibrate_emg_threshold's own "the grip's level
+    did not clear the threshold" check, not a new heuristic --
     goes straight into the filename (not just a field inside the JSON) so
     a human scanning the directory listing can tell at a glance which
     sessions might be worth discarding before doing any real analysis,
@@ -1079,83 +1079,67 @@ def log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std
         print(f"Warning: could not write the EMG calibration log (this calibration is unaffected): {e}")
 
 
+def emg_window_midpoints(tail):
+    """(min + max) / 2 of each ~10 ms window: close to the 10 ms average the firmware's EMA compares against its
+    threshold. emg_max alone overstates a contraction (by ~38 % in the firm grip of
+    data/arm_motion_20261004-152827.json), because the envelope ripples more while the muscle works."""
+    return [(s[1] + s[2]) / 2.0 for s in tail]
+
+
 def calibrate_emg_threshold(ser, latest, interactive=True):
-    """Computes an EMG threshold entirely on the host from emg_min/emg_max
-    (EMG_RAW_RE) -- the firmware streams these unconditionally from boot,
-    so this needs no protocol/handshake to CAPTURE, only to APPLY the
-    result (send_emg_threshold's "T<uint>\\n"). Mirrors _calibrate_pose's
-    approach (record for EMG_RECORD_SECONDS, trust only the settled last
-    EMG_SETTLE_TAIL_SECONDS).
+    """Computes the EMG grip and release thresholds on the host and sends them ("T<on>,<release>\n").
 
-    threshold = relaxed_mean + EMG_THRESHOLD_K * relaxed_std (see
-    emg_mean_std's docstring for the full reasoning) -- replaced an
-    earlier relaxed-90th-percentile/contracted-10th-percentile split
-    (2026-09-08 design) after real hardware testing 2026-09-12 found a
-    held "clench" swinging between 2300 and 3519 within the same 3.5s
-    window, entirely overlapping the relaxed baseline -- the exact
-    relaxed>=contracted inversion that split-based approach could produce
-    whenever a real contraction is weak or inconsistent, not just from
-    ADC jitter. Anchoring to the relaxed baseline's own noise statistics
-    sidesteps that: it never needs the contracted phase to be cleanly
-    separated from the relaxed one to produce a well-defined answer.
+    threshold = relaxed_mean + EMG_THRESHOLD_K * relaxed_std, over emg_max of the settled relaxed recording
+    (emg_mean_std). The clench recording then checks that the board could grip with it: the clench's mean window
+    midpoint (emg_window_midpoints) must exceed the threshold. If it does not, the calibration is refused and nothing
+    is sent, so the board keeps the threshold it has: interactively the person records both phases again or skips;
+    with interactive=False the function returns None. Every interactive attempt is logged (log_emg_calibration).
 
-    The contracted-phase recording is kept, but only as a post-hoc sanity
-    check against the threshold just computed -- printed as a warning if
-    the contraction didn't clearly cross it, not fed into the threshold
-    calculation itself.
-
-    interactive=True (run_demo_live.py's normal use) pauses for a real
-    Enter press at each phase. interactive=False lets a caller (e.g. a
-    future automated check) skip the prompts -- but unlike the old
-    firmware-gated design, there's no way to fake a real relax/clench
-    signal without a real body, so interactive=False without real EMG
-    activity will just compute a threshold from whatever ambient noise is
-    on the line; only meaningful against a real, already-known-good signal.
-
-    Returns the threshold actually sent (int), or None if no emg_min/
-    emg_max has arrived yet (nothing to calibrate against -- check MyoWare
-    wiring first)."""
+    Returns an EmgThreshold, or None when no EMG data has arrived or no usable calibration was recorded."""
     emin, _ = latest.snapshot_emg_raw()
     if emin is None:
         print("Warning: no emg_min/emg_max data received yet, so the EMG threshold cannot be calibrated "
               "(check that the MyoWare is connected and the firmware is running).")
         return None
 
-    if interactive:
-        print("Relax your arm completely. Press Enter when ready.")
-        input()
-    print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, stay relaxed)...")
-    relaxed_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "relaxed")
-    relaxed_mean, relaxed_std = emg_mean_std([s[2] for s in relaxed_tail])
-    threshold = int(round(relaxed_mean + EMG_THRESHOLD_K * relaxed_std))
+    while True:
+        if interactive:
+            print("Relax your arm completely. Press Enter when ready.")
+            input()
+        print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, stay relaxed)...")
+        relaxed_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "relaxed")
+        relaxed_mean, relaxed_std = emg_mean_std([s[2] for s in relaxed_tail])
+        threshold = int(round(relaxed_mean + EMG_THRESHOLD_K * relaxed_std))
 
-    if interactive:
-        print("Make a firm fist and hold it. Press Enter when ready.")
-        input()
-    print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, keep gripping)...")
-    contracted_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "gripping")
-    contracted_mean, contracted_std = emg_mean_std([s[2] for s in contracted_tail])
+        if interactive:
+            print("Make a firm fist and hold it. Press Enter when ready.")
+            input()
+        print(f"Recording (about {EMG_RECORD_SECONDS:.1f} s, keep gripping)...")
+        contracted_tail = capture_emg_window(latest, EMG_RECORD_SECONDS, EMG_SETTLE_TAIL_SECONDS, "gripping")
+        contracted_mean, contracted_std = emg_mean_std([s[2] for s in contracted_tail])
+        contracted_level, _ = emg_mean_std(emg_window_midpoints(contracted_tail))
 
-    print(f"EMG threshold computed: relaxed_mean={relaxed_mean:.0f} relaxed_std={relaxed_std:.1f} "
-          f"threshold={threshold}(= mean + {EMG_THRESHOLD_K:.1f} * std)")
-    suspect = contracted_mean <= threshold
-    if suspect:
-        print(f"Warning: the gripping phase's mean ({contracted_mean:.0f}, std={contracted_std:.1f}) "
-              f"did not exceed the computed threshold ({threshold}). The grip may have been too weak, an electrode "
-              f"may have poor contact, or EMG_THRESHOLD_K is too high for you: grip harder or check the electrodes "
-              f"and recalibrate; failing that, consider lowering EMG_THRESHOLD_K.")
-    else:
-        margin = contracted_mean - threshold
-        print(f"Check: the gripping phase's mean ({contracted_mean:.0f}, std={contracted_std:.1f}) is above the "
-              f"threshold, margin={margin:.0f} ({'uneven grip' if contracted_std > relaxed_std * 3 else 'steady'}).")
+        print(f"EMG threshold computed: relaxed_mean={relaxed_mean:.0f} relaxed_std={relaxed_std:.1f} "
+              f"threshold={threshold}(= mean + {EMG_THRESHOLD_K:.1f} * std)")
+        suspect = contracted_level <= threshold
+        if interactive:
+            log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std,
+                                 threshold, contracted_mean, contracted_std, suspect)
+        if not suspect:
+            margin = contracted_level - threshold
+            print(f"Check: the grip's level ({contracted_level:.0f}, window midpoints) is above the threshold, "
+                  f"margin={margin:.0f} ({'uneven grip' if contracted_std > relaxed_std * 3 else 'steady'}).")
+            break
 
-    # Long-term observation log (see EMG_CALIBRATION_LOG_DIR's own comment)
-    # -- only for a real interactive session, not interactive=False's
-    # ambient-noise-only calibration (that's not a real relax/clench
-    # sample worth keeping around for the week-later algorithm review).
-    if interactive:
-        log_emg_calibration(relaxed_tail, contracted_tail, relaxed_mean, relaxed_std,
-                             threshold, contracted_mean, contracted_std, suspect)
+        print(f"The grip's level ({contracted_level:.0f}, window midpoints) did not exceed the threshold ({threshold}), "
+              f"so the board could not grip with it. Grip harder, check the electrodes, or relax fully in the first "
+              f"phase. Nothing was sent: the board keeps its current threshold.")
+        if not interactive:
+            return None
+        answer = input("Press Enter to record both phases again, or type s and Enter to skip: ")
+        if answer.strip().lower() == "s":
+            print("EMG calibration skipped.")
+            return None
 
     release = emg_release_threshold(relaxed_mean, threshold)
     print(f"Release threshold={release} (grip above {threshold}, release below {release})")
