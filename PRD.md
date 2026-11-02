@@ -1,6 +1,6 @@
 # EdgeNeuro: Design and Requirements
 
-**Author:** Chang-Jui Tseng · **Last updated:** 2026-10-10
+**Author:** Chang-Jui Tseng · **Last updated:** 2026-11-02
 
 This document covers what the system is for, how it is built, the requirements it has to meet, and how each one is
 checked. Commands are in [README.md](README.md) and [firmware/README.md](firmware/README.md); the dated record of how
@@ -133,7 +133,7 @@ well, and the model holds its pose. A calibration received over UART is checksum
 | R2 | Fixed 1 kHz control loop (one `ENV` sample per tick) | TIM2 TRGO → ADC1; report intervals 1.002–1.005 s; 1007 ticks/s in the full loop | Met |
 | R3 | IMU reads never block a tick | Non-blocking I2C state machine; ~274 reads/s per IMU with both on one bus | Met |
 | R4 | No undefined behavior; ring buffer correct under concurrency | ASan + UBSan and TSan presets | Met (all three pass, 2026-10-08; CI runs ASan/UBSan) |
-| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 597 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
+| R5 | Code tested | 248 Catch2 cases (98.7 % line / 88.6 % branch); 603 Python test functions; C++ ports checked against Python golden tables; mutation testing on new logic | Met |
 | R6 | Fits the MCU | Servo build: 18.4 KB code, 3.3 KB static RAM | Met |
 | R7 | The generic `EdgeNeuro<>` pipeline fits a 1 ms sample period on target (the arm's control path does not use it; its timing is R2) | DWT cycle counts at 16 MHz, 1 EMG + 6 IMU channels: mean 15 µs, classify tick 317 µs | Met |
 | R8 | Arm stays inside its mechanical limits | Envelope measured on the arm; host tests over the intermediate poses; recorded CCR traces | Met |
@@ -153,16 +153,26 @@ well, and the model holds its pose. A calibration received over UART is checksum
   |a| departing from 1 g by up to 0.06–0.09 g on the upper arm and 0.10–0.18 g on the forearm (95th percentile; about
   0.03 g at rest) and briefly by more than 1 g. An acceleration perpendicular to gravity barely changes |a|, so the
   direction error during fast motion is not quantified yet; the DLPF and the 1€ filter reduce it but do not remove it.
-  Kept as a deliberate design choice (the gyroscopes are unused).
+  Kept as a deliberate design choice (the gyroscopes are unused). The elbow bend, the angle between the two gravity
+  vectors, also depends on how the sensors are mounted: from hanging to horizontal the reading changed by −7.2° to
+  +4.2° with the raise direction (`tools/analyze_elbow_bend.py`; the true angle was not recorded), and a bend about a
+  vertical axis reads zero.
 - **No heading.** Without a magnetometer, left/right comes from upper-arm twist. The twist that naturally comes with
   raising the arm is reduced by the slow-follow rule, not removed.
 - **Humanoid grasp.** The G1 hand's uniform-curl grasp holds the object only at the front-left pose. Per-finger grasp
   synthesis was rejected as out of scope.
+- **EMG level changes with posture and over time** (seen on the live readings, not recorded). With the hand relaxed,
+  the envelope about doubled when the author stood up from sitting, so a threshold calibrated sitting does not hold
+  standing. It also changed each time the electrodes were put back on, and drifted within minutes of wear, possibly
+  from sweat or muscle fatigue. Each session therefore starts with a new calibration; docs/EVALUATION.md (E5) plans the
+  recordings.
 - **EMG not health-checked.** Only the IMUs are checked; a loose electrode can open or close the claw.
 - **No end-to-end latency measurement yet** (arm motion → servo motion); see §8.
 - **UART receive** is polled one byte per loop, so the host paces commands (2 ms per byte).
 
 ## 8. Next steps
+
+[docs/EVALUATION.md](docs/EVALUATION.md) turns these into experiments: conditions, metrics and how to read them.
 
 - Complete the set-down step (lower, then release) and measure the demo's success rate over repeated trials (and with a
   second person).

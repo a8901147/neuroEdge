@@ -8,6 +8,10 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 ## [Unreleased]
 
 ### Added
+- `docs/EVALUATION.md`: planned experiments with conditions and metrics (task success rate, motion-triggered grips,
+  grip latency, elbow-bend accuracy, calibration across days).
+- `tools/analyze_elbow_bend.py`: the elbow-bend reading against upper-arm tilt in recorded raises (−7.2° to +4.2°
+  from hanging to horizontal); its tests pin when the gravity-vector angle equals the elbow angle.
 - README: a video of the MuJoCo Unitree G1 model driven by the live sensors (`docs/demo_mujoco_g1.gif`, `.mp4`).
 - README: two short recordings of the EMG envelope (relaxed, grip), `docs/emg_relaxed.gif`, `docs/emg_grip.gif`.
 
@@ -15,6 +19,8 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 - `DEVELOPMENT.md` rewritten: build and test commands, starting the app over SWD, and the rules the code and documents follow.
 - The EMG calibration refuses a result whose grip the board could not detect, sends nothing, and offers to record
   again; the check uses each window's midpoint, close to what the firmware's EMA compares.
+- PRD §7 lists the EMG level's dependence on posture, re-attached electrodes and wear time, as seen on the live
+  readings (not recorded); E5 in docs/EVALUATION.md plans the recordings.
 - `phase3_control_loop_main.cpp` is split into hardware modules under `firmware/src/phase3/`, and its comments no
   longer carry the development history. The generated code is unchanged.
 - `docs/demo.mp4` re-encoded from the original recording at 1920×1080 (was 1280×720).
