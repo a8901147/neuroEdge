@@ -2,25 +2,9 @@
 
 namespace edgeneuro {
 
-// Caps how fast an output value is allowed to change per second, so a
-// discontinuous target (e.g. GripStateMachine's 0/1 step) turns into a
-// smooth ramp instead of an instantaneous jump at the actuator.
-//
-// This is the "command trajectory smoothing" step that sits downstream of
-// a decision, not a sensor-fusion step: ComplementaryFilter smooths a
-// noisy *measurement* into a believable angle; this smooths a *setpoint*
-// so the actuator's motion path is continuous. The two are independent --
-// residual jitter on ComplementaryFilter's roll()/pitch() output doesn't
-// need a new component at all, just the project's existing IirFilter
-// (include/edgeneuro/filters/iir_filter.hpp) configured as a gentle
-// low-pass, since that jitter is exactly the kind of per-sample noise
-// IirFilter already exists to remove. (Superseded on the real arm: the IMU path now runs a 1-euro filter on the raw
-// gravity vectors -- mearm_input_filter.hpp -- and ComplementaryFilter is diagnostic only.)
-//
-// Deliberately not a Filter (concepts.hpp): that concept's process(value)
-// takes no dt, but slew rate is fundamentally a rate (units/second), so
-// it needs the time step explicitly -- same reasoning that keeps
-// ComplementaryFilter and GripStateMachine out of that concept too.
+// Caps how fast an output may change per second, so a step target (e.g. GripStateMachine's 0/1) becomes a ramp at
+// the actuator. It shapes a setpoint, not a measurement. Not a Filter (concepts.hpp): a rate needs dt, which
+// Filter::process(value) does not take.
 template <typename ValueType>
 class SlewRateLimiter {
 public:

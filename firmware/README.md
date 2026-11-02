@@ -109,6 +109,9 @@ bootloader.
 
 ## `phase3_control_loop`
 
+`src/phase3_control_loop_main.cpp` holds the loop; its hardware modules are in `src/phase3/` (`host_link.hpp`: UART
+and the PC's commands, `emg_adc.hpp`, `mpu6050_i2c.hpp`, `servo_pwm.hpp`, `board.hpp`).
+
 **Main loop.** TIM2 triggers ADC1 every 1 ms; each conversion is one tick. The loop never blocks:
 
 - *IMUs.* A 14-byte MPU6050 read takes ~1.5–2 ms at 100 kHz, longer than a tick, so `ImuReader` splits it into explicit

@@ -13,6 +13,8 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
 
 ### Changed
 - `DEVELOPMENT.md` rewritten: build and test commands, starting the app over SWD, and the rules the code and documents follow.
+- `phase3_control_loop_main.cpp` is split into hardware modules under `firmware/src/phase3/`, and its comments no
+  longer carry the development history. The generated code is unchanged.
 - `docs/demo.mp4` re-encoded from the original recording at 1920×1080 (was 1280×720).
 - The EMG motion artifact is attributed to what was observed: tugging the sensor cable with the arm still reproduces the
   spikes, and crosstalk from the arm-lifting muscles is not ruled out (it was stated as electrode placement). The next

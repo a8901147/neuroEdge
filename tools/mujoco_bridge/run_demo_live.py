@@ -121,7 +121,7 @@ RAW_SMOOTHING_ALPHA = 0.03
 # Real-hardware capture during a sustained grip found gyro spread ~100x the
 # measured resting noise floor (0.5 rad/s vs 0.005 rad/s), with a zero-
 # crossing estimate putting the dominant frequency at ~9-10Hz -- physiological
-# tremor from muscle exertion (see phase3_control_loop_main.cpp's kDlpfCfg6
+# tremor from muscle exertion (see firmware/src/phase3/mpu6050_i2c.hpp's kDlpfCfg6
 # comment for the same finding and the firmware-side DLPF response), not the
 # wire-glitch jitter RAW_SMOOTHING_ALPHA above was tuned against. Applying it
 # only during an active grip (not uniformly) costs no responsiveness during
@@ -324,7 +324,7 @@ EMG_RAW_RE = re.compile(
 # the now-unpowered MPU6050 stayed wired to the live bus and froze holding
 # SDA low mid-transaction, wedging both readers. bus_recovery_attempts/freed
 # (cumulative since boot) confirm the firmware's I2C bus-clear routine
-# (phase3_control_loop_main.cpp's i2c1_bus_recovery(), UM10204 sec 3.1.16) is
+# (firmware/src/phase3/mpu6050_i2c.hpp's i2c1_bus_recovery(), UM10204 3.1.16) is
 # actually kicking in and un-sticking the bus, not just SWRST spinning.
 DIAG_LINE_RE = re.compile(
     r"diag shoulder_completions=(?P<shoulder_completions>\d+) "
@@ -1653,9 +1653,9 @@ def run_mearm_preview(args):
     # prompts (several seconds of holding BASELINE) incidentally guarantee
     # real data has arrived by the time its own oblique_decompose_scaled call
     # runs -- this --mearm path skips that, so it needs an explicit wait
-    # instead (a real ZeroDivisionError in
-    # oblique_decompose_scaled -> _normalize3 on a real run, the exact
-    # zero-vector case its own docstring warns about).
+    # instead (without it, a real run raised ZeroDivisionError in
+    # oblique_decompose_scaled -> _normalize3: the zero-vector case its own
+    # docstring warns about).
     raw_wait_started = time.monotonic()
     next_raw_hint_at = MEARM_WAIT_HINT_SECONDS
     while True:
@@ -1937,7 +1937,7 @@ def main():
              "during calibration is a real divide-by-zero, not a hang (found 2026-09-07, testing "
              "MyoWare with neither IMU connected). 'elbow' "
              "tells the firmware (via the boot-time O<bits> command, see "
-             "read_optional_sensors_config() in phase3_control_loop_main.cpp) not to halt if the "
+             "read_optional_sensors_config() in the firmware) not to halt if the "
              "elbow IMU's wake write fails -- its decoded value already degrades safely to a "
              "constant when silent either way (elbow_bend's own shoulder_mag/elbow_mag>0.1 guard "
              "in firmware), this only affects whether a genuine wake failure is fatal. 'emg' "

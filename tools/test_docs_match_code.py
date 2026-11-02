@@ -19,7 +19,9 @@ def prose(path):
 README = prose("README.md")
 PRD = prose("PRD.md")
 FW_README = prose("firmware/README.md")
-PHASE3 = (ROOT / "firmware/src/phase3_control_loop_main.cpp").read_text()
+# phase3_control_loop: the main file plus its hardware modules (firmware/src/phase3/), one translation unit
+PHASE3 = "\n".join(p.read_text() for p in [ROOT / "firmware/src/phase3_control_loop_main.cpp",
+                                           *sorted((ROOT / "firmware/src/phase3").glob("*.hpp"))])
 INPUT_FILTER = (ROOT / "include/edgeneuro/control/mearm_input_filter.hpp").read_text()
 SERVO_MAPS = (ROOT / "include/edgeneuro/control/mearm_servo_maps.hpp").read_text()
 IMU_HEALTH = (ROOT / "include/edgeneuro/control/imu_health.hpp").read_text()

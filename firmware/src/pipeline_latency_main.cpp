@@ -15,7 +15,7 @@
 //   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk   (DEMCR bit 24, enables the DWT)
 //   DWT->CTRL & DWT_CTRL_NOCYCCNT_Msk                 (bit 25, set = no cycle counter: then this reports and stops)
 //   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk               (bit 0, starts CYCCNT)
-// The USART2 setup is copied from phase3_control_loop_main.cpp's usart2_init (verified there against RM0368).
+// The USART2 setup is copied from phase3/host_link.hpp's usart2_init (verified there against RM0368).
 #include "stm32f4xx.h"
 
 #include <cstddef>

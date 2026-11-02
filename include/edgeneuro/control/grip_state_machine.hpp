@@ -2,71 +2,33 @@
 
 namespace edgeneuro {
 
-// Threshold + hysteresis (debounce) state machine: turns a single EMG
-// envelope channel into a discrete grip/release decision.
+// Threshold state machine with debounce and hysteresis: turns one EMG envelope channel into a grip/release decision.
 //
-// Deliberately NOT a Filter/Feature/Classifier (concepts.hpp) and does NOT
-// go through Pipeline's window/feature/classify path -- that path only
-// produces a result once every WindowSize samples (e.g. 200ms at
-// WindowSize=200 @ 1kHz), which is the wrong latency budget for "did the
-// user just start/stop gripping." This is the same reasoning that keeps
-// ComplementaryFilter (see fusion/complementary_filter.hpp) out of
-// Pipeline too; see PRD.md §3 (system architecture).
+// Not a Filter/Feature/Classifier (concepts.hpp) and not part of Pipeline: Pipeline decides once per window (200 ms at
+// WindowSize=200, 1 kHz), too slow for "did the grip just start". With one EMG channel there is one dimension of
+// information, so a threshold is the standard single-site myoelectric switch; a trained classifier adds nothing.
 //
-// Also deliberately simpler than a trained classifier (LdaClassifier):
-// with a single EMG channel, there is only one dimension of information
-// available ("how hard is this one muscle contracting right now"), so a
-// multi-class classifier buys nothing a threshold doesn't already give.
-// This is standard practice for single-channel myoelectric control, not a
-// project-specific shortcut.
+// Input: the MyoWare 2.0 ENV output (rectified and low-passed in hardware). The debounce needs the envelope above
+// (below) the threshold WITHOUT interruption for on_duration (off_duration): one sample on the wrong side restarts the
+// count. So the caller smooths first (phase3_control_loop_main.cpp: an EMA, kEmgSmoothingAlpha); ENV alone chattered
+// near the threshold on the hardware.
 //
-// Intended input is MyoWare 2.0's ENV (envelope) output, not RAW -- ENV is
-// already rectified + low-pass filtered in analog hardware before it ever
-// reaches the ADC.
-//
-// 2026-09-12 correction: the line above used to claim "so no further
-// filtering/feature extraction is needed upstream of this class" -- real
-// hardware use found that false. update()'s debounce below requires the
-// input to stay continuously above (or below) threshold for the full
-// on_duration/off_duration with zero interruption: a single noisy sample
-// on the wrong side resets that accumulator to 0 rather than just slowing
-// it, a `min()`-like criterion over the debounce window that's far more
-// noise-sensitive than a `mean()`-like one. In practice this meant the
-// grip stuck "on" almost constantly until the caller (see
-// firmware/src/phase3_control_loop_main.cpp's kEmgSmoothingAlpha) added
-// its own EMA smoothing before calling update() -- so ENV alone was not
-// enough, at least not against this debounce shape. Left as the caller's
-// responsibility rather than folded into this class, since a caller may
-// want different smoothing (or none, e.g. a synthetic/already-clean
-// signal in a test) -- but don't assume ENV input needs no help.
-//
-// Caller contract: call update() once per fresh envelope sample with dt
-// (seconds) since the last call. envelope's unit is whatever the caller's
-// ADC produces (raw counts are fine) as long as `threshold` is in the same
-// unit -- only ever compared directly, never rescaled.
+// Call update() once per sample with dt in seconds. The envelope and the thresholds share one unit (raw ADC counts
+// are fine); they are only compared, never rescaled.
 template <typename ValueType>
 class GripStateMachine {
 public:
     enum class State { Released, Gripping };
 
-    // threshold: envelope value above which the muscle counts as
-    // contracting.
-    // on_duration/off_duration: how long the envelope must stay
-    // continuously above/below threshold before the state actually flips
-    // -- this is what rejects a brief noise spike or a momentary twitch
-    // from triggering a grip/release, not just the threshold itself.
+    // threshold: envelope level above which the muscle counts as contracting (also the release level until
+    // set_thresholds() sets a lower one). on_duration/off_duration: how long the envelope must stay above/below it
+    // before the state flips, which rejects a noise spike or a brief twitch.
     GripStateMachine(ValueType threshold, ValueType on_duration, ValueType off_duration) noexcept
         : threshold_(threshold), release_(threshold), on_duration_(on_duration), off_duration_(off_duration) {}
 
-    // Returns true only on the update() call where the state actually
-    // changes (a transition edge) -- false on every other call, including
-    // while continuously held above/below threshold. Check state() (or
-    // is_gripping()) for the current state at any time; check this return
-    // value only if the caller specifically needs to react to the moment
-    // of transition (e.g. to fire an actuator command once, not every tick).
+    // Returns true only on the call where the state changes; state()/is_gripping() give the current state.
     bool update(ValueType envelope, ValueType dt) noexcept {
-        // 2026-10-04: two thresholds (hysteresis) -- while gripping, only falling below the release threshold counts as
-        // letting go (equal to threshold_ unless set_thresholds() set a lower one: then exactly the old behaviour)
+        // Hysteresis: while gripping, only falling below the release threshold counts as letting go.
         const ValueType level = state_ == State::Gripping ? release_ : threshold_;
         if (envelope > level) {
             above_time_ += dt;
@@ -90,17 +52,11 @@ public:
     State state() const noexcept { return state_; }
     bool is_gripping() const noexcept { return state_ == State::Gripping; }
 
-    // Live threshold update -- added 2026-09-09 so a host-computed
-    // calibration (relax/clench captured and averaged on the Python side,
-    // from the envelope this class already streams every tick regardless)
-    // can be applied without reconstructing this object or restarting the
-    // main loop. Does NOT reset above_time_/below_time_/state_: an
-    // in-progress hold shouldn't be discarded just because a fresher
-    // threshold arrived -- only the comparison in the NEXT update() call
-    // uses the new value.
+    // Live update from the host's calibration. The state and the running debounce times are kept: an ongoing grip is
+    // not dropped because a new threshold arrived; the next update() compares against the new values.
     void set_threshold(ValueType threshold) noexcept { set_thresholds(threshold, threshold); }
-    // 2026-10-04: grip above `threshold`, release only below `release` (capped at `threshold`). The author found a single
-    // threshold let go too easily: a grip held more gently while the arm moves dips under the grip threshold.
+    // Grip above `threshold`, release only below `release` (capped at `threshold`): a grip held more gently while the
+    // arm moves can dip under the grip threshold without letting go.
     void set_thresholds(ValueType threshold, ValueType release) noexcept {
         threshold_ = threshold;
         release_ = release < threshold ? release : threshold;

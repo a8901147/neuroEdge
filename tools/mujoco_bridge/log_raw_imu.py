@@ -9,8 +9,8 @@ those go through ComplementaryFilter's gyro integration, which a live
 session on 2026-09-03 showed drifting by several radians with ZERO
 corresponding accelerometer change (raw values held rock-steady while
 decoded roll drifted to -5.9rad) -- a real, currently-unverified gyro-
-pairing bug (see phase3_control_loop_main.cpp's "NOT YET RE-VERIFIED"
-comment). Raw accel readings aren't run through that integration at all,
+pairing bug (the gyro axis pairing in phase3_control_loop_main.cpp was never
+re-derived after the sensor was remounted). Raw accel readings aren't run through that integration at all,
 so they're immune to it -- this tool sidesteps the whole problem rather
 than working around it, and also means no viewer/MuJoCo/zero-pose wait is
 needed to get usable ground-truth data for

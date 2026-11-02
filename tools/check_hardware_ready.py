@@ -248,12 +248,10 @@ def check_boot_reached_app(poll_seconds: float = 25.0) -> bool:
         # ROM bootloader range. Checking that first used to make the ROM-
         # bootloader branch below unreachable dead code: a chip genuinely
         # stuck in the ROM bootloader (BOOT0 read high) was misreported as
-        # "[OK] ... execution reached main()" -- found in a pre-v1.0.0
-        # review, 2026-09-12; never actually observed in a real
-        # session since every real bootloader-stuck case hit here was the
-        # separate WeAct HID bootloader (0x08000000-0x08003fff), which is
-        # numerically below APP_FLASH_ADDRESS and was never affected by
-        # this ordering bug.
+        # "[OK] ... execution reached main()". Never seen on hardware: every
+        # bootloader-stuck case so far was the WeAct HID bootloader
+        # (0x08000000-0x08003fff), below APP_FLASH_ADDRESS, which that
+        # ordering never affected.
         if ROM_BOOTLOADER_BASE <= pc < ROM_BOOTLOADER_BASE + 0x8000:
             print(
                 f"[FAIL] PC=0x{pc:08x} is in the STM32's factory ROM bootloader (0x{ROM_BOOTLOADER_BASE:08x}+) -- "

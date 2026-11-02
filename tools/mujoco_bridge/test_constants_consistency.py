@@ -23,7 +23,9 @@ import mearm_pathb as pb  # noqa: E402
 import run_demo_live as rdl  # noqa: E402
 
 HEADER = (ROOT / "include/edgeneuro/control/mearm_servo_maps.hpp").read_text()
-PHASE3 = (ROOT / "firmware/src/phase3_control_loop_main.cpp").read_text()
+# phase3_control_loop: the main file plus its hardware modules (firmware/src/phase3/), one translation unit
+PHASE3 = "\n".join(p.read_text() for p in [ROOT / "firmware/src/phase3_control_loop_main.cpp",
+                                           *sorted((ROOT / "firmware/src/phase3").glob("*.hpp"))])
 LIMIT_FINDER = (ROOT / "firmware/src/servo_limit_finder_4ch_main.c").read_text()
 
 

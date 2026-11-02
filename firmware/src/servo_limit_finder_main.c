@@ -12,7 +12,7 @@
 // every TIM3/GPIO register value used here, not repeated here.
 //
 // USART2 (PA2=TX, PA3=RX, AF7, 115200 baud) reused byte-for-byte from
-// phase3_control_loop_main.cpp's already-verified usart2_init/
+// phase3/host_link.hpp's already-verified usart2_init/
 // usart2_send_uint/non-blocking-RXNE-poll pattern.
 
 #include "stm32f4xx.h"
