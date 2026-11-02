@@ -86,7 +86,7 @@ applies a new pulse width at the start of each 20 ms PWM frame, so each servo re
 | IMU reads | Non-blocking I2C state machine on a 100 kHz bus: ~274 completed reads/s per IMU with both IMUs |
 | Heap | No `malloc`/`free`/`new`/`_sbrk` symbols in the firmware image; `malloc_count == 0` asserted on the host and on the target |
 | Firmware size | `phase3_control_loop` with servos on: 18.4 KB of code, 3.3 KB of static RAM (of 240 KB / 64 KB) |
-| Tests | 248 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 603 Python test functions |
+| Tests | 250 Catch2 test cases (98.7 % line, 88.6 % branch coverage of `include/` + `src/`); 603 Python test functions |
 
 Per-sample latency of the generic `EdgeNeuro<>` pipeline, on synthetic input. Both machines run the same engine code
 (`include/edgeneuro/bench/latency_configs.hpp`). The arm's control path does not use this pipeline (PRD §3); its

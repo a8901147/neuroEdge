@@ -4,12 +4,17 @@
 
 namespace edgeneuro::emg_threshold_link {
 
-// The EMG threshold line from run_demo_live.py's send_emg_threshold(): "T<on>\n" (one threshold, the format since
-// 2026-09-09) or, since 2026-10-04, "T<on>,<release>\n" (grip above <on>, let go only below <release> --
-// GripStateMachine::set_thresholds). Parsed one received byte at a time (the firmware's RX path); '\r' is ignored, a new
-// 'T' restarts, anything else malformed drops the line -- nothing is applied half-way. Bytes outside a T line belong to
-// other commands (R, the C calibration message) and are ignored.
+// The EMG threshold line from run_demo_live.py's send_emg_threshold(): "T<on>\n" (one threshold for grip and release)
+// or "T<on>,<release>\n" (grip above <on>, let go only below <release>; GripStateMachine::set_thresholds). Parsed one
+// received byte at a time (the firmware's RX path); '\r' is ignored, a new 'T' restarts, anything malformed drops the
+// line, so nothing is applied half-way. Bytes outside a T line belong to other commands (R, the C calibration message)
+// and are ignored.
+//
+// The line carries no checksum, so the values are also checked: a threshold of 0 would grip with the hand at rest, one
+// above the 12-bit ADC range could never grip, and a release of 0 would never let go. Such a line is dropped and the
+// thresholds in use stay, as with a release above the grip threshold, which the host never sends.
 constexpr unsigned kMaxDigits = 5;   // the ADC is 12-bit (<= 4095): anything longer is garbage
+constexpr uint32_t kAdcMax = 4095u;
 
 class Parser {
 public:
@@ -35,8 +40,11 @@ public:
             digits_ = 0;
             if (b == static_cast<uint8_t>(',')) return false;
             active_ = false;
-            on_ = fields_[0];
-            release_ = count_ == 2 ? fields_[1] : fields_[0];
+            const uint32_t on = fields_[0];
+            const uint32_t release = count_ == 2 ? fields_[1] : fields_[0];
+            if (on == 0u || on > kAdcMax || release == 0u || release > on) return false;
+            on_ = on;
+            release_ = release;
             return true;
         }
         return drop();

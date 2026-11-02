@@ -33,6 +33,8 @@ versions follow [Semantic Versioning](https://semver.org/). What was verified on
   channels) only. The 32-channel stress configuration stays in the benchmark code (`latency_configs.hpp`).
 
 ### Fixed
+- The firmware refuses EMG threshold lines that would grip at rest, never grip or never release (a 0 or above-ADC
+  threshold, a 0 release, or a release above the grip threshold); the thresholds in use stay.
 - After the once-a-second power-register read, the I2C turn passed twice (back to the same sensor), so that sensor
   read twice in a row.
 
